@@ -1,0 +1,17 @@
+#pragma once
+#include "common_includes.h"
+
+#include "Storage/Stream.h"
+#include "Storage/ArrayStream.h"
+#include "Storage/MemoryStream.h"
+#include "Storage/FileStream.h"
+#include "Storage/FileIO.h"
+#include "Storage/Serializer.h"
+#include "Storage/BinarySchema.h"
+
+#ifdef PLATFORM_WINDOWS
+#include "Storage/UwpStorage.h"
+#include "Storage/SettingManager.h"
+#include "Storage/ComHelpers.h"
+#include "Storage/DirectoryChangeMonitor.h"
+#endif

@@ -1,0 +1,104 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;h++;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Resource Files">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="shaders">
+      <UniqueIdentifier>{6dbb4259-3add-49ee-8ba0-4e9fd2636cf1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="shaders\bezier">
+      <UniqueIdentifier>{f73a7fe9-3f68-4a16-9722-a997c5a410cc}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="shaders\segmented scan">
+      <UniqueIdentifier>{86e45342-9efc-4240-9907-50870014f7cc}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="CurveApp.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="app.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="camera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="orbital_camera.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pipeline.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="SegmentedScan.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="bezier_simple.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="app.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="orbital_camera.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="pipeline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="SegmentedScan.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="bezier_simple.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="vcpkg.json" />
+    <None Include="shaders\segmented_scan_common.hlsli">
+      <Filter>shaders\segmented scan</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="shaders\segmented_scan_add_offsets.hlsl">
+      <Filter>shaders\segmented scan</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\segmented_scan_local.hlsl">
+      <Filter>shaders\segmented scan</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_calc_points.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_ps.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_glyph_ps.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_vert.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\pattern_center_calc.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\pattern_center_glyph.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\pattern_center_ini.hlsl">
+      <Filter>shaders\bezier</Filter>
+    </FxCompile>
+  </ItemGroup>
+</Project>
