@@ -234,7 +234,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     float2 overlap_offset = dir_BC + s_12 * dir_BC_r;
     float2 obtuse_offset = s_12 * right_offset;
     
-    float2 offset = overlap_offset : no_overlap_offset);
+    float2 offset = dot(dir_AB, dir_BC) >= 0 ? obtuse_offset : (overlap ? overlap_offset : no_overlap_offset);
     float sdf = dot(offset, index < 2 ? dir_BC : -dir_BC) * -width_pixel;
     sdf += index < 2 ? 0.0 : l_CB;
     float2 length_conversion = 2.0 / WH * width_pixel;
