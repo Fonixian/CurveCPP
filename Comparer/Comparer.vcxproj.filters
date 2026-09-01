@@ -19,9 +19,6 @@
     <Filter Include="shaders\segmented scan">
       <UniqueIdentifier>{86e45342-9efc-4240-9907-50870014f7cc}</UniqueIdentifier>
     </Filter>
-    <Filter Include="shaders\bezier simple">
-      <UniqueIdentifier>{f73a7fe9-3f68-4a16-9722-a997c5a410cc}</UniqueIdentifier>
-    </Filter>
     <Filter Include="shaders\bezier">
       <UniqueIdentifier>{0c1f5a94-6b2e-4d33-9f18-2a7c6d5e4b10}</UniqueIdentifier>
     </Filter>
@@ -45,9 +42,6 @@
     <ClCompile Include="SegmentedScan.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="bezier_simple.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="bezier.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -66,9 +60,6 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="SegmentedScan.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="bezier_simple.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="bezier.h">
@@ -106,26 +97,8 @@
     <FxCompile Include="shaders\segmented_scan_local.hlsl">
       <Filter>shaders\segmented scan</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_calc_points.hlsl">
-      <Filter>shaders\bezier simple</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\bezier_ps.hlsl">
-      <Filter>shaders\bezier simple</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\bezier_glyph_ps.hlsl">
-      <Filter>shaders\bezier simple</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\bezier_vert.hlsl">
-      <Filter>shaders\bezier simple</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\pattern_center_calc.hlsl">
-      <Filter>shaders\bezier simple</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\pattern_center_glyph.hlsl">
-      <Filter>shaders\bezier simple</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\pattern_center_ini.hlsl">
-      <Filter>shaders\bezier simple</Filter>
+    <FxCompile Include="shaders\bezier\VertexShader.hlsl">
+      <Filter>shaders\bezier</Filter>
     </FxCompile>
   </ItemGroup>
 </Project>

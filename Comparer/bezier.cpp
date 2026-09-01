@@ -1,5 +1,4 @@
 #include "bezier.h"
-#include "Include/Axodox.Storage.h"
 #include <algorithm>
 #include <bit>
 #include <cassert>
@@ -7,7 +6,6 @@
 #include <limits>
 
 using namespace Axodox::Graphics;
-using namespace Axodox::Storage;
 using namespace DirectX;
 
 namespace curve
@@ -146,6 +144,7 @@ namespace curve
 
 	int BezierData::power() const
 	{
+		return bezier_power;
 		const auto is_nan = [](const XMFLOAT3& v) { return std::isnan(v.x) || std::isnan(v.y) || std::isnan(v.z); };
 		if (!is_nan(P0) && !is_nan(P1)) {
 			if (!is_nan(P2)) {
@@ -195,7 +194,7 @@ namespace curve
 		pattern_ini = Pipeline::getCS(device, "curve_pattern_ini.cso");
 		pattern_calc = Pipeline::getCS(device, "curve_pattern_calc.cso");
 
-		curve_draw.vs = Pipeline::getVS(device, "curve_vert.cso");
+		curve_draw.vs = Pipeline::getVS(device, "VertexShader.cso");
 		curve_draw.ps = Pipeline::getPS(device, "curve_ps.cso");
 		// AlphaBlend for the SDF antialiasing and the pattern gaps.
 		curve_draw.states = std::make_shared<PipelineState>(PipelineState{
@@ -254,8 +253,8 @@ namespace curve
 		if (points_allocated < points_required)
 		{
 			calculated_points.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT4>(points_required)));
-			distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
-			distances_screen.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
+			distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
+			//distances_screen.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
 			curve_begins.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
 			bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
 			points_allocated = points_required;
@@ -366,7 +365,7 @@ namespace curve
 		bezier_data_map->Bind(ShaderStage::Compute, 1, context); // t1
 		calculated_points->BindUnordered(0, context);            // u0
 		distances->BindUnordered(1, context);                    // u1
-		distances_screen->BindUnordered(2, context);             // u2
+		//distances_screen->BindUnordered(2, context);             // u2
 
 		calc_points->Run({ (total_points + 256u - 1u) / 256u, 1u, 1u }, context);
 
@@ -375,7 +374,7 @@ namespace curve
 		// Step 2: turn the per-segment lengths into cumulative arc length, per curve. The scan is
 		// exclusive, so Distances[lastIndex of a curve] is exactly that curve's total arc length.
 		scan.Scan(*distances, *curve_begins, total_points, context);
-		scan.Scan(*distances_screen, *curve_begins, total_points, context);
+		//scan.Scan(*distances_screen, *curve_begins, total_points, context);
 
 		ClearComputeBindings(context);
 	}
@@ -429,7 +428,7 @@ namespace curve
 		viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
 		bezier_data->Bind(ShaderStage::Compute, 0, context);              // t0
 		distances->BindOrdered(ShaderStage::Compute, 1, context);         // t1
-		distances_screen->BindOrdered(ShaderStage::Compute, 2, context);  // t2
+		//distances_screen->BindOrdered(ShaderStage::Compute, 2, context);  // t2
 		curve_styles->Bind(ShaderStage::Compute, 3, context);             // t3
 		pattern_ranges->BindOrdered(ShaderStage::Compute, 4, context);    // t4
 		patterns->BindUnordered(0, context);                              // u0
@@ -484,7 +483,7 @@ namespace curve
 		calculated_points->BindOrdered(ShaderStage::Vertex, 0, context); // t0: points & packed colours
 		curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);      // t1: curve boundary flags
 		distances->BindOrdered(ShaderStage::Vertex, 2, context);         // t2: cumulative WORLD arc length
-		distances_screen->BindOrdered(ShaderStage::Vertex, 3, context);  // t3: cumulative SCREEN arc length
+		//distances_screen->BindOrdered(ShaderStage::Vertex, 3, context);  // t3: cumulative SCREEN arc length
 		bezier_data_map->Bind(ShaderStage::Vertex, 4, context);          // t4: point -> curve index
 		pattern_ranges->BindOrdered(ShaderStage::Vertex, 5, context);    // t5: pattern range per curve
 		curve_styles->Bind(ShaderStage::Vertex, 6, context);             // t6: width / cap / join / pattern / spacing

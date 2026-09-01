@@ -17,8 +17,7 @@
 // PatternRange.x is where this curve's block starts inside it.
 StructuredBuffer<float> PatternPosition : register(t1);
 
-float4 main(CurveVSOutput input) : SV_Target
-{
+float4 main(CurveVSOutput input) : SV_Target {
     const float widthPixel    = input.SDF.z;
     const float lateral       = input.SDF.x; // Signed distance from the centre line, px
     const float localArc      = input.SDF.y; // Segment-local, 0 at B
@@ -38,8 +37,7 @@ float4 main(CurveVSOutput input) : SV_Target
     float finalD = roundD;
 
     // --- pattern -------------------------------------------------------------------
-    if (input.Pattern != CurvePatternSolid && input.PatternRange.y > 0u)
-    {
+    if (input.Pattern != CurvePatternSolid && input.PatternRange.y > 0u) {
         // The curve-global screen arc length at this pixel. ScreenArcBegin is constant over the
         // segment, so this is exact rather than an interpolation of two cumulative values.
         const float currentArc = input.ScreenArcBegin + localArc;
@@ -60,14 +58,11 @@ float4 main(CurveVSOutput input) : SV_Target
         const float a1 = currentArc - c1;
         const float arcDist = (abs(a0) <= abs(a1)) ? a0 : a1;
 
-        if (input.Pattern == CurvePatternDot)
-        {
+        if (input.Pattern == CurvePatternDot) {
             // A disc of radius DashLength centred on the pattern, intersected with the stroke.
             // DashLength is uploaded as the stroke half-width for Dot, so it comes out round.
             finalD = max(finalD, length(float2(lateral, arcDist)) - input.DashLength);
-        }
-        else
-        {
+        } else {
             // Dash: keep only what is within DashLength of a pattern center, along the curve.
             finalD = max(finalD, abs(arcDist) - input.DashLength);
         }

@@ -58,7 +58,6 @@
 //                              the distance from it.
 namespace curve
 {
-	// Uploaded to the GPU and passed through to the pixel shader, but not acted on yet.
 	enum class CurveCap : uint32_t {
 		Butt = 0,
 		Square = 1,
@@ -67,9 +66,6 @@ namespace curve
 		TriangleIn = 4
 	};
 
-	// Uploaded to the GPU and passed through to the pixel shader, but not acted on yet. The
-	// vertex shader currently always builds the mitre/inner-corner geometry it inherited from
-	// bezier_vert.hlsl, and the pixel shader always rounds the segment ends.
 	enum class CurveJoin : uint32_t {
 		Round = 0, // Rounded in the pixel shader
 		Square = 1 // Miter/Bevel
@@ -81,8 +77,6 @@ namespace curve
 		Dot = 2
 	};
 
-	// Control points left out of a curve are marked with NaN, which is what BezierData::power()
-	// reads to recover the degree. Use this for them rather than writing NaNs by hand.
 	inline const DirectX::XMFLOAT3 UnusedPoint = {
 		std::numeric_limits<float>::quiet_NaN(),
 		std::numeric_limits<float>::quiet_NaN(),
@@ -112,6 +106,7 @@ namespace curve
 		float spacing = 1.f;                          // distance between patterns, WORLD space
 		// Curve resolution - number of sample points. Must be >= 2.
 		unsigned resolution = 64u;
+		int bezier_power = 1;
 
 		bool empty() const;
 		void clear();
@@ -128,8 +123,7 @@ namespace curve
 	// Matches the CameraData cbuffer in every curve_*.hlsl - b0 in the compute passes, b1 in the
 	// draw. The counts live here because the buffers are over-allocated, so GetDimensions() would
 	// report the allocation rather than the number of live elements.
-	struct CameraDataBuffer
-	{
+	struct CameraDataBuffer {
 		DirectX::XMFLOAT4X4 VP;
 		DirectX::XMFLOAT2 wh;
 		uint32_t TotalPointCount;
@@ -219,10 +213,7 @@ namespace curve
 		std::unique_ptr<Axodox::Graphics::ConstantBuffer> viewport_data; // Camera / viewport / counts
 		Pipeline curve_draw; // curve_vert + curve_ps
 	};
-
-	// Handle to one curve inside a BezierRenderer. Getters read the CPU-side copy; setters write
-	// it and raise the flag that makes the next Draw() push the change to the GPU. Copying the
-	// handle is free - it is an index plus a pointer.
+	
 	class BezierCurve {
 		friend class BezierRenderer;
 	protected:
@@ -234,16 +225,13 @@ namespace curve
 		BezierData& data() { return renderer->curves[curve_index]; }
 		const BezierData& data() const { return renderer->curves[curve_index]; }
 
-		// A parameter changed: the per-curve buffers have to go up again.
-		void touch() { renderer->need_upload = true; }
-		// The sample layout changed: the point buffers and the index map have to be rebuilt.
-		void touch_layout() { renderer->need_resize = true; }
+		inline void touch() { renderer->need_upload = true; }
+		inline void touch_layout() { renderer->need_resize = true; }
 
 	public:
 		BezierCurve() = default;
 
-		bool valid() const { return renderer != nullptr; }
-		size_t index() const { return curve_index; }
+		inline bool valid() const { return renderer != nullptr; }
 		const BezierData& Data() const { return data(); }
 
 		// --- control points ------------------------------------------------------------
@@ -252,10 +240,11 @@ namespace curve
 		inline DirectX::XMFLOAT3 P2() const { return data().P2; }
 		inline DirectX::XMFLOAT3 P3() const { return data().P3; }
 
-		inline void P0(const DirectX::XMFLOAT3& value) { data().P0 = value; touch(); }
-		inline void P1(const DirectX::XMFLOAT3& value) { data().P1 = value; touch(); }
-		inline void P2(const DirectX::XMFLOAT3& value) { data().P2 = value; touch(); }
-		inline void P3(const DirectX::XMFLOAT3& value) { data().P3 = value; touch(); }
+		inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1) { data().P0 = P0; data().P1 = P1; data().bezier_power = 1; touch(); }
+		inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().bezier_power = 2; touch(); }
+		inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().P3 = P3; data().bezier_power = 3; touch(); }
+
+		inline int power() { return data().bezier_power; };
 
 		// --- colours -------------------------------------------------------------------
 		inline DirectX::XMFLOAT3 C0() const { return data().C0; }
@@ -263,11 +252,7 @@ namespace curve
 		inline float MinHeight() const { return data().min_height; }
 		inline float MaxHeight() const { return data().max_height; }
 
-		inline void C0(const DirectX::XMFLOAT3& value) { data().C0 = value; touch(); }
-		inline void C1(const DirectX::XMFLOAT3& value) { data().C1 = value; touch(); }
-		inline void MinHeight(float value) { data().min_height = value; touch(); }
-		inline void MaxHeight(float value) { data().max_height = value; touch(); }
-		// Colour by world Y over [min, max]. Pass min >= max to go back to blending by t.
+		inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { data().C0 = C0; data().C1 = C1; touch();}
 		inline void HeightRange(float min, float max) { data().min_height = min; data().max_height = max; touch(); }
 
 		// --- styles --------------------------------------------------------------------
@@ -285,16 +270,6 @@ namespace curve
 
 		// --- resolution ----------------------------------------------------------------
 		inline unsigned Resolution() const { return data().resolution; }
-		// Changes how many sample points this curve owns, so every point index after it shifts -
-		// this is the one setter that forces a layout rebuild.
 		inline void Resolution(unsigned value) { data().resolution = value; touch_layout(); }
-
-		// Replace everything at once. Takes the layout path when the resolution moved.
-		inline void Set(const BezierData& value)
-		{
-			const bool layout = data().resolution != value.resolution;
-			data() = value;
-			if (layout) touch_layout(); else touch();
-		}
 	};
 }

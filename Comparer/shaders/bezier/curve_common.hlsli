@@ -1,11 +1,7 @@
-// Shared declarations for the curve_* shaders. Everything here has to stay byte-for-byte
-// identical to the matching struct in bezier.cpp.
 #ifndef CURVE_COMMON_HLSLI
 #define CURVE_COMMON_HLSLI
 
-// Matches UploadBezierData in bezier.cpp. 80 bytes.
-struct BezierCurveData
-{
+struct BezierCurveData {
     float3 P0;
     int    FirstIndex;
     float3 P1;
@@ -14,20 +10,18 @@ struct BezierCurveData
     uint   ColorBegin;
     float3 P3;
     uint   ColorEnd;
-    float  MinHeight;   // Colour gradient domain. Active only when MinHeight < MaxHeight,
-    float  MaxHeight;   // in which case the blend is driven by world Y instead of t.
+    float  MinHeight;
+    float  MaxHeight;
     float2 Padding;
 };
 
-// Matches UploadCurveStyle in bezier.cpp. 32 bytes.
-struct CurveStyle
-{
-    float Width;       // Half-width (radius) of the stroke, in pixels
-    uint  Cap;         // CurveCap  - uploaded, not implemented yet
-    uint  Join;        // CurveJoin - uploaded, not implemented yet
-    uint  Pattern;     // CurvePattern: 0 = Solid, 1 = Dash, 2 = Dot
-    float Spacing;     // World-space arc length between pattern centers
-    float DashLength;  // Half-length of one dash/dot, in pixels
+struct CurveStyle {
+    float Width;
+    uint  Cap;
+    uint  Join;
+    uint  Pattern;
+    float Spacing;
+    float DashLength;
     float2 Padding;
 };
 
@@ -35,9 +29,7 @@ static const uint CurvePatternSolid = 0u;
 static const uint CurvePatternDash  = 1u;
 static const uint CurvePatternDot   = 2u;
 
-// curve_vert.hlsl -> curve_ps.hlsl. Declared once so the two signatures cannot drift.
-struct CurveVSOutput
-{
+struct CurveVSOutput {
     float4 Position : SV_Position;
     // x: lateral distance from the centre line (px, signed)
     // y: longitudinal distance from point B ALONG the segment (px) - SEGMENT-LOCAL, 0 at B and
@@ -57,8 +49,7 @@ struct CurveVSOutput
     nointerpolation uint2 CapJoin : TEXCOORD7;       // x = CurveCap, y = CurveJoin - not implemented yet
 };
 
-float4 UnpackColorBits(uint packed)
-{
+float4 UnpackColorBits(uint packed) {
     return float4(
         float( packed        & 0xFF) / 255.0,
         float((packed >>  8) & 0xFF) / 255.0,
@@ -66,8 +57,7 @@ float4 UnpackColorBits(uint packed)
         float((packed >> 24) & 0xFF) / 255.0);
 }
 
-uint PackColorBits(float4 color)
-{
+uint PackColorBits(float4 color) {
     uint r = uint(saturate(color.r) * 255.0 + 0.5);
     uint g = uint(saturate(color.g) * 255.0 + 0.5);
     uint b = uint(saturate(color.b) * 255.0 + 0.5);

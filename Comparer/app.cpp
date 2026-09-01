@@ -50,12 +50,8 @@ void App::AnimateScene()
 		c1 = { 0.2f, 1.0f, 0.5f - animation_time / 10.0f };
 	}
 
-	wave_curve.P0({ -3.0f, -1.0f, 0.0f });
-	wave_curve.P1({ -1.5f + offset, 0.5f, 0.0f });
-	wave_curve.P2({ 1.5f + offset, 0.5f, 0.0f });
-	wave_curve.P3({ 3.0f, -1.0f, 0.0f });
-	wave_curve.C0(c0);
-	wave_curve.C1(c1);
+	wave_curve.control_points({ -3.0f, -1.0f, 0.0f }, { -1.5f + offset, 0.5f, 0.0f }, { 1.5f + offset, 0.5f, 0.0f }, { 3.0f, -1.0f, 0.0f });
+	wave_curve.colors(c0,c1);
 
 	float rotation = animation_time;
 	for (int i = 0; i < PetalCount; ++i)
@@ -82,12 +78,8 @@ void App::AnimateScene()
 			};
 		}
 
-		petal_curves[i].P0(P0);
-		petal_curves[i].P1(P1);
-		petal_curves[i].P2(P1);
-		petal_curves[i].P3(P3);
-		petal_curves[i].C0(color);
-		petal_curves[i].C1(color);
+		petal_curves[i].control_points(P0, P3);
+		petal_curves[i].colors(color,color);
 	}
 }
 

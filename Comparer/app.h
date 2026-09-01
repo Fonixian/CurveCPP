@@ -2,7 +2,6 @@
 #include <SDL3/SDL.h>
 #include <Include/Axodox.Graphics.h>
 #include "orbital_camera.h"
-#include "pipeline.h"
 #include "bezier.h"
 
 class App

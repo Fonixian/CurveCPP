@@ -9,8 +9,7 @@
 // never touches the curve buffers - only PatternPosition.
 #include "curve_common.hlsli"
 
-cbuffer CameraData : register(b1)
-{
+cbuffer CameraData : register(b1) {
     float4x4 VP;
     float2   WH;
     uint     TotalPointCount;
@@ -19,8 +18,7 @@ cbuffer CameraData : register(b1)
 
 StructuredBuffer<float4>     CalculatedPoints : register(t0);
 StructuredBuffer<uint>       CurveBegins      : register(t1); // 32 curve-start flags per uint
-StructuredBuffer<float>      Distances        : register(t2); // Cumulative WORLD arc length per point
-StructuredBuffer<float>      DistancesScreen  : register(t3); // Cumulative SCREEN arc length per point
+StructuredBuffer<float2>     Distances        : register(t2); // Cumulative WORLD arc length per point
 StructuredBuffer<uint>       BezierIndexMap   : register(t4); // One uint32 curve index per point
 StructuredBuffer<uint2>      PatternRanges    : register(t5); // Per curve: x = first pattern, y = count
 StructuredBuffer<CurveStyle> CurveStyles      : register(t6);
@@ -67,8 +65,8 @@ CurveVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     float4 colorB = UnpackColor(rawB.w);
     float4 colorC = UnpackColor(rawC.w);
 
-    const float totalDistanceB = Distances[segIdx];
-    const float totalDistanceC = Distances[segIdx + 1];
+    const float totalDistanceB = Distances[segIdx].x;
+    const float totalDistanceC = Distances[segIdx + 1].x;
 
     {
         float t0 = B4.z;
@@ -272,15 +270,15 @@ CurveVSOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         totalDistance = totalDistanceC;
     }
 
-    o.Position = float4(posXY, posZ, 1.0);
-    o.SDF = float4(sdfX, sdfY, style.Width, l_CB);
-    o.Color = vColor;
-    o.TotalDistance = totalDistance;
-    o.Spacing = style.Spacing;
-    o.ScreenArcBegin = DistancesScreen[segIdx];
-    o.DashLength = style.DashLength;
-    o.PatternRange = PatternRanges[curveIndex];
-    o.Pattern = style.Pattern;
+    o.Position = float4(posXY, posZ, 1.0); //
+    o.SDF = float4(sdfX, sdfY, style.Width, l_CB); //
+    o.Color = vColor; //
+    o.TotalDistance = totalDistance; //
+    o.Spacing = style.Spacing; //
+    o.ScreenArcBegin = Distances[segIdx].y; //
+    o.DashLength = style.DashLength; //
+    o.PatternRange = PatternRanges[curveIndex]; //
+    o.Pattern = style.Pattern; //
     o.CapJoin = uint2(style.Cap, style.Join);
     return o;
 }
