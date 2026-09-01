@@ -150,6 +150,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="app.cpp" />
+    <ClCompile Include="bezier.cpp" />
     <ClCompile Include="bezier_simple.cpp" />
     <ClCompile Include="camera.cpp" />
     <ClCompile Include="CurveApp.cpp" />
@@ -164,6 +165,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="app.h" />
+    <ClInclude Include="bezier.h" />
     <ClInclude Include="bezier_simple.h" />
     <ClInclude Include="camera.h" />
     <ClInclude Include="orbital_camera.h" />
@@ -171,10 +173,26 @@
     <ClInclude Include="SegmentedScan.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="shaders\bezier\curve_common.hlsli" />
     <None Include="shaders\segmented_scan_common.hlsli" />
     <None Include="vcpkg.json" />
   </ItemGroup>
   <ItemGroup>
+    <FxCompile Include="shaders\bezier\curve_calc_points.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier\curve_pattern_ini.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier\curve_pattern_calc.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier\curve_vert.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier\curve_ps.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
+    </FxCompile>
     <FxCompile Include="shaders\bezier_calc_points.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
     </FxCompile>

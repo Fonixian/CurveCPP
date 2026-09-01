@@ -3,7 +3,7 @@
 #include <Include/Axodox.Graphics.h>
 #include "orbital_camera.h"
 #include "pipeline.h"
-#include "bezier_simple.h"
+#include "bezier.h"
 
 class App
 {
@@ -14,7 +14,7 @@ private:
 	std::unique_ptr<Axodox::Graphics::DepthStencil2D> depth;
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> buffer_camera;
 
-	std::unique_ptr<BezierRenderer> bezier;
+	std::unique_ptr<curve::BezierRenderer> bezier;
 
 	Camera camera;
 	OrbitalCamera orbital_manipulator;
@@ -22,40 +22,43 @@ private:
 	float viewport_width = 640.0f;
 	float viewport_height = 480.0f;
 
-	int current_example = 0;
-	int active_bezier_example = -1;
 	float animation_time = 0.0f;
+	bool paused = false;
 
-	int pattern_style = 0;
-	float dash_spacing = 0.35f;
-	float dash_duty = 0.55f;
+	// The one scene this app shows: a wavy curve plus a few curves chasing each other
+	// around a rotating triangle. Curves are added once in BuildScene() and never
+	// removed (curve::BezierRenderer has no Clear()) - animation reposes them in place
+	// through their handles every frame instead.
+	static constexpr int PetalCount = 3;
+	curve::BezierCurve wave_curve;
+	curve::BezierCurve petal_curves[PetalCount];
 
-	// Which pattern implementation the renderer runs, plus the glyph settings the second one uses.
-	int pattern_mode = 0; // 0 = arc dash, 1 = glyph
-	int glyph_kind = 0;   // GlyphKind
-	bool glyph_world_sized = true;
-	float glyph_size_world = 0.18f; // half-extent, world units
-	float glyph_size_px = 9.0f;     // half-extent, pixels
+	// --- runtime-editable style, applied to every curve in the scene every frame ---
+	float style_width = 10.0f;     // half-width, in pixels
+	int style_cap = 0;             // curve::CurveCap
+	int style_join = 0;            // curve::CurveJoin
+	int style_pattern = 1;         // curve::CurvePattern (Dash by default)
+	float style_spacing = 0.35f;   // world units between pattern centers
+	int style_resolution = 120;    // sample points per curve
+	float style_min_height = 0.0f; // colour-by-height band; min >= max blends by curve t instead
+	float style_max_height = 0.0f;
+
+	bool animate_colors = true;
+	DirectX::XMFLOAT3 wave_color0 = { 1.0f, 0.5f, 1.0f };
+	DirectX::XMFLOAT3 wave_color1 = { 0.2f, 1.0f, 0.5f };
+	DirectX::XMFLOAT3 petal_color = { 1.0f, 0.6f, 0.2f };
 
 	void Update(float delta);
 	void Gui();
 	void Render();
 
-	void BuildBezierExample_SimpleCubicCurve();
-	void BuildBezierExample_MultipleStyledCurves();
-	void BuildBezierExample_LinearAndQuadratic();
-	void BuildBezierExample_3DSpiral();
-	void BuildBezierExample_AnimatedCurves();
-	void BuildBezierExample_CurveGrid();
-	void BuildBezierExample_ColoredGradients();
-	void BuildBezierExample_BatchedCurves();
+	// Adds the scene's curves once and keeps handles to them.
+	void BuildScene();
+	// Re-poses and re-colours the scene for the current animation_time.
+	void AnimateScene();
+	// Pushes the runtime style controls onto every curve in the scene.
+	void ApplyStyle();
 
-	// Rebuilds bezier_final's curve data only when current_example changed (or
-	// every frame for the animated example, since its geometry depends on
-	// animation_time), and keeps its viewport in sync with viewport_width/height.
-	void UpdateBezierExample();
-
-	friend class GUI;
 public:
 	SDL_AppResult Init();
 	SDL_AppResult Iterate(float delta);
