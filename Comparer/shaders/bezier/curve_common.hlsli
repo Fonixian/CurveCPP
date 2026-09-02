@@ -25,6 +25,16 @@ struct CurveStyle {
     float2 Padding;
 };
 
+// Must match curve::CurveCap / curve::CurveJoin / curve::CurvePattern in bezier.h.
+static const uint CurveCapButt        = 0u;
+static const uint CurveCapSquare      = 1u;
+static const uint CurveCapRound       = 2u;
+static const uint CurveCapTriangleOut = 3u;
+static const uint CurveCapTriangleIn  = 4u;
+
+static const uint CurveJoinRound  = 0u;
+static const uint CurveJoinSquare = 1u;
+
 static const uint CurvePatternSolid = 0u;
 static const uint CurvePatternDash  = 1u;
 static const uint CurvePatternDot   = 2u;
@@ -43,11 +53,14 @@ struct CurveVSOutput {
     // Screen arc length at point B. Constant across the segment, so SDF.y + this is exact rather
     // than an interpolation of two per-vertex cumulative values.
     nointerpolation float ScreenArcBegin : TEXCOORD3;
+    // Screen arc length at which the CURVE ends, or +inf when this segment is followed by another
+    // one. A pixel outside [0, ScreenArcEnd] has no neighbouring segment, so it gets the cap
+    // treatment instead of the join treatment.
     nointerpolation float ScreenArcEnd : TEXCOORD8;
     nointerpolation float DashLength : TEXCOORD4;    // Half-length of one dash/dot, in px
     nointerpolation uint2 PatternRange : TEXCOORD5;  // x = first pattern index, y = count
     nointerpolation uint  Pattern : TEXCOORD6;       // CurvePattern
-    nointerpolation uint2 CapJoin : TEXCOORD7;       // x = CurveCap, y = CurveJoin - not implemented yet
+    nointerpolation uint2 CapJoin : TEXCOORD7;       // x = CurveCap, y = CurveJoin
 };
 
 float4 UnpackColorBits(uint packed) {
