@@ -78,7 +78,7 @@ void App::AnimateScene()
 			};
 		}
 
-		petal_curves[i].control_points(P0, P3);
+		petal_curves[i].control_points(P0, P1, P1, P3);
 		petal_curves[i].colors(color,color);
 	}
 }

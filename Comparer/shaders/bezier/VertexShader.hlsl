@@ -1,7 +1,6 @@
 #include "curve_common.hlsli"
 
-cbuffer CameraData : register(b1)
-{
+cbuffer CameraData : register(b1) {
     float4x4 VP;
     float2 WH;
     uint TotalPointCount;
@@ -9,10 +8,10 @@ cbuffer CameraData : register(b1)
 };
 
 StructuredBuffer<float4> CalculatedPoints : register(t0);
-StructuredBuffer<uint> CurveBegins : register(t1); // 32 curve-start flags per uint
-StructuredBuffer<float2> Distances : register(t2); // Cumulative WORLD arc length per point
-StructuredBuffer<uint> BezierIndexMap : register(t4); // One uint32 curve index per point
-StructuredBuffer<uint2> PatternRanges : register(t5); // Per curve: x = first pattern, y = count
+StructuredBuffer<uint> CurveBegins : register(t1);
+StructuredBuffer<float2> Distances : register(t2);
+StructuredBuffer<uint> BezierIndexMap : register(t4);
+StructuredBuffer<uint2> PatternRanges : register(t5);
 StructuredBuffer<CurveStyle> CurveStyles : register(t6);
 
 bool IsCurveBegin(uint pointIndex) {
@@ -21,7 +20,6 @@ bool IsCurveBegin(uint pointIndex) {
 }
 
 float4 side_dist(float4 p) { return float4(p.x, -p.x, p.y, -p.y) + p.w; }
-// D3D clips depth to 0 <= z <= w, not the GL -w <= z <= w that line.vert assumes.
 float2 depth_dist(float4 p) { return float2(p.z, p.w - p.z); }
 
 float max4(float4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
@@ -32,8 +30,7 @@ float min2(float2 v) { return min(v.x, v.y); }
 bool clip(inout float4 B, inout float3 color_B, float2 distance_B, inout float3 position_B,
           inout float4 C, inout float3 color_C, float2 distance_C, inout float3 position_C,
           inout float4 A, inout float4 D) {
-    if (isnan(B.x) || isnan(C.x))
-        return false;
+    if (isnan(B.x) || isnan(C.x)) return false;
 
     float4 sB = side_dist(B), sC = side_dist(C);
     float2 nB = depth_dist(B), nC = depth_dist(C);
@@ -118,17 +115,12 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const bool hasA = i > 0 && !IsCurveBegin(i);
     const bool hasD = (i + 2) < pointCount && !IsCurveBegin(i + 2);
 
-    // line.vert reads A,B,C,D as points i..i+3; here the instance IS B, so the neighbours are
-    // i-1 and i+2. A and D must be rebuilt with w = 1 - CalculatedPoints[].w carries the packed
-    // colour, not a homogeneous coordinate.
-    const float4 kNaN4 = float4(0.0/0.0, 0.0/0.0, 0.0/0.0, 0.0/0.0);
-
     float4 rawB = CalculatedPoints[i];
     float4 rawC = CalculatedPoints[i+1];
-    float4 A4 = hasA ? float4(CalculatedPoints[i - 1].xyz, 1.0) : kNaN4;
+    float4 A4 = hasA ? float4(CalculatedPoints[i - 1].xyz, 1.0) : 0.0/0.0;
     float4 B4 = float4(rawB.xyz, 1.0);
     float4 C4 = float4(rawC.xyz, 1.0);
-    float4 D4 = hasD ? float4(CalculatedPoints[i + 2].xyz, 1.0) : kNaN4;
+    float4 D4 = hasD ? float4(CalculatedPoints[i + 2].xyz, 1.0) : 0.0/0.0;
 
     float3 color_B = UnpackColorBits(asuint(rawB.w)).xyz;
     float3 color_C = UnpackColorBits(asuint(rawC.w)).xyz;
@@ -137,8 +129,6 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     float3 position_B = B4.xyz;
     float3 position_C = C4.xyz;
 
-    // VP is uploaded transposed (XMMatrixTranspose) and read back column_major, so inside the
-    // shader it is the row-vector matrix: mul(v, VP), not the GLSL VP * v.
     A4 = mul(A4, VP);
     B4 = mul(B4, VP);
     C4 = mul(C4, VP);
@@ -151,14 +141,12 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         return o;
     }
 
-    // i is a POINT index; CurveStyles and PatternRanges are per CURVE.
     const uint curveIndex = BezierIndexMap[i];
     const CurveStyle style = CurveStyles[curveIndex];
     const float width_pixel = style.Width;
-    // The pixel shader replaces alpha with the SDF coverage, so .w here is irrelevant.
     o.Color = index < 2 ? float4(color_B, 1.0) : float4(color_C, 1.0);
-    o.TotalDistance = index < 2 ? distance_B.x : distance_C.x; // cumulative WORLD arc length
-    o.ScreenArcBegin = distance_B.y;                           // screen arc length at B
+    o.TotalDistance = index < 2 ? distance_B.x : distance_C.x;
+    o.ScreenArcBegin = distance_B.y;
     o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
     o.PatternRange = PatternRanges[curveIndex];
@@ -201,13 +189,17 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     float2 dir_BC_r = float2(dir_BC.y, -dir_BC.x);
 
     float d = dot(dir_AB, dir_BC);
+
+    const float kMiterSingular = -0.9999;
+
     float2 inner; {
         float2 r_ab = dir_AB_r * (dot(dir_AB_r, dir_BC) >= 0.0 ? -1.0 : 1.0);
         float2 r_bc = dir_BC_r * (dot(dir_BC_r, dir_AB) < 0.0 ? -1.0 : 1.0);
-        inner = abs(d) > 0.9999 ? r_ab : (r_ab + r_bc) / (1.0 + dot(r_ab, r_bc));
+        float den = dot(r_ab, r_bc);
+        inner = den <= kMiterSingular ? r_ab : (r_ab + r_bc) / (1.0 + den);
     }
 
-    float2 right_offset = abs(d) > 0.9999 ? dir_AB_r : (dir_AB_r + dir_BC_r) / (1.0 + dot(dir_AB_r, dir_BC_r));
+    float2 right_offset = d <= kMiterSingular ? dir_AB_r : (dir_AB_r + dir_BC_r) / (1.0 + d);
     float2 v = normalize(inner);
     bool overlap = calc_overlap(dir_AB, d, v, l_AB, l_CB, width_pixel);
 
