@@ -4,23 +4,44 @@ StructuredBuffer<float> PatternPosition : register(t1);
 
 float4 main(CurveVSOutput input) : SV_Target {
     const float widthPixel    = input.SDF.z;
-    const float lateral       = input.SDF.x; // Signed distance from the centre line, px
-    const float localArc      = input.SDF.y; // Segment-local, 0 at B
+    const float lateral       = input.SDF.x;
+    const float localArc      = input.SDF.y;
     const float segmentLength = input.SDF.w;
 
     // --- stroke body + join/cap rounding -------------------------------------------
     const float2 pCoord = float2(abs(lateral), localArc);
     float roundD;
-    if (pCoord.y < 0.0) {
-        roundD = length(pCoord) - widthPixel;
-    } else if (pCoord.y > segmentLength) {
-        roundD = length(pCoord - float2(0.0, segmentLength)) - widthPixel;
-    } else {
-        roundD = pCoord.x - widthPixel;
+    if (input.ScreenArcBegin + localArc < 0.0 || input.ScreenArcBegin + localArc > input.ScreenArcEnd) { // Endcap
+        if (pCoord.y < 0.0) {
+            roundD = length(pCoord) - widthPixel;
+        } else if (pCoord.y > segmentLength) {
+            roundD = length(pCoord - float2(0.0, segmentLength)) - widthPixel;
+        } else {
+            roundD = pCoord.x - widthPixel;
+        }
+    } else { // Inner
+        if (input.CapJoin.y == 0) {
+            if (pCoord.y < 0.0)
+            {
+                roundD = length(pCoord) - widthPixel;
+            }
+            else if (pCoord.y > segmentLength)
+            {
+                roundD = length(pCoord - float2(0.0, segmentLength)) - widthPixel;
+            }
+            else
+            {
+                roundD = pCoord.x - widthPixel;
+            }
+        }
+        else
+        {
+            roundD = pCoord.x - widthPixel;
+        }
     }
 
     float finalD = roundD;
-
+    
     // --- pattern -------------------------------------------------------------------
     if (input.Pattern != CurvePatternSolid && input.PatternRange.y > 0u) {
         const float currentArc = input.ScreenArcBegin + localArc;

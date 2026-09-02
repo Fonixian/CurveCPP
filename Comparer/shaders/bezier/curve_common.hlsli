@@ -43,6 +43,7 @@ struct CurveVSOutput {
     // Screen arc length at point B. Constant across the segment, so SDF.y + this is exact rather
     // than an interpolation of two per-vertex cumulative values.
     nointerpolation float ScreenArcBegin : TEXCOORD3;
+    nointerpolation float ScreenArcEnd : TEXCOORD8;
     nointerpolation float DashLength : TEXCOORD4;    // Half-length of one dash/dot, in px
     nointerpolation uint2 PatternRange : TEXCOORD5;  // x = first pattern index, y = count
     nointerpolation uint  Pattern : TEXCOORD6;       // CurvePattern

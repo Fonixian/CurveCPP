@@ -10,6 +10,7 @@ cbuffer CameraData : register(b1) {
 StructuredBuffer<float4> CalculatedPoints : register(t0);
 StructuredBuffer<uint> CurveBegins : register(t1);
 StructuredBuffer<float2> Distances : register(t2);
+StructuredBuffer<BezierCurveData> BezierData : register(t3);
 StructuredBuffer<uint> BezierIndexMap : register(t4);
 StructuredBuffer<uint2> PatternRanges : register(t5);
 StructuredBuffer<CurveStyle> CurveStyles : register(t6);
@@ -147,6 +148,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     o.Color = index < 2 ? float4(color_B, 1.0) : float4(color_C, 1.0);
     o.TotalDistance = index < 2 ? distance_B.x : distance_C.x;
     o.ScreenArcBegin = distance_B.y;
+    o.ScreenArcEnd = Distances[BezierData[curveIndex].LastIndex].y;
     o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
     o.PatternRange = PatternRanges[curveIndex];

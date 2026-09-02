@@ -13,8 +13,7 @@ StructuredBuffer<uint>            BezierIndexMap : register(t1);
 RWStructuredBuffer<float4> CalculatedPoints : register(u0);
 RWStructuredBuffer<float2> Distances        : register(u1);
 
-float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t)
-{
+float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t) {
     float omt = 1.0 - t;
     float omt2 = omt * omt;
     float t2 = t * t;
@@ -25,8 +24,7 @@ float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t)
 }
 
 [numthreads(256, 1, 1)]
-void main(uint3 dispatchId : SV_DispatchThreadID)
-{
+void main(uint3 dispatchId : SV_DispatchThreadID) {
     uint pointIndex = dispatchId.x;
     if (pointIndex >= TotalPointCount) return;
 

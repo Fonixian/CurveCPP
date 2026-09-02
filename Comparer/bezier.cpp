@@ -391,6 +391,7 @@ namespace curve {
 		calculated_points->BindOrdered(ShaderStage::Vertex, 0, context); // t0: points & packed colours
 		curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);      // t1: curve boundary flags
 		distances->BindOrdered(ShaderStage::Vertex, 2, context);         // t2: cumulative WORLD arc length
+		bezier_data->Bind(ShaderStage::Vertex, 3, context);          // t3:
 		bezier_data_map->Bind(ShaderStage::Vertex, 4, context);          // t4: point -> curve index
 		pattern_ranges->BindOrdered(ShaderStage::Vertex, 5, context);    // t5: pattern range per curve
 		curve_styles->Bind(ShaderStage::Vertex, 6, context);             // t6: width / cap / join / pattern / spacing
