@@ -11,9 +11,15 @@
 //
 // Each of the three stroke features is a standalone SDF function, so they can be combined (and
 // tested) independently:
-//   CurveCapSDF     - end treatment at a curve terminus
+//   CurveCapSDF     - end treatment at an end of the stroke
 //   CurveJoinSDF    - end treatment where two segments meet
 //   CurvePatternSDF - dash/dot mask, intersected with whichever of the two produced the body
+//
+// The cap is a property of a stroke END, so which ends exist depends on the pattern:
+//   Solid - one end at each curve terminus.
+//   Dash  - both ends of every dash, plus the curve terminus (which clips the outermost dashes).
+//   Dot   - none. A dot is a disc; capping the terminus would only slice the last one, so the
+//           terminus falls back to the plain lateral band and the disc does all the shaping.
 #include "curve_common.hlsli"
 
 StructuredBuffer<float> PatternPosition : register(t1);
@@ -31,29 +37,33 @@ float CurveBodySDF(float2 coord, float halfWidth)
     return coord.x - halfWidth;
 }
 
-// How far past the nearer end of the segment the pixel sits, in pixels.
-// <= 0 anywhere inside the segment body, > 0 in the cap/join region beyond B or C.
-float CurveEndOvershoot(float2 coord, float segmentLength)
+// How far past the nearer end of the span the pixel sits, in pixels.
+// <= 0 anywhere inside the span, > 0 in the cap/join region beyond either end.
+float CurveEndOvershoot(float2 coord, float spanLength)
 {
-    return max(-coord.y, coord.y - segmentLength);
+    return max(-coord.y, coord.y - spanLength);
 }
 
 // Semicircle of radius `halfWidth` around the nearer end point.
-float CurveRoundEndSDF(float2 coord, float segmentLength, float halfWidth)
+float CurveRoundEndSDF(float2 coord, float spanLength, float halfWidth)
 {
-    const float overshoot = CurveEndOvershoot(coord, segmentLength);
+    const float overshoot = CurveEndOvershoot(coord, spanLength);
     return (overshoot > 0.0)
         ? length(float2(coord.x, overshoot)) - halfWidth
         : CurveBodySDF(coord, halfWidth);
 }
 
 // --- end caps ----------------------------------------------------------------------
-// The vertex shader already extends the strip by one half-width past a terminus, so every cap
-// shape below has the geometry it needs. `cap` is a CurveCap* constant.
-float CurveCapSDF(float2 coord, float segmentLength, float halfWidth, uint cap)
+// Caps both ends of a span that runs from coord.y == 0 to coord.y == spanLength. Used twice: once
+// over the whole segment (the curve's terminus) and once over a single dash, in the dash's own
+// frame. `cap` is a CurveCap* constant.
+//
+// The vertex shader extends the strip by one half-width past a terminus, and a dash always has
+// stroke on both sides of it, so every shape below has the geometry it needs.
+float CurveCapSDF(float2 coord, float spanLength, float halfWidth, uint cap)
 {
     const float body      = CurveBodySDF(coord, halfWidth);
-    const float overshoot = CurveEndOvershoot(coord, segmentLength);
+    const float overshoot = CurveEndOvershoot(coord, spanLength);
 
     if (cap == CurveCapButt)
     {
@@ -77,16 +87,23 @@ float CurveCapSDF(float2 coord, float segmentLength, float halfWidth, uint cap)
     }
 
     // CurveCapRound
-    return CurveRoundEndSDF(coord, segmentLength, halfWidth);
+    return CurveRoundEndSDF(coord, spanLength, halfWidth);
+}
+
+// Does this pattern have stroke ends for the cap to shape? Solid and Dash do; Dot does not, because
+// a dot is bounded by its own disc in every direction.
+bool CurveCapAppliesTo(uint pattern)
+{
+    return pattern == CurvePatternSolid || pattern == CurvePatternDash;
 }
 
 // --- joins -------------------------------------------------------------------------
 // `join` is a CurveJoin* constant.
-float CurveJoinSDF(float2 coord, float segmentLength, float halfWidth, uint join)
+float CurveJoinSDF(float2 coord, float spanLength, float halfWidth, uint join)
 {
     if (join == CurveJoinRound)
     {
-        return CurveRoundEndSDF(coord, segmentLength, halfWidth);
+        return CurveRoundEndSDF(coord, spanLength, halfWidth);
     }
 
     // CurveJoinSquare: the miter/bevel wedge is built by the vertex shader (the strip corners are
@@ -94,21 +111,46 @@ float CurveJoinSDF(float2 coord, float segmentLength, float halfWidth, uint join
     return CurveBodySDF(coord, halfWidth);
 }
 
+// Body of the stroke over this segment: capped where the curve ends, joined where it does not, and
+// plain where the pattern has no use for a cap.
+float CurveStrokeSDF(
+    float2 coord,
+    float  segmentLength,
+    float  halfWidth,
+    bool   atTerminus,
+    uint   cap,
+    uint   join,
+    uint   pattern)
+{
+    if (!atTerminus)
+    {
+        return CurveJoinSDF(coord, segmentLength, halfWidth, join);
+    }
+    if (!CurveCapAppliesTo(pattern))
+    {
+        return CurveBodySDF(coord, halfWidth);
+    }
+    return CurveCapSDF(coord, segmentLength, halfWidth, cap);
+}
+
 // --- dash / dot pattern ------------------------------------------------------------
 // Mask that keeps the pixel only when it is close enough to a pattern centre. Intersect it with the
 // body SDF via max(). `pattern` is a CurvePattern* constant.
 //
-// lateral      signed distance from the centre line, in pixels
-// currentArc   curve-global screen arc length of this pixel, in pixels
+// lateral       signed distance from the centre line, in pixels
+// currentArc    curve-global screen arc length of this pixel, in pixels
 // totalDistance cumulative WORLD arc length, used to pick which pattern centres to test
+// dashLength    HALF the length of one dash, or the radius of one dot, in pixels
 float CurvePatternSDF(
-    float lateral,
-    float currentArc,
-    float totalDistance,
-    float spacing,
-    uint2 patternRange,
-    float dashLength,
-    uint  pattern)
+    float  lateral,
+    float  currentArc,
+    float  totalDistance,
+    float  spacing,
+    uint2  patternRange,
+    float  dashLength,
+    float  halfWidth,
+    uint   pattern,
+    uint   cap)
 {
     if (pattern == CurvePatternSolid || patternRange.y == 0u)
     {
@@ -130,12 +172,15 @@ float CurvePatternSDF(
 
     if (pattern == CurvePatternDot)
     {
-        // Disc around the centre.
+        // Disc around the centre. No cap: the disc already closes the shape at both ends.
         return length(float2(lateral, arcDist)) - dashLength;
     }
 
-    // CurvePatternDash: band of arc length around the centre, full stroke width.
-    return abs(arcDist) - dashLength;
+    // CurvePatternDash: a span of stroke 2 * dashLength long, capped at BOTH ends with the curve's
+    // cap style. Same CurveCapSDF as the terminus, just re-based so 0 is the start of the dash and
+    // 2 * dashLength its end. (With CurveCapButt this reduces to abs(arcDist) - dashLength, the
+    // plain rectangular dash.)
+    return CurveCapSDF(float2(abs(lateral), arcDist + dashLength), 2.0 * dashLength, halfWidth, cap);
 }
 
 // -----------------------------------------------------------------------------------
@@ -155,9 +200,14 @@ float4 main(CurveVSOutput input) : SV_Target
     // Outside the curve's arc range there is no neighbouring segment to join to.
     const bool atTerminus = (currentArc < 0.0) || (currentArc > input.ScreenArcEnd);
 
-    float sdf = atTerminus
-        ? CurveCapSDF(coord, segmentLength, halfWidth, input.CapJoin.x)
-        : CurveJoinSDF(coord, segmentLength, halfWidth, input.CapJoin.y);
+    float sdf = CurveStrokeSDF(
+        coord,
+        segmentLength,
+        halfWidth,
+        atTerminus,
+        input.CapJoin.x,
+        input.CapJoin.y,
+        input.Pattern);
 
     sdf = max(sdf, CurvePatternSDF(
         lateral,
@@ -166,7 +216,9 @@ float4 main(CurveVSOutput input) : SV_Target
         input.Spacing,
         input.PatternRange,
         input.DashLength,
-        input.Pattern));
+        halfWidth,
+        input.Pattern,
+        input.CapJoin.x));
 
     if (sdf > 0.5) discard;
     return float4(input.Color.rgb, saturate(0.5 - sdf));
