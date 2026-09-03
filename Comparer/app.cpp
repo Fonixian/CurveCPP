@@ -193,9 +193,6 @@ void App::Gui()
 		ImGui::SameLine();
 		ImGui::RadioButton("Square##join", &style_join, 1);
 
-		ImGui::TextWrapped("Cap and join are uploaded to the GPU but the shader doesn't "
-			"act on them yet, so these won't visibly change the stroke.");
-
 		ImGui::Separator();
 		ImGui::Text("Pattern");
 		ImGui::RadioButton("Solid", &style_pattern, 0);

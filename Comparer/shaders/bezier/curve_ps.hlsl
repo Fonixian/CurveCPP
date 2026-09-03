@@ -22,6 +22,29 @@
 //           terminus falls back to the plain lateral band and the disc does all the shaping.
 #include "curve_common.hlsli"
 
+// --- compile-time pattern sizing ---------------------------------------------------
+// Pattern centres are spaced by WORLD arc length, but an element's size is fixed in PIXELS. As a
+// curve recedes or turns away from the camera the screen-space gap between centres shrinks while the
+// elements do not, so eventually they run into each other and the pattern smears into a solid line.
+//
+//   0 - nominal size always. Elements overlap once the centres get closer than one element length.
+//   1 - elements are squeezed ALONG the curve so they never reach into their neighbour. The stroke
+//       keeps its full width; only the along-curve coordinate is compressed, so a dot flattens into
+//       an ellipse and a dash into a shorter dash with the same cap shape.
+//
+// Both are compiled from this one source; override from the project's FxCompile preprocessor
+// definitions to switch without editing the file.
+#ifndef CURVE_PATTERN_SHRINK_TO_FIT
+#define CURVE_PATTERN_SHRINK_TO_FIT 1
+#endif
+
+// Fraction of the centre-to-centre span a single element may occupy before it starts being squeezed.
+// 1.0 lets neighbours just touch, which is the literal "do not overlap" rule but reads as a solid
+// line once squeezing kicks in. Lower it (0.5, say) to keep a visible gap at any distance.
+#ifndef CURVE_PATTERN_FILL
+#define CURVE_PATTERN_FILL 0.95
+#endif
+
 StructuredBuffer<float> PatternPosition : register(t1);
 
 static const float CurveInvSqrt2 = 0.70710678118;
@@ -134,6 +157,49 @@ float CurveStrokeSDF(
 }
 
 // --- dash / dot pattern ------------------------------------------------------------
+
+#if CURVE_PATTERN_SHRINK_TO_FIT
+
+// Screen-space distance between neighbouring pattern centres. This is the quantity that collapses
+// as the curve recedes or turns away. i1 == i0 only at the very last centre, where the previous one
+// is read instead; a lone centre has no neighbour to collide with and reports 0.
+float CurvePatternCentreSpan(uint2 patternRange, int i0, int i1, float c0, float c1)
+{
+    if (i1 != i0)
+    {
+        return abs(c1 - c0);
+    }
+    if (i0 > 0)
+    {
+        return abs(c0 - PatternPosition[patternRange.x + uint(i0 - 1)]);
+    }
+    return 0.0;
+}
+
+// Nominal along-curve length of one element at full size, in pixels. A dot is just its diameter; a
+// dash is its span plus whatever the cap reaches beyond each end. Butt is the only cap that reaches
+// nothing - the other four all touch one half-width past the end somewhere across the stroke
+// (Round and TriangleOut on the centre line, Square everywhere, TriangleIn at the outer corners).
+// Getting this wrong is what would let capped dashes keep touching however hard they are squeezed.
+float CurvePatternElementLength(float dashLength, float halfWidth, uint pattern, uint cap)
+{
+    if (pattern == CurvePatternDot)
+    {
+        return 2.0 * dashLength;
+    }
+    return 2.0 * dashLength + ((cap == CurveCapButt) ? 0.0 : 2.0 * halfWidth);
+}
+
+// How much to compress the along-curve coordinate so one element does not reach into the next.
+// 1 = there is room, leave the element at its nominal size; > 1 squeezes it by that factor.
+float CurvePatternArcScale(float centreSpan, float elementLength)
+{
+    const float budget = centreSpan * CURVE_PATTERN_FILL;
+    return (budget > 1e-6) ? max(1.0, elementLength / budget) : 1.0;
+}
+
+#endif
+
 // Mask that keeps the pixel only when it is close enough to a pattern centre. Intersect it with the
 // body SDF via max(). `pattern` is a CurvePattern* constant.
 //
@@ -168,7 +234,18 @@ float CurvePatternSDF(
 
     const float a0 = currentArc - c0;
     const float a1 = currentArc - c1;
-    const float arcDist = (abs(a0) <= abs(a1)) ? a0 : a1;
+    float arcDist = (abs(a0) <= abs(a1)) ? a0 : a1;
+
+#if CURVE_PATTERN_SHRINK_TO_FIT
+    // Squeeze the element along the curve, not across it. Scaling the coordinate rather than the
+    // element size is what makes the round and triangular caps shrink too - shortening the span
+    // alone would leave two halfWidth-radius cap discs behind and the dashes would still touch.
+    // Side effect: the SDF is no longer unit-gradient along the arc while squeezed, so dash ends
+    // antialias over a narrower band the harder the squeeze.
+    arcDist *= CurvePatternArcScale(
+        CurvePatternCentreSpan(patternRange, i0, i1, c0, c1),
+        CurvePatternElementLength(dashLength, halfWidth, pattern, cap));
+#endif
 
     if (pattern == CurvePatternDot)
     {
