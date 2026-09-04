@@ -282,9 +282,9 @@ float4 main(CurveVSOutput input) : SV_Target
         segmentLength,
         halfWidth,
         atTerminus,
-        input.CapJoin.x,
-        input.CapJoin.y,
-        input.Pattern);
+        currentArc < 0.0 ? FrontCap(input.CapCapJoinPattern) : BackCap(input.CapCapJoinPattern),
+        Join(input.CapCapJoinPattern),
+        Pattern(input.CapCapJoinPattern));
 
     sdf = max(sdf, CurvePatternSDF(
         lateral,
@@ -294,8 +294,8 @@ float4 main(CurveVSOutput input) : SV_Target
         input.PatternRange,
         input.DashLength,
         halfWidth,
-        input.Pattern,
-        input.CapJoin.x));
+        Pattern(input.CapCapJoinPattern),
+        currentArc < 0.0 ? FrontCap(input.CapCapJoinPattern) : BackCap(input.CapCapJoinPattern)));
 
     if (sdf > 0.5) discard;
     return float4(input.Color.rgb, saturate(0.5 - sdf));

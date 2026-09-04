@@ -152,8 +152,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
     o.PatternRange = PatternRanges[curveIndex];
-    o.Pattern = style.Pattern;
-    o.CapJoin = uint2(style.Cap, style.Join);
+    o.CapCapJoinPattern = style.CapCapJoinPattern;
     
     A4 /= A4.w;
     B4 /= B4.w;

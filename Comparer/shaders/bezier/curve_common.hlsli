@@ -17,12 +17,9 @@ struct BezierCurveData {
 
 struct CurveStyle {
     float Width;
-    uint  Cap;
-    uint  Join;
-    uint  Pattern;
+    uint  CapCapJoinPattern;
     float Spacing;
     float DashLength;
-    float2 Padding;
 };
 
 // Must match curve::CurveCap / curve::CurveJoin / curve::CurvePattern in bezier.h.
@@ -59,8 +56,7 @@ struct CurveVSOutput {
     nointerpolation float ScreenArcEnd : TEXCOORD8;
     nointerpolation float DashLength : TEXCOORD4;    // Half-length of one dash/dot, in px
     nointerpolation uint2 PatternRange : TEXCOORD5;  // x = first pattern index, y = count
-    nointerpolation uint  Pattern : TEXCOORD6;       // CurvePattern
-    nointerpolation uint2 CapJoin : TEXCOORD7;       // x = CurveCap, y = CurveJoin
+    nointerpolation uint CapCapJoinPattern : TEXCOORD6;
 };
 
 float4 UnpackColorBits(uint packed) {
@@ -77,6 +73,23 @@ uint PackColorBits(float4 color) {
     uint b = uint(saturate(color.b) * 255.0 + 0.5);
     uint a = uint(saturate(color.a) * 255.0 + 0.5);
     return (a << 24) | (b << 16) | (g << 8) | r;
+}
+
+uint FrontCap(uint capcapjoin)
+{
+    return (capcapjoin >> 24) & 0xFF;
+}
+uint BackCap(uint capcapjoin)
+{
+    return (capcapjoin >> 16) & 0xFF;
+}
+uint Join(uint capcapjoin)
+{
+    return (capcapjoin >> 8) & 0xFF;
+}
+uint Pattern(uint capcapjoin)
+{
+    return capcapjoin & 0xFF;
 }
 
 #endif

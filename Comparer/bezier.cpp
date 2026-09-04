@@ -9,12 +9,9 @@ constexpr uint32_t maxElementCount = 1'200'000u;
 // Width / cap / join / pattern / spacing, as curve_common.hlsli's CurveStyle reads it.
 struct UploadCurveStyle {
 	float    width;
-	uint32_t cap;
-	uint32_t join;
-	uint32_t pattern;
+	uint32_t capcapjoinpattern;
 	float    spacing;
 	float    dash_length;
-	float    padding[2];
 };
 
 // --- BezierRenderer ----------------------------------------------------------------------------
@@ -26,7 +23,7 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 	pattern_ini = Pipeline::getCS(device, "curve_pattern_ini.cso");
 	pattern_calc = Pipeline::getCS(device, "curve_pattern_calc.cso");
 
-	curve_draw.vs = Pipeline::getVS(device, "VertexShader.cso");
+	curve_draw.vs = Pipeline::getVS(device, "curve_vs.cso");
 	curve_draw.ps = Pipeline::getPS(device, "curve_ps.cso");
 	// AlphaBlend for the SDF antialiasing and the pattern gaps.
 	curve_draw.states = std::make_shared<PipelineState>(PipelineState{
@@ -65,14 +62,17 @@ void BezierRenderer::UploadStyles(GraphicsDeviceContext* context) {
 			default: break;
 		}
 
+		uint32_t capcapjoinpattern =
+			(uint32_t(bez.cap_front) << 24) |
+			(uint32_t(bez.cap_back) << 16) |
+			(uint32_t(bez.join) << 8) |
+			uint32_t(bez.pattern);
+
 		style_data.push_back(UploadCurveStyle{
 			bez.width,
-			static_cast<uint32_t>(bez.cap_front),
-			static_cast<uint32_t>(bez.join),
-			static_cast<uint32_t>(bez.pattern),
+			capcapjoinpattern,
 			bez.spacing,
-			dash_length,
-			{ 0.0f, 0.0f }
+			dash_length
 		});
 	}
 

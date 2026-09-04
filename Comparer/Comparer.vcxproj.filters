@@ -103,9 +103,6 @@
     <FxCompile Include="shaders\bezier\curve_pattern_calc.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_vert.hlsl">
-      <Filter>shaders\bezier</Filter>
-    </FxCompile>
     <FxCompile Include="shaders\bezier\curve_ps.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
@@ -115,7 +112,7 @@
     <FxCompile Include="shaders\segmented_scan_local.hlsl">
       <Filter>shaders\segmented scan</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\VertexShader.hlsl">
+    <FxCompile Include="shaders\bezier\curve_vs.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
     <FxCompile Include="shaders\bezier_solid\solid_calc_points.hlsl">
