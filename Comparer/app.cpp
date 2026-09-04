@@ -7,6 +7,8 @@
 #include "Include/Axodox.Storage.h"
 #include <cmath>
 #include <iostream>
+#include "bezier.h"
+#include "bezier_solid.h"
 
 using namespace Axodox::Storage;
 using namespace Axodox::Graphics;
@@ -16,7 +18,7 @@ void App::BuildScene()
 {
 	// Initial pose - AnimateScene() overwrites every field that depends on
 	// animation_time on the very first frame, so these values only matter until then.
-	curve::BezierData wave = curve::Cubic(
+	BezierData wave = Cubic(
 		{ -3.0f, -1.0f, 0.0f },
 		{ -1.5f,  0.5f, 0.0f },
 		{  1.5f,  0.5f, 0.0f },
@@ -27,7 +29,7 @@ void App::BuildScene()
 
 	for (int i = 0; i < PetalCount; ++i)
 	{
-		curve::BezierData petal = curve::Cubic(
+		BezierData petal = Cubic(
 			{ 1.5f, 0.0f, 0.0f },
 			{ 1.5f, 0.0f, 0.0f },
 			{ 1.5f, 0.0f, 0.0f },
@@ -78,19 +80,19 @@ void App::AnimateScene()
 			};
 		}
 
-		petal_curves[i].control_points(P0, P1, P1, P3);
+		petal_curves[i].control_points(P0, P1, P3);
 		petal_curves[i].colors(color,color);
 	}
 }
 
 void App::ApplyStyle()
 {
-	auto apply = [&](curve::BezierCurve target)
+	auto apply = [&](BezierCurve target)
 	{
 		target.Width(style_width);
-		target.Cap(static_cast<curve::CurveCap>(style_cap));
-		target.Join(static_cast<curve::CurveJoin>(style_join));
-		target.Pattern(static_cast<curve::CurvePattern>(style_pattern));
+		target.Cap(static_cast<CurveCap>(style_cap), static_cast<CurveCap>(style_cap));
+		target.Join(static_cast<CurveJoin>(style_join));
+		target.Pattern(static_cast<CurvePattern>(style_pattern));
 		target.Spacing(style_spacing);
 		target.HeightRange(style_min_height, style_max_height);
 
@@ -143,7 +145,7 @@ SDL_AppResult App::Init()
 	orbital_manipulator.SetCamera(&camera);
 	buffer_camera = std::make_unique<Axodox::Graphics::ConstantBuffer>(*device, camera.GetData());
 
-	bezier = std::make_unique<curve::BezierRenderer>(*device);
+	bezier.reset(new BezierSolidRenderer(*device));
 	bezier->SetViewport(viewport_width, viewport_height);
 	BuildScene();
 	ApplyStyle();

@@ -151,6 +151,8 @@
   <ItemGroup>
     <ClCompile Include="app.cpp" />
     <ClCompile Include="bezier.cpp" />
+    <ClCompile Include="bezier_common.cpp" />
+    <ClCompile Include="bezier_solid.cpp" />
     <ClCompile Include="camera.cpp" />
     <ClCompile Include="CurveApp.cpp" />
     <ClCompile Include="orbital_camera.cpp" />
@@ -165,6 +167,8 @@
   <ItemGroup>
     <ClInclude Include="app.h" />
     <ClInclude Include="bezier.h" />
+    <ClInclude Include="bezier_common.h" />
+    <ClInclude Include="bezier_solid.h" />
     <ClInclude Include="camera.h" />
     <ClInclude Include="orbital_camera.h" />
     <ClInclude Include="pipeline.h" />
@@ -172,6 +176,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\bezier\curve_common.hlsli" />
+    <None Include="shaders\bezier_solid\solid_common.hlsli" />
     <None Include="shaders\segmented_scan_common.hlsli" />
     <None Include="vcpkg.json" />
   </ItemGroup>
@@ -196,6 +201,26 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
+    </FxCompile>
+    <!-- FxCompile writes to $(OutDir)%(Filename).cso, which is flat: these names must not collide
+         with anything under shaders\bezier\. -->
+    <FxCompile Include="shaders\bezier_solid\solid_calc_points.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_solid\solid_vert.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_solid\solid_ps.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
     <FxCompile Include="shaders\segmented_scan_add_offsets.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>

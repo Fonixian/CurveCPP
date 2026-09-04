@@ -22,6 +22,9 @@
     <Filter Include="shaders\bezier">
       <UniqueIdentifier>{0c1f5a94-6b2e-4d33-9f18-2a7c6d5e4b10}</UniqueIdentifier>
     </Filter>
+    <Filter Include="shaders\bezier solid">
+      <UniqueIdentifier>{2f7b8c31-5d46-4a72-b0e9-73c1a8f26d54}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="CurveApp.cpp">
@@ -45,6 +48,12 @@
     <ClCompile Include="bezier.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="bezier_common.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="bezier_solid.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="app.h">
@@ -65,6 +74,12 @@
     <ClInclude Include="bezier.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="bezier_solid.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="bezier_common.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="vcpkg.json" />
@@ -73,6 +88,9 @@
     </None>
     <None Include="shaders\bezier\curve_common.hlsli">
       <Filter>shaders\bezier</Filter>
+    </None>
+    <None Include="shaders\bezier_solid\solid_common.hlsli">
+      <Filter>shaders\bezier solid</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>
@@ -99,6 +117,15 @@
     </FxCompile>
     <FxCompile Include="shaders\bezier\VertexShader.hlsl">
       <Filter>shaders\bezier</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_solid\solid_calc_points.hlsl">
+      <Filter>shaders\bezier solid</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_solid\solid_vert.hlsl">
+      <Filter>shaders\bezier solid</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_solid\solid_ps.hlsl">
+      <Filter>shaders\bezier solid</Filter>
     </FxCompile>
   </ItemGroup>
 </Project>

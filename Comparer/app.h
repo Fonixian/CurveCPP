@@ -2,7 +2,7 @@
 #include <SDL3/SDL.h>
 #include <Include/Axodox.Graphics.h>
 #include "orbital_camera.h"
-#include "bezier.h"
+#include "bezier_common.h"
 
 class App
 {
@@ -13,7 +13,7 @@ private:
 	std::unique_ptr<Axodox::Graphics::DepthStencil2D> depth;
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> buffer_camera;
 
-	std::unique_ptr<curve::BezierRenderer> bezier;
+	std::unique_ptr<BezierRendererBase> bezier;
 
 	Camera camera;
 	OrbitalCamera orbital_manipulator;
@@ -26,17 +26,17 @@ private:
 
 	// The one scene this app shows: a wavy curve plus a few curves chasing each other
 	// around a rotating triangle. Curves are added once in BuildScene() and never
-	// removed (curve::BezierRenderer has no Clear()) - animation reposes them in place
+	// removed (BezierRenderer has no Clear()) - animation reposes them in place
 	// through their handles every frame instead.
 	static constexpr int PetalCount = 3;
-	curve::BezierCurve wave_curve;
-	curve::BezierCurve petal_curves[PetalCount];
+	BezierCurve wave_curve;
+	BezierCurve petal_curves[PetalCount];
 
 	// --- runtime-editable style, applied to every curve in the scene every frame ---
 	float style_width = 10.0f;     // half-width, in pixels
-	int style_cap = 0;             // curve::CurveCap
-	int style_join = 0;            // curve::CurveJoin
-	int style_pattern = 1;         // curve::CurvePattern (Dash by default)
+	int style_cap = 0;             // CurveCap
+	int style_join = 0;            // CurveJoin
+	int style_pattern = 1;         // CurvePattern (Dash by default)
 	float style_spacing = 0.35f;   // world units between pattern centers
 	int style_resolution = 120;    // sample points per curve
 	float style_min_height = 0.0f; // colour-by-height band; min >= max blends by curve t instead
