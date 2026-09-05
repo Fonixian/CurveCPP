@@ -33,9 +33,11 @@ void BezierSolidRenderer::UploadStyles(GraphicsDeviceContext* context) {
 	style_data.reserve(curves.size());
 
 	for (const auto& bez : curves) {
+		// Matches FrontCap/BackCap/Join in solid_common.hlsli. Note the shift amounts are 8 lower
+		// than the patterned renderer's, which has to make room for the pattern in the low byte.
 		uint32_t capcapjoin = (uint32_t(bez.cap_front) << 16) |
 							  (uint32_t(bez.cap_back) << 8) |
-							  uint32_t(CurveJoin::Round);
+							  uint32_t(bez.join);
 		style_data.push_back(UploadSolidStyle{
 			bez.width,
 			capcapjoin,
