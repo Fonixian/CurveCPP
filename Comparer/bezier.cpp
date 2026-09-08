@@ -6,10 +6,10 @@ using namespace DirectX;
 
 constexpr uint32_t maxElementCount = 1'200'000u;
 
-// Width / cap / join / pattern / spacing, as curve_common.hlsli's CurveStyle reads it.
+// Width / cap / join / spacing / dash length, as curve_common.hlsli's CurveStyle reads it.
 struct UploadCurveStyle {
 	float    width;
-	uint32_t capcapjoinpattern;
+	uint32_t capcapjoin;
 	float    spacing;
 	float    dash_length;
 };
@@ -54,25 +54,16 @@ void BezierRenderer::UploadStyles(GraphicsDeviceContext* context) {
 	style_data.reserve(curves.size());
 
 	for (const auto& bez : curves) {
-		// Half-length of one mark along the curve, in pixels. Solid never reads it.
-		float dash_length = 0.0f;
-		switch (bez.pattern) {
-			case CurvePattern::Dash: dash_length = bez.width * DashLengthPerWidth; break;
-			case CurvePattern::Dot:  dash_length = bez.width * DotLengthPerWidth;  break;
-			default: break;
-		}
-
-		uint32_t capcapjoinpattern =
-			(uint32_t(bez.cap_front) << 24) |
-			(uint32_t(bez.cap_back) << 16) |
-			(uint32_t(bez.join) << 8) |
-			uint32_t(bez.pattern);
+		uint32_t capcapjoin =
+			(uint32_t(bez.cap_front) << 16) |
+			(uint32_t(bez.cap_back) << 8) |
+			uint32_t(bez.join);
 
 		style_data.push_back(UploadCurveStyle{
 			bez.width,
-			capcapjoinpattern,
+			capcapjoin,
 			bez.spacing,
-			dash_length
+			bez.dash_length
 		});
 	}
 
@@ -176,7 +167,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	bezier_data->Bind(ShaderStage::Vertex, 3, context);              // t3: curve definitions
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);          // t4: point -> curve index
 	pattern_ranges->BindOrdered(ShaderStage::Vertex, 5, context);    // t5: pattern range per curve
-	curve_styles->Bind(ShaderStage::Vertex, 6, context);             // t6: width / cap / join / pattern / spacing
+	curve_styles->Bind(ShaderStage::Vertex, 6, context);             // t6: width / cap / join / spacing / dash length
 
 	if (patterns) patterns->BindOrdered(ShaderStage::Pixel, 1, context); // t1: screen arc length per pattern center
 

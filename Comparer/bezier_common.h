@@ -19,12 +19,6 @@ enum class CurveJoin : uint8_t {
 	Square = 1
 };
 
-enum class CurvePattern : uint8_t {
-	Solid = 0,
-	Dash = 1,
-	Dot = 2
-};
-
 struct BezierData {
 	// Control points
 	DirectX::XMFLOAT3 P0 = { 0.f, 0.f, 0.f };
@@ -36,13 +30,24 @@ struct BezierData {
 	DirectX::XMFLOAT3 C1 = { 1.f, 1.f, 1.f };
 	float min_height = 0.f;
 	float max_height = 0.f;
-	// Styles. pattern and spacing are ignored by BezierSolidRenderer, which draws every curve solid.
+	// Styles. dash_length and spacing are ignored by BezierSolidRenderer, which draws every curve solid.
 	float width = 2.f;
 	CurveCap cap_front = CurveCap::Butt;
 	CurveCap cap_back = CurveCap::Butt;
 	CurveJoin join = CurveJoin::Round;
-	CurvePattern pattern = CurvePattern::Solid;
-	float spacing = 1.f;
+	// The dash/dot pattern is described by two numbers instead of an enum:
+	//   spacing     world-space arc length between two pattern centres. <= 0 means NO pattern at all,
+	//               so the curve comes out solid - that is how the patterned renderer draws a solid
+	//               stroke now that there is no CurvePattern::Solid.
+	//   dash_length length of ONE dash, in PIXELS, measured along the curve between the two points
+	//               where the caps sit. Every dash is capped at both of its own ends with cap_front /
+	//               cap_back, exactly like a curve terminus.
+	// A DOT is not a separate mode: it is a zero-length dash with round caps, i.e.
+	//   cap_front = cap_back = CurveCap::Round, dash_length = 0
+	// which collapses the two round caps onto one another and leaves a disc of radius `width`.
+	// (dash_length = 0 with any other cap leaves nothing to draw.)
+	float dash_length = 0.f;
+	float spacing = 0.f;
 	unsigned resolution = 64u;
 	int bezier_power = 1;
 
@@ -199,19 +204,23 @@ public:
 	inline void HeightRange(float min, float max) { data().min_height = min; data().max_height = max; touch(); }
 
 	// --- styles --------------------------------------------------------------------
-	// Pattern() and Spacing() are ignored by BezierSolidRenderer.
+	// DashLength() and Spacing() are ignored by BezierSolidRenderer. See BezierData for what the two
+	// of them mean together: Spacing() <= 0 is solid, DashLength() == 0 with round caps is a dot.
 	inline float Width() const { return data().width; }
 	inline CurveCap CapFront() const { return data().cap_front; }
 	inline CurveCap CapBack() const { return data().cap_back; }
 	inline CurveJoin Join() const { return data().join; }
-	inline CurvePattern Pattern() const { return data().pattern; }
+	inline float DashLength() const { return data().dash_length; }
 	inline float Spacing() const { return data().spacing; }
 
 	inline void Width(float value) { data().width = value; touch(); }
 	inline void Cap(CurveCap front, CurveCap back) { data().cap_front = front; data().cap_back = back; touch(); }
 	inline void Join(CurveJoin value) { data().join = value; touch(); }
-	inline void Pattern(CurvePattern value) { data().pattern = value; touch(); }
+	inline void DashLength(float value) { data().dash_length = value; touch(); }
 	inline void Spacing(float value) { data().spacing = value; touch(); }
+
+	// Convenience for the dot special case above: round caps at both ends, zero-length dash.
+	inline void Dot() { data().cap_front = CurveCap::Round; data().cap_back = CurveCap::Round; data().dash_length = 0.f; touch(); }
 
 	// --- resolution ----------------------------------------------------------------
 	inline unsigned Resolution() const { return data().resolution; }

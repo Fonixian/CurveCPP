@@ -54,18 +54,8 @@ uint PackColorBits(float4 color) {
     return (a << 24) | (b << 16) | (g << 8) | r;
 }
 
-uint FrontCap(uint capcapjoin)
-{
-    return (capcapjoin >> 16) & 0xFF;
-
-}
-uint BackCap(uint capcapjoin)
-{
-    return (capcapjoin >> 8) & 0xFF;
-}
-uint Join(uint capcapjoin)
-{
-    return capcapjoin & 0xFF;
-}
+uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
+uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
+uint Join(uint capcapjoin) { return capcapjoin & 0xFF; }
 
 #endif

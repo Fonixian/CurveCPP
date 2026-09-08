@@ -234,8 +234,10 @@ void App::ApplyStyle(Scene& scene)
 		if (!keep_own_caps)
 			target.Cap(cap_front, cap_back);
 		target.Join(static_cast<CurveJoin>(style_join));
-		target.Pattern(static_cast<CurvePattern>(style_pattern));
-		target.Spacing(style_spacing);
+		target.DashLength(style_dash_length);
+		// Spacing 0 is how a curve comes out solid now: pattern_ini counts no centres for it, and the
+		// pixel shader leaves the body alone.
+		target.Spacing(style_patterned ? style_spacing : 0.0f);
 		target.HeightRange(style_min_height, style_max_height);
 
 		// Resolution changes force a layout rebuild, so only push it when it actually moved rather
@@ -355,8 +357,8 @@ void App::Gui()
 		ImGui::EndDisabled();
 		ImGui::TextWrapped(
 			"BezierSolidRenderer draws every curve solid: it has no pattern pipeline at all, so the "
-			"pattern and spacing controls below only move the left copy. With the pattern set to "
-			"Solid the two halves should look identical.");
+			"dash and spacing controls below only move the left copy. Untick \"Patterned\" and the "
+			"two halves should look identical.");
 
 		ImGui::SeparatorText("Stroke");
 		ImGui::SliderFloat("Width (px)", &style_width, 1.0f, 40.0f, "%.1f");
@@ -382,15 +384,30 @@ void App::Gui()
 		ImGui::RadioButton("Square##join", &style_join, 1);
 
 		ImGui::SeparatorText("Pattern");
-		ImGui::RadioButton("Solid", &style_pattern, 0);
+		ImGui::Checkbox("Patterned", &style_patterned);
 		ImGui::SameLine();
-		ImGui::RadioButton("Dash", &style_pattern, 1);
-		ImGui::SameLine();
-		ImGui::RadioButton("Dot", &style_pattern, 2);
+		ImGui::TextDisabled("(off = spacing 0 = solid)");
 
-		ImGui::BeginDisabled(style_pattern == 0);
+		ImGui::BeginDisabled(!style_patterned);
+		ImGui::SliderFloat("Dash length (px)", &style_dash_length, 0.0f, 200.0f, "%.1f");
 		ImGui::SliderFloat("Spacing", &style_spacing, 0.05f, 2.0f, "%.2f world units");
+
+		// A dot is not a mode: it is a zero-length dash whose two round caps land on top of each
+		// other, leaving a disc of radius `width`. This button just sets those three values.
+		if (ImGui::Button("Make dots"))
+		{
+			style_dash_length = 0.0f;
+			style_cap_front = int(CurveCap::Round);
+			style_cap_back = int(CurveCap::Round);
+			link_caps = true;
+		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("dash length 0 + round caps");
 		ImGui::EndDisabled();
+		ImGui::TextWrapped(
+			"Dash length is the pixel length of one dash, cap to cap; both of its ends wear the cap "
+			"chosen above, so 0 draws nothing unless that cap is Round. The cap gallery keeps its own "
+			"caps, which is why its strokes dash differently from everything else.");
 
 		ImGui::SeparatorText("Colour");
 		ImGui::Checkbox("Animate colours", &animate_colors);

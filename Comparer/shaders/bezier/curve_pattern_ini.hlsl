@@ -21,10 +21,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint curveIndex = dispatchThreadId.x;
     if (curveIndex >= TotalCurveCount) return;
     
-    // The prefix sum is exclusive, so the last point of a curve holds that curve's total length.
     float totalArcLength = Distances[BezierData[curveIndex].LastIndex].x;
     float curveSpacing = CurveStyles[curveIndex].Spacing;
-
+    
     uint patternCount = (totalArcLength > 0.0 && curveSpacing > 0.0)
         ? (uint) floor(totalArcLength / curveSpacing) + 1u
         : 0u;

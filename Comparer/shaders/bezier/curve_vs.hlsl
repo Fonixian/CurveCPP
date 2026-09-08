@@ -152,7 +152,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
     o.PatternRange = PatternRanges[curveIndex];
-    o.CapCapJoinPattern = style.CapCapJoinPattern;
+    o.CapCapJoin = style.CapCapJoin;
     
     A4 /= A4.w;
     B4 /= B4.w;
@@ -188,19 +188,16 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     float2 dir_AB_r = float2(dir_AB.y, -dir_AB.x);
     float2 dir_BC_r = float2(dir_BC.y, -dir_BC.x);
-
-    float d = dot(dir_AB, dir_BC);
-
-    const float kMiterSingular = -0.9999;
-
+    
     float2 inner; {
         float2 r_ab = dir_AB_r * (dot(dir_AB_r, dir_BC) >= 0.0 ? -1.0 : 1.0);
         float2 r_bc = dir_BC_r * (dot(dir_BC_r, dir_AB) < 0.0 ? -1.0 : 1.0);
         float den = dot(r_ab, r_bc);
-        inner = den <= kMiterSingular ? r_ab : (r_ab + r_bc) / (1.0 + den);
+        inner = den <= -0.9999 ? r_ab : (r_ab + r_bc) / (1.0 + den);
     }
 
-    float2 right_offset = d <= kMiterSingular ? dir_AB_r : (dir_AB_r + dir_BC_r) / (1.0 + d);
+    float d = dot(dir_AB, dir_BC);
+    float2 right_offset = d <= -0.9999 ? dir_AB_r : (dir_AB_r + dir_BC_r) / (1.0 + d);
     float2 v = normalize(inner);
     bool overlap = calc_overlap(dir_AB, d, v, l_AB, l_CB, width_pixel);
 

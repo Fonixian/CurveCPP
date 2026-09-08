@@ -2,11 +2,14 @@
 #include "bezier_common.h"
 #include "SegmentedScan.h"
 
-// The patterned curve renderer: solid, dash or dot, chosen per curve.
+// The patterned curve renderer. The pattern is described per curve by two numbers rather than an
+// enum: BezierData::spacing (world arc length between dash centres) and BezierData::dash_length
+// (length of one dash, in pixels). A dot is a zero-length dash with round caps; a solid stroke is
+// spacing <= 0, which yields no pattern centres at all and leaves the body untouched.
 //
-// Everything here exists because a dash or a dot is spaced along the curve by WORLD arc length but
-// drawn at a fixed size in PIXELS, so the pixel shader has to be told where each pattern centre
-// landed in screen arc length. Getting there costs four things the solid renderer does without:
+// Everything here exists because a dash is spaced along the curve by WORLD arc length but drawn at a
+// fixed size in PIXELS, so the pixel shader has to be told where each pattern centre landed in
+// screen arc length. Getting there costs four things the solid renderer does without:
 //
 //   distances        a per-point float2 of (world, screen) segment length
 //   scan             a segmented prefix sum turning both channels into per-curve running totals
@@ -20,9 +23,6 @@ public:
 	explicit BezierRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
-
-	static constexpr float DashLengthPerWidth = 4.0f;
-	static constexpr float DotLengthPerWidth = 1.0f;
 
 protected:
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;

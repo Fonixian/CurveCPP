@@ -69,9 +69,14 @@ private:
 	int style_cap_back = 0;         // CurveCap at the far end
 	bool link_caps = false;         // drive both ends from the front picker
 	int style_join = 0;             // CurveJoin
-	int style_pattern = 1;          // CurvePattern (Dash by default; the solid renderer ignores it)
-	float style_spacing = 0.35f;    // world units between pattern centers
-	int style_resolution = 120;     // sample points per curve
+	// The pattern is no longer an enum. `patterned` off uploads spacing 0, which produces no pattern
+	// centres and so a solid stroke - that is what makes the two halves comparable. A dot is
+	// style_dash_length 0 with both caps set to Round; the "Dot" button in the panel does exactly
+	// that and nothing else.
+	bool style_patterned = true;     // off => spacing 0 => solid
+	float style_dash_length = 80.0f; // LENGTH of one dash, in pixels (0 + round caps = dot)
+	float style_spacing = 0.35f;     // world units between pattern centers
+	int style_resolution = 120;      // sample points per curve
 	float style_min_height = 0.0f;  // colour-by-height band; min >= max blends by curve t instead
 	float style_max_height = 0.0f;
 
