@@ -4,6 +4,7 @@
 #include "orbital_camera.h"
 #include "bezier.h"
 #include "bezier_solid.h"
+#include "bezier_dots.h"
 
 class App
 {
@@ -14,21 +15,24 @@ private:
 	std::unique_ptr<Axodox::Graphics::DepthStencil2D> depth;
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> buffer_camera;
 
-	// Both renderers are alive at once and each owns its own copy of the same scene, drawn side by
-	// side: the patterned one on the left, the solid-only one on the right. That is the point of
-	// this app - with the pattern set to Solid the two halves should be pixel-identical, and any
-	// difference in cost between them is the price of the pattern pipeline.
+	// All three renderers are alive at once and each owns its own copy of the same scene, drawn side
+	// by side: patterned, then solid, then dots. That is the point of this app - with the pattern set
+	// to Solid the first two halves should be pixel-identical, and any difference in cost between them
+	// is the price of the pattern pipeline; the third is BezierDotRenderer, which draws only dot
+	// patterns via its own instanced-quad technique (see bezier_dots.h) rather than piggybacking dots
+	// on a line-strip's SDF the way the patterned renderer's dash_length == 0 case does.
 	//
 	// A curve belongs to the renderer that created it and cannot be moved between them, so the
-	// scene really is built twice.
+	// scene really is built three times.
 	std::unique_ptr<BezierRenderer> patterned_renderer;
 	std::unique_ptr<BezierSolidRenderer> solid_renderer;
+	std::unique_ptr<BezierDotRenderer> dot_renderer;
 
 	Camera camera;
 	OrbitalCamera orbital_manipulator;
 
-	float viewport_width = 1280.0f;
-	float viewport_height = 720.0f;
+	float viewport_width = 1600.0f;
+	float viewport_height = 800.0f;
 
 	float animation_time = 0.0f;
 	bool paused = false;
@@ -42,8 +46,9 @@ private:
 	static constexpr unsigned GalleryResolution = 2u;
 
 	// One renderer's worth of scene. Curves are added once in BuildScene() and never removed
-	// (neither renderer has a Clear()), so animation reposes them in place through these handles
-	// every frame instead. x_offset slides the whole copy sideways so the two can be compared.
+	// (none of the three renderers has a Clear()), so animation reposes them in place through these
+	// handles every frame instead. x_offset slides the whole copy sideways so the copies can be
+	// compared; BezierCurve itself is renderer-agnostic, so the same Scene type serves all three.
 	struct Scene
 	{
 		float x_offset = 0.0f;
@@ -55,13 +60,15 @@ private:
 
 	Scene patterned_scene;
 	Scene solid_scene;
+	Scene dot_scene;
 
 	// --- what gets drawn -----------------------------------------------------------
 	bool draw_patterned = true;
 	bool draw_solid = true;
-	// World-space gap between the two copies. Only used while both are visible; with one of them
-	// hidden the survivor is recentred on the origin instead.
-	float compare_offset = 8.0f;
+	bool draw_dots = true;
+	// World-space gap between adjacent visible copies, evenly spaced and centred on the origin -
+	// see Update() for how 1, 2 or 3 visible copies are laid out.
+	float compare_offset = 7.0f;
 
 	// --- runtime-editable style, applied to every curve in the scene every frame ---
 	float style_width = 10.0f;      // half-width, in pixels
@@ -96,8 +103,11 @@ private:
 	void BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset);
 	// Re-poses and re-colours one copy for the current animation_time and x_offset.
 	void PoseScene(Scene& scene);
-	// Pushes the runtime style controls onto one copy. The gallery keeps its own caps.
-	void ApplyStyle(Scene& scene);
+	// Pushes the runtime style controls onto one copy. The gallery keeps its own caps. `force_spacing`
+	// is for dot_scene: BezierDotRenderer has no solid/off state, so its spacing must not go to 0 just
+	// because the "Patterned" checkbox (which only means something for the first two renderers) is
+	// unticked.
+	void ApplyStyle(Scene& scene, bool force_spacing = false);
 
 public:
 	SDL_AppResult Init();

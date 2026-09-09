@@ -8,6 +8,24 @@
 #define CURVE_PATTERN_FILL 0.95
 #endif
 
+// The arc a segment hands the pattern is dot(pixel - B, segDir), so its ISO-LINES run perpendicular
+// to THAT segment. Two segments at a joint therefore disagree about a pixel's arc by
+// lateral * 2sin(theta/2): zero on the centre line, largest at the stroke edge, opposite in sign on
+// the two sides. A dash crossing a seam does not shift, it KINKS.
+//   0 - the plain per-segment frame.
+//   1 - near each end, measure the pattern's arc against the joint's angle BISECTOR instead. Both
+//       segments then produce the same arc for the same pixel and the step is gone.
+#ifndef CURVE_PATTERN_BISECTOR
+#define CURVE_PATTERN_BISECTOR 1
+#endif
+
+// Multiplier on the stretch at each end over which the bisector frame is held at full strength.
+// 1.0 pins exactly as far as the two segments' geometry reaches into each other; 0 ramps across the
+// whole segment.
+#ifndef CURVE_PATTERN_BISECTOR_MARGIN
+#define CURVE_PATTERN_BISECTOR_MARGIN 1.0
+#endif
+
 StructuredBuffer<float> PatternPosition : register(t1);
 
 static const float CurveInvSqrt2 = 0.70710678118;
@@ -84,6 +102,53 @@ float CurveStrokeSDF(
 
 // --- dash pattern ------------------------------------------------------------------
 
+#if CURVE_PATTERN_BISECTOR
+
+// Segment-local arc for the PATTERN only. The body, the caps, the join and the terminus test keep
+// the plain segment arc, which is the right coordinate for them.
+//
+// The whole correction is lateral * tan(theta/2). Two properties make it safe to bolt on:
+//   - identically zero on the centre line, so phase ALONG the curve, spacing, dash length and the
+//     shrink-to-fit sizing are all untouched; only the disagreement that grows toward the stroke
+//     edge is straightened out.
+//   - both segments at a joint evaluate to the same number for the same pixel, which is the point.
+//
+// The pinned band at each end is not a tuning constant: two segments meeting at a turn of theta
+// overlap - and their miter wedge sticks out - by halfWidth * tan(theta/2) along the arc, and
+// |arcShear| IS that tan(theta/2). So the band is as wide as the shared zone and no wider, and it
+// collapses to nothing on a straight run, where there is nothing to reconcile.
+//
+// Side effect, same family as the shrink-to-fit one: inside a band the arc gradient is 1/cos(theta/2)
+// rather than 1, so dash ends antialias over a slightly narrower band at sharp joints.
+float CurvePatternArc(
+    float  localArc,
+    float  lateral,
+    float  segmentLength,
+    float  halfWidth,
+    float2 arcShear)
+{
+    const float wantB = CURVE_PATTERN_BISECTOR_MARGIN * halfWidth * abs(arcShear.x);
+    const float wantC = CURVE_PATTERN_BISECTOR_MARGIN * halfWidth * abs(arcShear.y);
+
+    // Too short to hold both bands (fat stroke, coarse sampling, hairpin): scale them down TOGETHER
+    // so the sharper joint keeps the larger share, and always leave a fifth of the segment to ramp
+    // across. Letting the bands meet would turn the ramp into a step and just move the seam to the
+    // middle of the segment.
+    const float want   = wantB + wantC;
+    const float allow  = segmentLength * 0.8;
+    const float shrink = (want > allow) ? (allow / max(want, 1e-6)) : 1.0;
+
+    const float bandB = wantB * shrink;
+    const float bandC = wantC * shrink;
+
+    const float ramp = max(segmentLength - bandB - bandC, 1e-3);
+    const float w    = saturate((localArc - bandB) / ramp);
+
+    return localArc + lateral * lerp(arcShear.x, arcShear.y, w);
+}
+
+#endif
+
 #if CURVE_PATTERN_SHRINK_TO_FIT
 float CurvePatternCentreSpan(uint2 patternRange, int i0, int i1, float c0, float c1)
 {
@@ -111,9 +176,11 @@ float CurvePatternArcScale(float centreSpan, float elementLength)
 
 #endif
 
+// patternArc is the curve-global screen arc in the PATTERN's frame: the plain segment arc when
+// CURVE_PATTERN_BISECTOR is off, the bisector-sheared one when it is on.
 float CurvePatternSDF(
     float  lateral,
-    float  currentArc,
+    float  patternArc,
     float  totalDistance,
     float  spacing,
     uint2  patternRange,
@@ -133,8 +200,8 @@ float CurvePatternSDF(
     const float c0 = PatternPosition[patternRange.x + uint(i0)];
     const float c1 = PatternPosition[patternRange.x + uint(i1)];
 
-    const float a0 = currentArc - c0;
-    const float a1 = currentArc - c1;
+    const float a0 = patternArc - c0;
+    const float a1 = patternArc - c1;
     float arcDist = (abs(a0) <= abs(a1)) ? a0 : a1;
     uint cap = totalDistance > arcDist ? FrontCap(capCapJoin) : BackCap(capCapJoin);
     
@@ -171,9 +238,17 @@ float4 main(CurveVSOutput input) : SV_Target
         cap,
         Join(input.CapCapJoin));
 
+    // The pattern is the one consumer that spans segments, so it gets the seam-consistent arc.
+#if CURVE_PATTERN_BISECTOR
+    const float patternArc = input.ScreenArcBegin + CurvePatternArc(
+        localArc, lateral, segmentLength, halfWidth, input.ArcShear);
+#else
+    const float patternArc = currentArc;
+#endif
+
     sdf = max(sdf, CurvePatternSDF(
         lateral,
-        currentArc,
+        patternArc,
         input.TotalDistance,
         input.Spacing,
         input.PatternRange,

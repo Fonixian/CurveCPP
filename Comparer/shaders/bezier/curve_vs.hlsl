@@ -93,6 +93,37 @@ bool clip(inout float4 B, inout float3 color_B, float2 distance_B, inout float3 
     return true;
 }
 
+// --- bisector arc frame -------------------------------------------------------------
+// 1 + cos(theta) below this means the joint is folded back on itself. It is also what a MISSING
+// neighbour looks like: a terminus arrives as NaN, and a clipped end arrives as the segment's own far
+// point, i.e. exactly -segDir. All three want the same answer - no joint.
+static const float CurveBisectorMinCos = 1e-3;
+// Bounds the shear so a near-fold cannot throw a dash across the screen. tan(theta/2) at ~166 deg.
+static const float CurveMaxArcShear = 8.0;
+
+float2 CurveSafeDir(float2 from, float2 to) {
+    float2 delta = to - from;
+    float len = length(delta);
+    return (len > 1e-6) ? (delta / len) : float2(0.0, 0.0);
+}
+
+// Signed tan(half the turn angle) at one end of the segment, in the pixel shader's lateral frame.
+//
+// The pattern wants the arc whose ISO-LINES are the joint's angle bisector, because that is the only
+// line both segments meeting there agree on. Splitting a pixel into (localArc along segDir) +
+// (lateral along lateralDir), that arc is
+//     localArc + lateral * dot(lateralDir, t) / dot(segDir, t),   t = segDir + neighbourDir
+// and dot(lateralDir, segDir) == 0 collapses the ratio to what is below. Both segments produce the
+// same VALUE for a given pixel despite using different frames - that is what kills the seam step.
+//
+// neighbourDir points INTO the joint at B and OUT of it at C, so one function serves both. The test
+// is written !(x > y) so a NaN denominator takes the zero branch.
+float CurveJointShear(float2 lateralDir, float2 segDir, float2 neighbourDir) {
+    float denom = 1.0 + dot(neighbourDir, segDir);
+    if (!(denom > CurveBisectorMinCos)) return 0.0;
+    return clamp(dot(lateralDir, neighbourDir) / denom, -CurveMaxArcShear, CurveMaxArcShear);
+}
+
 bool calc_overlap(float2 dir_AB, float d, float2 v, float l_AB, float l_CB, float line_width) {
     if (d <= -0.9996) return true;
     if (d >= 0.9996) return false;
@@ -158,6 +189,22 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     B4 /= B4.w;
     C4 /= C4.w;
     D4 /= D4.w;
+
+    // Built from the GLOBAL points, never from the index-swapped A/B/C below, so all five vertices
+    // agree: ArcShear is nointerpolation and the rasteriser keeps only one vertex's copy.
+    {
+        float2 pA = mad(A4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+        float2 pB = mad(B4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+        float2 pC = mad(C4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+        float2 pD = mad(D4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+
+        float2 segDir = CurveSafeDir(pB, pC);
+        float2 lateralDir = float2(-segDir.y, segDir.x); // the +SDF.x side
+
+        o.ArcShear = float2(
+            CurveJointShear(lateralDir, segDir, CurveSafeDir(pA, pB)),   // into the joint at B
+            CurveJointShear(lateralDir, segDir, CurveSafeDir(pC, pD)));  // out of the joint at C
+    }
 
     float2 A;
     float2 B;
@@ -230,7 +277,12 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     float2 length_conversion = 2.0 / WH * width_pixel;
     o.Position.xy = mad(length_conversion, offset, o.Position.xy);
 
-    o.SDF.x = index == 4 ? (dot(offset, dir_BC_r) * width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
+    // Index 4 (the join wedge) is the only vertex whose lateral is COMPUTED, and it sits in the
+    // index >= 2 half where the local dir_BC_r points the OPPOSITE way from the +width_pixel side the
+    // other four assert - so it was writing a sign-flipped lateral. Invisible while everything read
+    // abs(SDF.x), except inside the wedge triangle, where the magnitude was being interpolated from a
+    // wrong-signed corner. Negating puts all five on one convention.
+    o.SDF.x = index == 4 ? (-dot(offset, dir_BC_r) * width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
     o.SDF.y = sdf;
     o.SDF.zw = float2(width_pixel, l_CB);
 

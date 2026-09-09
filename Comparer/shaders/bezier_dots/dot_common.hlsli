@@ -1,5 +1,5 @@
-#ifndef CURVE_COMMON_HLSLI
-#define CURVE_COMMON_HLSLI
+#ifndef DOT_COMMON_HLSLI
+#define DOT_COMMON_HLSLI
 
 struct BezierCurveData {
     float3 P0;
@@ -15,11 +15,19 @@ struct BezierCurveData {
     float2 Padding;
 };
 
-struct CurveStyle {
+struct DotStyle {
     float Width;
     uint  CapCapJoin;
     float Spacing;
-    float DashLength;
+    float Padding;
+};
+
+// One dot: which two consecutive curve samples bracket it, and how far between them.
+struct DotSample {
+    uint  SampleA;
+    uint  SampleB;
+    float SegmentT;
+    float Padding;
 };
 
 static const uint CurveCapButt        = 0u;
@@ -27,26 +35,6 @@ static const uint CurveCapSquare      = 1u;
 static const uint CurveCapRound       = 2u;
 static const uint CurveCapTriangleOut = 3u;
 static const uint CurveCapTriangleIn  = 4u;
-
-static const uint CurveJoinRound  = 0u;
-static const uint CurveJoinSquare = 1u;
-
-struct CurveVSOutput {
-    float4 Position : SV_Position;
-    noperspective float4 SDF : TEXCOORD0;
-    noperspective float4 Color : COLOR0;
-    noperspective float  TotalDistance : TEXCOORD1;
-    nointerpolation float Spacing : TEXCOORD2;
-    nointerpolation float ScreenArcBegin : TEXCOORD3;
-    nointerpolation float ScreenArcEnd : TEXCOORD8;
-    nointerpolation float DashLength : TEXCOORD4;
-    nointerpolation uint2 PatternRange : TEXCOORD5;
-    nointerpolation uint CapCapJoin : TEXCOORD6;
-    // Signed tan(theta/2) of the screen-space turn at each joint: x at B (SDF.y == 0), y at C
-    // (SDF.y == l_CB). 0 where there is no neighbour. Turns the segment-local arc into the arc
-    // measured against the joint's angle bisector - see CurvePatternArc in curve_ps.hlsl.
-    nointerpolation float2 ArcShear : TEXCOORD7;
-};
 
 float4 UnpackColorBits(uint packed) {
     return float4(
@@ -66,6 +54,5 @@ uint PackColorBits(float4 color) {
 
 uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
 uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
-uint Join(uint capcapjoin) { return capcapjoin & 0xFF; }
 
 #endif

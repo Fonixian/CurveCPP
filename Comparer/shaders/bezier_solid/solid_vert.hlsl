@@ -208,7 +208,7 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     float2 length_conversion = 2.0 / WH * width_pixel;
     o.Position.xy = mad(length_conversion, offset, o.Position.xy);
 
-    o.SDF.x = index == 4 ? (dot(offset, dir_BC_r) * width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
+    o.SDF.x = index == 4 ? (dot(offset, dir_BC_r) * -width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
     o.SDF.y = sdf;
     o.SDF.zw = float2(width_pixel, l_CB);
 

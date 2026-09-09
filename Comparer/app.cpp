@@ -221,7 +221,7 @@ void App::PoseScene(Scene& scene)
 	}
 }
 
-void App::ApplyStyle(Scene& scene)
+void App::ApplyStyle(Scene& scene, bool force_spacing)
 {
 	const auto cap_front = static_cast<CurveCap>(style_cap_front);
 	const auto cap_back = static_cast<CurveCap>(link_caps ? style_cap_front : style_cap_back);
@@ -235,9 +235,11 @@ void App::ApplyStyle(Scene& scene)
 			target.Cap(cap_front, cap_back);
 		target.Join(static_cast<CurveJoin>(style_join));
 		target.DashLength(style_dash_length);
-		// Spacing 0 is how a curve comes out solid now: pattern_ini counts no centres for it, and the
-		// pixel shader leaves the body alone.
-		target.Spacing(style_patterned ? style_spacing : 0.0f);
+		// Spacing 0 is how a curve comes out solid in the first two renderers: pattern_ini counts no
+		// centres for it, and the pixel shader leaves the body alone. BezierDotRenderer has no solid
+		// state to fall back to - dot_scene passes force_spacing = true so its spacing stays live even
+		// while "Patterned" (which only means something for the first two renderers) is unticked.
+		target.Spacing((style_patterned || force_spacing) ? style_spacing : 0.0f);
 		target.HeightRange(style_min_height, style_max_height);
 
 		// Resolution changes force a layout rebuild, so only push it when it actually moved rather
@@ -291,25 +293,33 @@ SDL_AppResult App::Init()
 	ImGui_ImplDX11_Init(device->get(), device->ImmediateContext()->get());
 
 	camera.SetProj(viewport_width / viewport_height, 0.1f, 1000.0f);
-	// Far enough back that both copies of the scene fit side by side. The orbital manipulator picks
-	// its orbit distance up from this, so change it here rather than in OrbitalCamera.
-	camera.SetView(XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, -14.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });
+	// Far enough back that all three copies of the scene fit side by side. The orbital manipulator
+	// picks its orbit distance up from this, so change it here rather than in OrbitalCamera.
+	camera.SetView(XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, -19.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });
 	orbital_manipulator.SetCamera(&camera);
 	buffer_camera = std::make_unique<Axodox::Graphics::ConstantBuffer>(*device, camera.GetData());
 
 	patterned_renderer = std::make_unique<BezierRenderer>(*device);
 	solid_renderer = std::make_unique<BezierSolidRenderer>(*device);
+	dot_renderer = std::make_unique<BezierDotRenderer>(*device);
 
 	patterned_renderer->SetViewport(viewport_width, viewport_height);
 	solid_renderer->SetViewport(viewport_width, viewport_height);
+	dot_renderer->SetViewport(viewport_width, viewport_height);
 
-	BuildScene(*patterned_renderer, patterned_scene, -compare_offset * 0.5f);
-	BuildScene(*solid_renderer, solid_scene, compare_offset * 0.5f);
+	// Initial offsets here only need to be valid enough for BuildScene()'s local coordinates to stay
+	// inside their box; Update() recomputes the real layout (which depends on which renderers are
+	// visible) before the first frame is drawn.
+	BuildScene(*patterned_renderer, patterned_scene, -compare_offset);
+	BuildScene(*solid_renderer, solid_scene, 0.0f);
+	BuildScene(*dot_renderer, dot_scene, compare_offset);
 
 	PoseScene(patterned_scene);
 	PoseScene(solid_scene);
+	PoseScene(dot_scene);
 	ApplyStyle(patterned_scene);
 	ApplyStyle(solid_scene);
+	ApplyStyle(dot_scene, true);
 
 	return SDL_APP_CONTINUE;
 }
@@ -320,18 +330,35 @@ void App::Update(float delta)
 	if (!paused)
 		animation_time += delta;
 
-	// With one renderer hidden there is nothing to compare against, so recentre the survivor
-	// instead of leaving it off to one side.
-	const bool side_by_side = draw_patterned && draw_solid;
-	patterned_scene.x_offset = side_by_side ? -compare_offset * 0.5f : 0.0f;
-	solid_scene.x_offset = side_by_side ? compare_offset * 0.5f : 0.0f;
+	// Evenly space whichever of the three are visible, in the fixed left-to-right order patterned /
+	// solid / dots, centred on the origin. A hidden renderer's offset doesn't matter - it is never
+	// drawn - but its scene is still kept current below, same as before.
+	{
+		const bool visible[3] = { draw_patterned, draw_solid, draw_dots };
+		const int visible_count = int(draw_patterned) + int(draw_solid) + int(draw_dots);
 
-	// Both copies are kept up to date even while hidden: the setters only raise dirty flags, and
+		float offsets[3] = { 0.0f, 0.0f, 0.0f };
+		int slot = 0;
+		for (int i = 0; i < 3; ++i)
+		{
+			if (!visible[i]) continue;
+			offsets[i] = visible_count > 1 ? (float(slot) - (visible_count - 1) * 0.5f) * compare_offset : 0.0f;
+			++slot;
+		}
+
+		patterned_scene.x_offset = offsets[0];
+		solid_scene.x_offset = offsets[1];
+		dot_scene.x_offset = offsets[2];
+	}
+
+	// All three copies are kept up to date even while hidden: the setters only raise dirty flags, and
 	// the actual upload happens inside Draw(), which a hidden renderer never reaches.
 	PoseScene(patterned_scene);
 	PoseScene(solid_scene);
+	PoseScene(dot_scene);
 	ApplyStyle(patterned_scene);
 	ApplyStyle(solid_scene);
+	ApplyStyle(dot_scene, true);
 }
 
 void App::Gui()
@@ -345,20 +372,26 @@ void App::Gui()
 		ImGui::Checkbox("Pause animation", &paused);
 
 		ImGui::SeparatorText("Renderers");
-		ImGui::Checkbox("Patterned (left)", &draw_patterned);
+		ImGui::Checkbox("Patterned", &draw_patterned);
 		ImGui::SameLine();
-		ImGui::Checkbox("Solid (right)", &draw_solid);
+		ImGui::Checkbox("Solid", &draw_solid);
+		ImGui::SameLine();
+		ImGui::Checkbox("Dots", &draw_dots);
 		ImGui::TextDisabled("%u curves each, %u total",
 			unsigned(patterned_renderer->Count()),
-			unsigned(patterned_renderer->Count() + solid_renderer->Count()));
+			unsigned(patterned_renderer->Count() + solid_renderer->Count() + dot_renderer->Count()));
 
-		ImGui::BeginDisabled(!(draw_patterned && draw_solid));
+		const int visible_renderer_count = int(draw_patterned) + int(draw_solid) + int(draw_dots);
+		ImGui::BeginDisabled(visible_renderer_count <= 1);
 		ImGui::SliderFloat("Comparison gap", &compare_offset, 0.0f, 14.0f, "%.1f world units");
 		ImGui::EndDisabled();
 		ImGui::TextWrapped(
-			"BezierSolidRenderer draws every curve solid: it has no pattern pipeline at all, so the "
-			"dash and spacing controls below only move the left copy. Untick \"Patterned\" and the "
-			"two halves should look identical.");
+			"Left to right (whichever are ticked): Patterned, Solid, Dots. BezierSolidRenderer draws "
+			"every curve solid - it has no pattern pipeline at all - so untick \"Patterned\" and those "
+			"two should look identical; any difference in cost between them is the price of the pattern "
+			"pipeline. BezierDotRenderer always draws only dots: it ignores dash length and the "
+			"\"Patterned\" checkbox entirely and places each one from its own position + direction "
+			"rather than a shared line strip - see the Pattern section below.");
 
 		ImGui::SeparatorText("Stroke");
 		ImGui::SliderFloat("Width (px)", &style_width, 1.0f, 40.0f, "%.1f");
@@ -386,14 +419,19 @@ void App::Gui()
 		ImGui::SeparatorText("Pattern");
 		ImGui::Checkbox("Patterned", &style_patterned);
 		ImGui::SameLine();
-		ImGui::TextDisabled("(off = spacing 0 = solid)");
+		ImGui::TextDisabled("(off = spacing 0 = solid, Patterned/Solid only)");
 
 		ImGui::BeginDisabled(!style_patterned);
 		ImGui::SliderFloat("Dash length (px)", &style_dash_length, 0.0f, 200.0f, "%.1f");
+		ImGui::EndDisabled();
+		// Spacing is NOT gated behind style_patterned: BezierDotRenderer always reads it (ApplyStyle
+		// passes force_spacing = true for dot_scene), so leaving it live even with "Patterned" off
+		// keeps the dots column responsive instead of quietly freezing.
 		ImGui::SliderFloat("Spacing", &style_spacing, 0.05f, 2.0f, "%.2f world units");
 
-		// A dot is not a mode: it is a zero-length dash whose two round caps land on top of each
-		// other, leaving a disc of radius `width`. This button just sets those three values.
+		// A dot is not a mode for the first two renderers: it is a zero-length dash whose two round
+		// caps land on top of each other, leaving a disc of radius `width`. This button just sets
+		// those three values. The third renderer always draws dots regardless of dash length.
 		if (ImGui::Button("Make dots"))
 		{
 			style_dash_length = 0.0f;
@@ -403,11 +441,12 @@ void App::Gui()
 		}
 		ImGui::SameLine();
 		ImGui::TextDisabled("dash length 0 + round caps");
-		ImGui::EndDisabled();
 		ImGui::TextWrapped(
 			"Dash length is the pixel length of one dash, cap to cap; both of its ends wear the cap "
-			"chosen above, so 0 draws nothing unless that cap is Round. The cap gallery keeps its own "
-			"caps, which is why its strokes dash differently from everything else.");
+			"chosen above, so 0 draws nothing unless that cap is Round (Patterned/Solid only - Dots "
+			"ignores dash length and always draws one shape per spacing interval). The cap gallery "
+			"keeps its own caps, which is why its strokes differ from everything else in all three "
+			"columns.");
 
 		ImGui::SeparatorText("Colour");
 		ImGui::Checkbox("Animate colours", &animate_colors);
@@ -437,6 +476,7 @@ void App::Render()
 	const auto view_proj = camera.GetViewProj();
 	if (draw_patterned) patterned_renderer->Draw(*device, view_proj);
 	if (draw_solid) solid_renderer->Draw(*device, view_proj);
+	if (draw_dots) dot_renderer->Draw(*device, view_proj);
 }
 
 SDL_AppResult App::Iterate(float delta)
@@ -485,6 +525,7 @@ SDL_AppResult App::Event(const SDL_Event& Event)
 		camera.SetAspect(viewport_width / viewport_height);
 		patterned_renderer->SetViewport(viewport_width, viewport_height);
 		solid_renderer->SetViewport(viewport_width, viewport_height);
+		dot_renderer->SetViewport(viewport_width, viewport_height);
 		swapchain->Resize();
 		depth = std::make_unique<DepthStencil2D>(*device, Texture2DDefinition{
 			uint32_t(viewport_width), uint32_t(viewport_height),

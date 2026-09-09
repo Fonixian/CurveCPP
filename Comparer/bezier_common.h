@@ -30,22 +30,10 @@ struct BezierData {
 	DirectX::XMFLOAT3 C1 = { 1.f, 1.f, 1.f };
 	float min_height = 0.f;
 	float max_height = 0.f;
-	// Styles. dash_length and spacing are ignored by BezierSolidRenderer, which draws every curve solid.
 	float width = 2.f;
 	CurveCap cap_front = CurveCap::Butt;
 	CurveCap cap_back = CurveCap::Butt;
 	CurveJoin join = CurveJoin::Round;
-	// The dash/dot pattern is described by two numbers instead of an enum:
-	//   spacing     world-space arc length between two pattern centres. <= 0 means NO pattern at all,
-	//               so the curve comes out solid - that is how the patterned renderer draws a solid
-	//               stroke now that there is no CurvePattern::Solid.
-	//   dash_length length of ONE dash, in PIXELS, measured along the curve between the two points
-	//               where the caps sit. Every dash is capped at both of its own ends with cap_front /
-	//               cap_back, exactly like a curve terminus.
-	// A DOT is not a separate mode: it is a zero-length dash with round caps, i.e.
-	//   cap_front = cap_back = CurveCap::Round, dash_length = 0
-	// which collapses the two round caps onto one another and leaves a disc of radius `width`.
-	// (dash_length = 0 with any other cap leaves nothing to draw.)
 	float dash_length = 0.f;
 	float spacing = 0.f;
 	unsigned resolution = 64u;
@@ -81,8 +69,6 @@ struct UploadBezierData {
 	float    padding[2];
 };
 
-// --- shared helpers ----------------------------------------------------------------------------
-
 unsigned next_pow2(unsigned x);
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
@@ -113,7 +99,6 @@ public:
 protected:
 	std::vector<BezierData> curves;
 
-	// --- dirty flags ---------------------------------------------------------------
 	bool need_resize = true;
 	bool need_upload = false;
 
@@ -122,39 +107,25 @@ protected:
 	uint32_t points_allocated = 0;
 	uint32_t curves_allocated = 0;
 
-	// --- layout-time inputs --------------------------------------------------------
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data;     // Curve definitions, cubic
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data_map; // One uint32 curve index per point
-	// Style layout differs per renderer (the solid one has no pattern fields), so the buffer is
-	// owned here but allocated and filled by the derived class.
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_styles;
 
-	// --- per-frame compute results -------------------------------------------------
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> calculated_points; // Point positions and packed colours
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> curve_begins;      // Bit-packed curve-start flags
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> calculated_points;
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> curve_begins;
 
-	// Point pass. Which shader this is differs per renderer, so the derived ctor assigns it.
 	Axodox::Graphics::ComputeShader* calc_points = nullptr;
 
-	// --- curve-body draw -----------------------------------------------------------
 	CameraDataBuffer camera_cb_data{};
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> viewport_data; // Camera / viewport / counts
 	Pipeline curve_draw;
 
-	// Resizes and refills whatever the dirty flags ask for. Returns true when the curve data
-	// actually changed, which is the patterned renderer's cue to recount its pattern centres.
 	bool UpdateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
-
-	// Uploads the per-frame camera constants. Call once per frame before any pass.
 	void UploadCameraData(const DirectX::XMMATRIX& view_proj, Axodox::Graphics::GraphicsDeviceContext* context);
 
-	// --- hooks for the derived renderers -------------------------------------------
-	// Called from inside the growth branches of AllocateBuffers, before *_allocated is advanced.
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 	virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
-	// Must (re)create curve_styles with the derived style struct as its stride.
 	virtual void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) = 0;
-	// Must fill curve_styles from `curves`.
 	virtual void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) = 0;
 
 private:
@@ -182,7 +153,6 @@ public:
 	inline bool valid() const { return renderer != nullptr; }
 	const BezierData& Data() const { return data(); }
 
-	// --- control points ------------------------------------------------------------
 	inline DirectX::XMFLOAT3 P0() const { return data().P0; }
 	inline DirectX::XMFLOAT3 P1() const { return data().P1; }
 	inline DirectX::XMFLOAT3 P2() const { return data().P2; }
@@ -194,7 +164,6 @@ public:
 
 	inline int power() { return data().bezier_power; };
 
-	// --- colours -------------------------------------------------------------------
 	inline DirectX::XMFLOAT3 C0() const { return data().C0; }
 	inline DirectX::XMFLOAT3 C1() const { return data().C1; }
 	inline float MinHeight() const { return data().min_height; }
@@ -203,9 +172,7 @@ public:
 	inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { data().C0 = C0; data().C1 = C1; touch(); }
 	inline void HeightRange(float min, float max) { data().min_height = min; data().max_height = max; touch(); }
 
-	// --- styles --------------------------------------------------------------------
-	// DashLength() and Spacing() are ignored by BezierSolidRenderer. See BezierData for what the two
-	// of them mean together: Spacing() <= 0 is solid, DashLength() == 0 with round caps is a dot.
+	
 	inline float Width() const { return data().width; }
 	inline CurveCap CapFront() const { return data().cap_front; }
 	inline CurveCap CapBack() const { return data().cap_back; }
@@ -219,10 +186,8 @@ public:
 	inline void DashLength(float value) { data().dash_length = value; touch(); }
 	inline void Spacing(float value) { data().spacing = value; touch(); }
 
-	// Convenience for the dot special case above: round caps at both ends, zero-length dash.
 	inline void Dot() { data().cap_front = CurveCap::Round; data().cap_back = CurveCap::Round; data().dash_length = 0.f; touch(); }
 
-	// --- resolution ----------------------------------------------------------------
 	inline unsigned Resolution() const { return data().resolution; }
 	inline void Resolution(unsigned value) { data().resolution = value; touch_layout(); }
 };

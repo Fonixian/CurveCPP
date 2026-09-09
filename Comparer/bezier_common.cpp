@@ -38,8 +38,6 @@ BezierData Cubic(XMFLOAT3 P0, XMFLOAT3 P1, XMFLOAT3 P2, XMFLOAT3 P3) {
 	return result;
 }
 
-// --- shared helpers ----------------------------------------------------------------------------
-
 unsigned next_pow2(unsigned x) { return x <= 1u ? 1u : 1u << (std::numeric_limits<unsigned>::digits - std::countl_zero(x - 1u)); }
 
 uint32_t PackFloat3ToR8G8B8A8(const XMFLOAT3& color) {
@@ -84,7 +82,6 @@ void ToCubic(const BezierData& source, XMFLOAT3& p0, XMFLOAT3& p1, XMFLOAT3& p2,
 	}
 }
 
-// Slot counts cover the widest of the two pipelines, so one clear works for both.
 constexpr uint32_t computeSrvSlots = 5u;
 constexpr uint32_t computeUavSlots = 5u;
 void ClearComputeBindings(GraphicsDeviceContext* context) {
@@ -101,7 +98,6 @@ void ClearDrawBindings(GraphicsDeviceContext* context) {
 	context->BindShaderResourceView(nullptr, ShaderStage::Pixel, 1);
 }
 
-// --- BezierRendererBase ------------------------------------------------------------------------
 
 BezierRendererBase::BezierRendererBase(const GraphicsDevice& device) {
 	viewport_data = std::make_unique<ConstantBuffer>(device, camera_cb_data);
@@ -152,7 +148,6 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 		curves_allocated = curves_required;
 	}
 
-	// --- sample layout ------------------------------------------------------------
 	std::vector<uint32_t> index_map;
 	index_map.reserve(total_points);
 
@@ -204,7 +199,6 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 
 	bezier_data->Upload(std::span<const UploadBezierData>{ upload_data }, context);
 
-	// The style struct is the one thing the two renderers disagree about.
 	UploadStyles(context);
 }
 

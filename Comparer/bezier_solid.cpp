@@ -9,8 +9,6 @@ struct UploadSolidStyle {
 	float    padding[2];
 };
 
-// --- BezierSolidRenderer -----------------------------------------------------------------------
-
 BezierSolidRenderer::BezierSolidRenderer(const GraphicsDevice& device)
 	: BezierRendererBase(device) {
 	calc_points = Pipeline::getCS(device, "solid_calc_points.cso");
@@ -33,8 +31,6 @@ void BezierSolidRenderer::UploadStyles(GraphicsDeviceContext* context) {
 	style_data.reserve(curves.size());
 
 	for (const auto& bez : curves) {
-		// Matches FrontCap/BackCap/Join in solid_common.hlsli. Note the shift amounts are 8 lower
-		// than the patterned renderer's, which has to make room for the pattern in the low byte.
 		uint32_t capcapjoin = (uint32_t(bez.cap_front) << 16) |
 							  (uint32_t(bez.cap_back) << 8) |
 							  uint32_t(bez.join);
@@ -70,25 +66,17 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 
 	UploadCameraData(view_proj, context);
 
-	// The point pass is world-space only here, so strictly it could be skipped on frames where
-	// nothing moved. It is left unconditional to match the patterned renderer's behaviour; making
-	// it conditional is a one-line change once curve motion is tracked separately from the camera.
-	RunPointPass(context);
+	RunPointPass(context); // Doesnt need to run every frame
 
-	// --- curve-body draw --------------------------------------------------------------
 	curve_draw.Bind(context);
 
-	calculated_points->BindOrdered(ShaderStage::Vertex, 0, context); // t0: points & packed colours
-	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);      // t1: curve boundary flags
-	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);          // t4: point -> curve index
-	curve_styles->Bind(ShaderStage::Vertex, 6, context);             // t6: width / cap / join
+	calculated_points->BindOrdered(ShaderStage::Vertex, 0, context);
+	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);
+	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
+	curve_styles->Bind(ShaderStage::Vertex, 6, context);
 
-	// t2 (distances), t3 (curve definitions) and t5 (pattern ranges) are unbound: nothing in the
-	// solid pipeline reads them. Slots are kept at the patterned renderer's numbers so the two
-	// vertex shaders stay easy to diff.
-
-	viewport_data->Bind(ShaderStage::Vertex, 1, context); // b1
-	viewport_data->Bind(ShaderStage::Pixel, 1, context);  // b1
+	viewport_data->Bind(ShaderStage::Vertex, 1, context);
+	viewport_data->Bind(ShaderStage::Pixel, 1, context);
 
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	context->get()->DrawInstanced(5, total_points - 1u, 0, 0);
