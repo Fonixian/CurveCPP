@@ -1,7 +1,0 @@
-Package: imgui
-Feature: sdl3-binding
-Depends: sdl3
-Architecture: x64-windows
-Multi-Arch: same
-Description: Make available SDL3 binding
-Status: install ok half-installed

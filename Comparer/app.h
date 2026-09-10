@@ -97,6 +97,8 @@ private:
 
 	void Update(float delta);
 	void Gui();
+	// The timings window. Reads each renderer's public Profiler, one column per renderer.
+	void ProfilerGui();
 	void Render();
 
 	// Adds one copy of the scene to `renderer` and fills `scene` with handles to it.

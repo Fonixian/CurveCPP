@@ -6,6 +6,11 @@ using namespace DirectX;
 
 constexpr uint32_t maxElementCount = 1'200'000u;
 
+// One screen-aligned quad per dot, as a triangle strip. dot_args writes this into the indirect
+// argument buffer's VertexCountPerInstance field, so it has to agree with dot_vert.hlsl's corner
+// numbering and with the topology set in Draw().
+constexpr uint32_t dotVertexCount = 4u;
+
 // Width / cap / spacing, as dot_common.hlsli's DotStyle reads it. Join is meaningless for dots (they
 // never join), so the low byte of capcapjoin is always 0 - kept only so the packing matches the other
 // two renderers' style structs bit for bit, which makes them easy to diff against each other.
@@ -30,11 +35,12 @@ struct DotSample {
 // --- BezierDotRenderer -------------------------------------------------------------------------
 
 BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
-	: BezierRendererBase(device), scan{ device, maxElementCount }
+	: BezierRendererBase(device), dot_counter{ device }, draw_args{ device, dotVertexCount }, scan{ device, maxElementCount }
 {
 	calc_points = Pipeline::getCS(device, "dot_calc_points.cso");
 	dot_ini = Pipeline::getCS(device, "dot_ini.cso");
 	dot_calc = Pipeline::getCS(device, "dot_calc.cso");
+	dot_args = Pipeline::getCS(device, "dot_args.cso");
 
 	curve_draw.vs = Pipeline::getVS(device, "dot_vert.cso");
 	curve_draw.ps = Pipeline::getPS(device, "dot_ps.cso");
@@ -46,8 +52,7 @@ BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
 		{ 1.f, 1.f, 1.f, 1.f }
 	});
 
-	// One uint of atomically accumulated dot count; never resized.
-	dot_counter.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(1u)));
+	dot_capacity = std::make_unique<ConstantBuffer>(device, capacity_cb_data);
 }
 
 void BezierDotRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
@@ -93,22 +98,39 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	calculated_points->BindUnordered(0, context);            // u0
 	distances->BindUnordered(1, context);                    // u1
 
+	profiler.begin_gpu("calc");
 	calc_points->Run({ (total_points + 256u - 1u) / 256u, 1u, 1u }, context);
+	profiler.end_gpu("calc");
 
 	ClearComputeBindings(context);
 
 	// World arc length only - the second channel of `distances` is always 0 and the scan sums it right
 	// along with the first, harmlessly. Shared, unmodified SegmentedScan: see bezier_dots.h.
+	profiler.begin_gpu("scan");
 	scan.Scan(*distances, *curve_begins, total_points, context);
+	profiler.end_gpu("scan");
 
 	ClearComputeBindings(context);
 }
 
-void BezierDotRenderer::CountDots(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+// Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
+// Grow-only; see BezierRenderer::AllocatePatternBuffer for the same reasoning.
+void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+	const uint32_t required = next_pow2(std::max(pattern_upper_bound, 1u));
+	if (dots && dots_allocated >= required) return;
+
+	dots.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<DotSample>(required)));
+	dots_allocated = required;
+
+	capacity_cb_data.capacity = dots_allocated;
+	dot_capacity->Upload(capacity_cb_data, context);
+}
+
+void BezierDotRenderer::CountDots(GraphicsDeviceContext* context) {
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
-	const uint32_t zero = 0u;
-	dot_counter->Upload(std::span<const uint32_t>{ &zero, 1 }, context);
+	// One-way CPU->GPU write, not a synchronisation point.
+	dot_counter.Reset(context);
 
 	ClearComputeBindings(context);
 
@@ -116,31 +138,40 @@ void BezierDotRenderer::CountDots(const GraphicsDevice& device, GraphicsDeviceCo
 	bezier_data->Bind(ShaderStage::Compute, 0, context);        // t0
 	distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1
 	curve_styles->Bind(ShaderStage::Compute, 2, context);       // t2
-	dot_counter->BindUnordered(0, context);                     // u0
+	dot_counter.BindUnordered(0, context);                      // u0
 	dot_ranges->BindUnordered(1, context);                      // u1
 
 	dot_ini->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
 
 	ClearComputeBindings(context);
 
-	const auto counter = dot_counter->Download<uint32_t>(context);
-	dot_total = counter.empty() ? 0u : counter[0];
+	// One thread, reading the total dot_ini just accumulated and writing it into the indirect draw
+	// arguments. This is the step that replaces the readback: the instance count reaches the draw
+	// without ever touching the CPU, so it is always the CURRENT frame's count.
+	dot_capacity->Bind(ShaderStage::Compute, 1, context);       // b1
+	dot_counter.BindOrdered(ShaderStage::Compute, 0, context);  // t0
+	draw_args.BindUnordered(0, context);                        // u0
 
-	const uint32_t required = next_pow2(std::max(dot_total, 1u));
-	if (!dots || dots_allocated < required) {
-		dots.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<DotSample>(required)));
-		dots_allocated = required;
-	}
+	dot_args->Run({ 1u, 1u, 1u }, context);
+
+	ClearComputeBindings(context);
+
+	// Queues the copy and returns; the value turns up in a later frame's Fetch(). Only the Timings
+	// window reads it - nothing in a frame depends on it any more.
+	dot_counter.Submit(context);
 }
 
 void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context) {
-	if (dot_total == 0 || !dots) return;
+	// Gated on the bound rather than on a count, because the count is deliberately a few frames old.
+	// A bound of 0 means no curve in the scene has a positive spacing, which is current and exact.
+	if (pattern_upper_bound == 0 || !dots) return;
 
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
 	ClearComputeBindings(context);
 
 	viewport_data->Bind(ShaderStage::Compute, 0, context);          // b0
+	dot_capacity->Bind(ShaderStage::Compute, 1, context);           // b1
 	bezier_data->Bind(ShaderStage::Compute, 0, context);            // t0
 	distances->BindOrdered(ShaderStage::Compute, 1, context);       // t1
 	curve_styles->Bind(ShaderStage::Compute, 3, context);           // t3
@@ -156,10 +187,19 @@ void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context) {
 
 void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
 	auto* context = device.ImmediateContext();
+	BeginDraw();
 
 	if (UpdateBuffers(device, context)) need_recount = true;
 
-	if (total_points < 2 || !calculated_points) return;
+	if (total_points < 2 || !calculated_points) {
+		EndDraw();
+		return;
+	}
+
+	// Both of these are CPU-side and independent of anything the GPU is doing: the allocation reads
+	// PatternBound(), and the fetch takes only copies the GPU has already finished.
+	AllocateDotBuffer(device, context);
+	dot_counter.Fetch(context);
 
 	UploadCameraData(view_proj, context);
 
@@ -169,16 +209,27 @@ void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& vi
 	// match the other two renderers' behaviour (see BezierSolidRenderer::Draw for the same note).
 	RunPointPass(context);
 
+	// Named "pattern" rather than "dots" so it lines up with the patterned renderer's row: same
+	// stages, ini + args + calc. No readback stall on the recount frames any more, so this row should
+	// stay flat across a scene change.
+	profiler.begin_gpu("pattern");
+
 	if (need_recount) {
-		CountDots(device, context);
+		CountDots(context);
 		need_recount = false;
 	}
 
 	RunDotPlacementPass(context);
 
-	if (dot_total == 0 || !dots) return;
+	profiler.end_gpu("pattern");
+
+	if (pattern_upper_bound == 0 || !dots) {
+		EndDraw();
+		return;
+	}
 
 	// --- dot draw ---------------------------------------------------------------------
+	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
 	calculated_points->BindOrdered(ShaderStage::Vertex, 0, context); // t0: points & packed colours
@@ -190,7 +241,12 @@ void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& vi
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);  // b1
 
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	context->get()->DrawInstanced(4, dot_total, 0, 0);
+
+	// The instance count lives in draw_args, written by dot_args on the GPU. A dot-free scene leaves
+	// it at 0 and this draws nothing, which is why there is no count to test against here.
+	context->get()->DrawInstancedIndirect(draw_args.get(), 0);
+	profiler.end_gpu("draw");
 
 	ClearDrawBindings(context);
+	EndDraw();
 }

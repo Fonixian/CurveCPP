@@ -8,6 +8,16 @@ cbuffer CameraData : register(b0)
     uint     TotalCurveCount;
 };
 
+// How many entries Dots actually holds. The CPU sizes it from an upper bound that cannot be smaller
+// than the count dot_ini arrives at, and dot_args caps the instance count to the same number, so the
+// clamp below should never bite - it is here so a wrong bound loses the tail of the dots instead of
+// writing past the end.
+cbuffer DotCapacity : register(b1)
+{
+    uint  Capacity;
+    uint3 CapacityPadding;
+};
+
 StructuredBuffer<BezierCurveData> BezierData  : register(t0);
 StructuredBuffer<float2>          Distances   : register(t1);
 StructuredBuffer<DotStyle>        DotStyles   : register(t3);
@@ -37,6 +47,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     for (uint localIdx = threadLaneIdx; localIdx < dotCount; localIdx += 8)
     {
         uint  globalIdx       = dotFirst + localIdx;
+        if (globalIdx >= Capacity) continue;
+
         float targetWorldDist = (float)localIdx * worldSpacing;
 
         uint low     = sampleStartIdx;

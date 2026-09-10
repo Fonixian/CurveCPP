@@ -1,5 +1,6 @@
 #pragma once
 #include "bezier_common.h"
+#include "gpu_buffers.h"
 #include "SegmentedScan.h"
 
 // The patterned curve renderer. The pattern is described per curve by two numbers rather than an
@@ -13,16 +14,26 @@
 //
 //   distances        a per-point float2 of (world, screen) segment length
 //   scan             a segmented prefix sum turning both channels into per-curve running totals
-//   pattern_ini      counts the centres per curve and hands back a total, which the CPU reads back
+//   pattern_ini      counts the centres per curve and hands each curve its slice of the flat array
 //   pattern_calc     binary-searches the world sum per centre and samples the screen sum there
 //
 // If every curve in the scene is solid, use BezierSolidRenderer instead - it skips all of it.
+//
+// The centre count used to come back from pattern_ini through a blocking Download(), which drains the
+// whole GPU queue in the middle of the frame just to size one buffer. It does not any more: the
+// buffer is sized from BezierRendererBase::PatternBound(), a CPU-side upper bound that needs no GPU
+// result at all, and the GPU's exact count is mirrored back a few frames late through GpuCounter
+// purely so the two can be compared. Nothing in a frame ever waits on a compute result now.
 
 class BezierRenderer : public BezierRendererBase {
 public:
 	explicit BezierRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
+
+	uint32_t PatternCount() const override { return pattern_counter.value(); }
+	bool PatternCountValid() const override { return pattern_counter.valid(); }
+	uint32_t PatternCapacity() const override { return patterns_allocated; }
 
 protected:
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
@@ -32,21 +43,28 @@ protected:
 
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
-	void CountPatternCenters(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
+	void AllocatePatternBuffer(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
+	void CountPatternCenters(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunPatternPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
 	// Set whenever the curve data changed, so the centre count is recomputed once rather than every
 	// frame. The count depends on world arc length only, which the camera does not move.
 	bool need_recount = false;
 
-	uint32_t pattern_total = 0;
 	uint32_t patterns_allocated = 0;
 
 	// --- per-frame compute results -------------------------------------------------
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;        // (world, screen) arc length, prefix-summed per curve
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_counter;  // Single uint, atomically summed pattern count
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_ranges;   // Per curve: uint2(first pattern, pattern count)
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> patterns;         // One float per pattern: screen arc length of the center
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;       // (world, screen) arc length, prefix-summed per curve
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_ranges;  // Per curve: uint2(first pattern, pattern count)
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> patterns;        // One float per pattern: screen arc length of the center
+
+	// Single uint, atomically summed by pattern_ini to hand each curve its base offset. Read back
+	// without stalling; see gpu_buffers.h.
+	GpuCounter pattern_counter;
+
+	// patterns_allocated, so pattern_calc can clamp rather than run off the end of the buffer.
+	PatternCapacityBuffer capacity_cb_data{};
+	std::unique_ptr<Axodox::Graphics::ConstantBuffer> pattern_capacity;
 
 	Axodox::Graphics::ComputeShader* pattern_ini;
 	Axodox::Graphics::ComputeShader* pattern_calc;

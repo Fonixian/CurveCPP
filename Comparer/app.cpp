@@ -466,6 +466,150 @@ void App::Gui()
 	}
 
 	ImGui::End();
+
+	ProfilerGui();
+}
+
+void App::ProfilerGui()
+{
+	// One row per profiled stage, in pipeline order. `cpu` picks which channel of the metric the row
+	// shows - "total" appears twice because the whole Draw() call is measured on both.
+	struct TimingRow
+	{
+		const char* label;
+		const char* metric;
+		bool cpu;
+	};
+
+	static constexpr TimingRow rows[] = {
+		{ "update",    "update",  true  },
+		{ "calc",      "calc",    false },
+		{ "scan",      "scan",    false },
+		{ "pattern",   "pattern", false },
+		{ "draw",      "draw",    false },
+		{ "total cpu", "total",   true  },
+		{ "total gpu", "total",   false },
+	};
+
+	BezierRendererBase* renderers[] = { patterned_renderer.get(), solid_renderer.get(), dot_renderer.get() };
+	const char* renderer_names[] = { "Patterned", "Solid", "Dots" };
+	const bool renderer_visible[] = { draw_patterned, draw_solid, draw_dots };
+	constexpr int renderer_count = 3;
+
+	ImGui::SetNextWindowPos(ImVec2(380, 10), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(400, 250), ImGuiCond_FirstUseEver);
+
+	if (ImGui::Begin("Timings"))
+	{
+		ImGui::Text("%.1f FPS (%.2f ms/frame)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
+		ImGui::TextDisabled("milliseconds, exponential moving average");
+
+		constexpr ImGuiTableFlags table_flags =
+			ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+
+		if (ImGui::BeginTable("timings", renderer_count + 1, table_flags))
+		{
+			ImGui::TableSetupColumn("stage");
+			for (int i = 0; i < renderer_count; i++) ImGui::TableSetupColumn(renderer_names[i]);
+			ImGui::TableHeadersRow();
+
+			for (const auto& row : rows)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(row.label);
+
+				for (int i = 0; i < renderer_count; i++)
+				{
+					ImGui::TableNextColumn();
+
+					// A metric only exists once something has measured it, so a stage a renderer does
+					// not have (the solid one has no scan and no pattern pass) stays a dash.
+					const auto* metric = renderers[i]->profiler.find(row.metric);
+					if (!metric)
+					{
+						ImGui::TextDisabled("-");
+						continue;
+					}
+
+					const double value = row.cpu ? metric->cpu : metric->gpu;
+
+					// A hidden renderer never reaches Draw(), so its numbers are frozen at whatever they
+					// were when it was last drawn - greyed out to say so.
+					if (renderer_visible[i]) ImGui::Text("%.3f", value);
+					else ImGui::TextDisabled("%.3f", value);
+				}
+			}
+
+			ImGui::EndTable();
+		}
+
+		ImGui::TextWrapped(
+			"GPU rows are timestamp queries read back a few frames late, so they lag the picture "
+			"slightly. \"pattern\" covers ini + calc together, and no longer carries a readback "
+			"stall on the frames that recount, so it should stay flat across a scene change.");
+
+		ImGui::Separator();
+		ImGui::TextUnformatted("pattern centres");
+		ImGui::TextDisabled("how far the CPU bound overshoots the real count");
+
+		// The measurement the readback exists for. "bound" is what allocation actually uses and is
+		// current; "count" is the GPU's exact answer, a few frames late, and is never sized from.
+		struct CountRow
+		{
+			const char* label;
+			uint32_t (*value)(const BezierRendererBase*);
+			bool needs_readback; // only "count" comes from the GPU, and only it can be absent
+		};
+
+		static const CountRow count_rows[] = {
+			{ "bound",     [](const BezierRendererBase* r) { return r->PatternBound(); },    false },
+			{ "count",     [](const BezierRendererBase* r) { return r->PatternCount(); },    true  },
+			{ "allocated", [](const BezierRendererBase* r) { return r->PatternCapacity(); }, false },
+		};
+
+		if (ImGui::BeginTable("counts", renderer_count + 1, table_flags))
+		{
+			ImGui::TableSetupColumn("");
+			for (int i = 0; i < renderer_count; i++) ImGui::TableSetupColumn(renderer_names[i]);
+			ImGui::TableHeadersRow();
+
+			for (const auto& row : count_rows)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(row.label);
+
+				for (int i = 0; i < renderer_count; i++)
+				{
+					ImGui::TableNextColumn();
+
+					// The solid renderer has no pattern buffer at all, and the exact count is absent
+					// until the first non-blocking readback lands - both show as a dash.
+					const bool has_patterns = renderers[i]->PatternCapacity() > 0;
+					if (!has_patterns || (row.needs_readback && !renderers[i]->PatternCountValid()))
+					{
+						ImGui::TextDisabled("-");
+						continue;
+					}
+
+					const uint32_t value = row.value(renderers[i]);
+					if (renderer_visible[i]) ImGui::Text("%u", value);
+					else ImGui::TextDisabled("%u", value);
+				}
+			}
+
+			ImGui::EndTable();
+		}
+
+		ImGui::TextWrapped(
+			"\"bound\" is the control-polygon upper bound the CPU computes from the curve data, and "
+			"is what the pattern buffer is sized from - no GPU result is involved, so nothing in a "
+			"frame waits on one. \"count\" is what the ini pass actually counted, mirrored back "
+			"without blocking and so a few frames old; it is a check on the bound, never a size.");
+	}
+
+	ImGui::End();
 }
 
 void App::Render()

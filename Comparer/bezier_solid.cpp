@@ -52,22 +52,31 @@ void BezierSolidRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	bezier_data_map->Bind(ShaderStage::Compute, 1, context);
 	calculated_points->BindUnordered(0, context);
 
+	profiler.begin_gpu("calc");
 	calc_points->Run({ (total_points + 256u - 1u) / 256u, 1u, 1u }, context);
+	profiler.end_gpu("calc");
 
 	ClearComputeBindings(context);
 }
 
 void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
 	auto* context = device.ImmediateContext();
+	BeginDraw();
 
 	UpdateBuffers(device, context);
 
-	if (total_points < 2 || !calculated_points) return;
+	if (total_points < 2 || !calculated_points) {
+		EndDraw();
+		return;
+	}
 
 	UploadCameraData(view_proj, context);
 
 	RunPointPass(context); // Doesnt need to run every frame
 
+	// No "scan" or "pattern" metric here - this renderer has neither pass, so those rows stay empty
+	// in the profiler window. That gap IS the cost of the pattern pipeline.
+	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
 	calculated_points->BindOrdered(ShaderStage::Vertex, 0, context);
@@ -80,6 +89,8 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	context->get()->DrawInstanced(5, total_points - 1u, 0, 0);
+	profiler.end_gpu("draw");
 
 	ClearDrawBindings(context);
+	EndDraw();
 }

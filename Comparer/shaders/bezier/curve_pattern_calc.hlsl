@@ -8,6 +8,15 @@ cbuffer CameraData : register(b0)
     uint     TotalCurveCount;
 };
 
+// How many entries PatternPosition actually holds. The CPU sizes it from an upper bound that cannot
+// be smaller than the count curve_pattern_ini arrives at, so the clamp below should never bite - it
+// is here so a wrong bound loses the tail of a pattern instead of writing past the end.
+cbuffer PatternCapacity : register(b1)
+{
+    uint  Capacity;
+    uint3 CapacityPadding;
+};
+
 StructuredBuffer<BezierCurveData> BezierData      : register(t0);
 StructuredBuffer<float2>          Distances       : register(t1);
 StructuredBuffer<CurveStyle>      CurveStyles     : register(t3);
@@ -15,7 +24,7 @@ StructuredBuffer<uint2>           PatternRanges   : register(t4);
 
 RWStructuredBuffer<float> PatternPosition : register(u0);
 
-[numthreads(8, 8, 1)]
+[numthreads(8, 32, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint curveIndex    = dispatchThreadId.y;
@@ -37,8 +46,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     for (uint localIdx = threadLaneIdx; localIdx < patternCount; localIdx += 8)
     {
         uint  globalIdx       = patternFirst + localIdx;
+        if (globalIdx >= Capacity) continue;
+
         float targetWorldDist = (float)localIdx * worldSpacing;
-        
+
         uint low     = sampleStartIdx;
         uint high    = sampleEndIdx;
         uint sampleA = sampleStartIdx;

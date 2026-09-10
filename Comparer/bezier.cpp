@@ -17,7 +17,7 @@ struct UploadCurveStyle {
 // --- BezierRenderer ----------------------------------------------------------------------------
 
 BezierRenderer::BezierRenderer(const GraphicsDevice& device)
-	: BezierRendererBase(device), scan{ device, maxElementCount }
+	: BezierRendererBase(device), pattern_counter{ device }, scan{ device, maxElementCount }
 {
 	calc_points = Pipeline::getCS(device, "curve_calc_points.cso");
 	pattern_ini = Pipeline::getCS(device, "curve_pattern_ini.cso");
@@ -33,8 +33,7 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 		{ 1.f, 1.f, 1.f, 1.f }
 	});
 
-	// One uint of atomically accumulated pattern count; never resized.
-	pattern_counter.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(1u)));
+	pattern_capacity = std::make_unique<ConstantBuffer>(device, capacity_cb_data);
 }
 
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
@@ -79,20 +78,38 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	calculated_points->BindUnordered(0, context);            // u0
 	distances->BindUnordered(1, context);                    // u1
 
+	profiler.begin_gpu("calc");
 	calc_points->Run({ (total_points + 256u - 1u) / 256u, 1u, 1u }, context);
+	profiler.end_gpu("calc");
 
 	ClearComputeBindings(context);
 
+	profiler.begin_gpu("scan");
 	scan.Scan(*distances, *curve_begins, total_points, context);
+	profiler.end_gpu("scan");
 
 	ClearComputeBindings(context);
 }
 
-void BezierRenderer::CountPatternCenters(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+// Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
+// Grow-only, and rounded up by next_pow2 on top of a bound that already over-counts, so a scene edit
+// usually costs no reallocation at all.
+void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+	const uint32_t required = next_pow2(std::max(pattern_upper_bound, 1u));
+	if (patterns && patterns_allocated >= required) return;
+
+	patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(required)));
+	patterns_allocated = required;
+
+	capacity_cb_data.capacity = patterns_allocated;
+	pattern_capacity->Upload(capacity_cb_data, context);
+}
+
+void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
-	const uint32_t zero = 0u;
-	pattern_counter->Upload(std::span<const uint32_t>{ &zero, 1 }, context);
+	// One-way CPU->GPU write, not a synchronisation point.
+	pattern_counter.Reset(context);
 
 	ClearComputeBindings(context);
 
@@ -100,31 +117,29 @@ void BezierRenderer::CountPatternCenters(const GraphicsDevice& device, GraphicsD
 	bezier_data->Bind(ShaderStage::Compute, 0, context);        // t0
 	distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1
 	curve_styles->Bind(ShaderStage::Compute, 2, context);       // t2
-	pattern_counter->BindUnordered(0, context);                 // u0
+	pattern_counter.BindUnordered(0, context);                  // u0
 	pattern_ranges->BindUnordered(1, context);                  // u1
 
 	pattern_ini->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
 
 	ClearComputeBindings(context);
 
-	const auto counter = pattern_counter->Download<uint32_t>(context);
-	pattern_total = counter.empty() ? 0u : counter[0];
-
-	const uint32_t required = next_pow2(std::max(pattern_total, 1u));
-	if (!patterns || patterns_allocated < required) {
-		patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(required)));
-		patterns_allocated = required;
-	}
+	// Queues the copy and returns; the value turns up in a later frame's Fetch(). Nothing this frame
+	// depends on it - the pattern buffer was already sized from PatternBound().
+	pattern_counter.Submit(context);
 }
 
 void BezierRenderer::RunPatternPass(GraphicsDeviceContext* context) {
-	if (pattern_total == 0 || !patterns) return;
+	// Gated on the bound rather than on a count, because the count is deliberately a few frames old.
+	// A bound of 0 means no curve in the scene has a positive spacing, which is current and exact.
+	if (pattern_upper_bound == 0 || !patterns) return;
 
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
 	ClearComputeBindings(context);
 
 	viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
+	pattern_capacity->Bind(ShaderStage::Compute, 1, context);         // b1
 	bezier_data->Bind(ShaderStage::Compute, 0, context);              // t0
 	distances->BindOrdered(ShaderStage::Compute, 1, context);         // t1
 	curve_styles->Bind(ShaderStage::Compute, 3, context);             // t3
@@ -139,10 +154,19 @@ void BezierRenderer::RunPatternPass(GraphicsDeviceContext* context) {
 
 void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
 	auto* context = device.ImmediateContext();
+	BeginDraw();
 
 	if (UpdateBuffers(device, context)) need_recount = true;
 
-	if (total_points < 2 || !calculated_points) return;
+	if (total_points < 2 || !calculated_points) {
+		EndDraw();
+		return;
+	}
+
+	// Both of these are CPU-side and independent of anything the GPU is doing: the allocation reads
+	// PatternBound(), and the fetch takes only copies the GPU has already finished.
+	AllocatePatternBuffer(device, context);
+	pattern_counter.Fetch(context);
 
 	UploadCameraData(view_proj, context);
 
@@ -150,15 +174,23 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	// every frame. Only the centre COUNT is camera-independent.
 	RunPointPass(context);
 
+	// ini + calc under one metric. On a steady frame need_recount is false and this is calc alone;
+	// the frames that recount add pattern_ini on top. It no longer carries a readback stall, so this
+	// row should stay flat across a scene change instead of spiking.
+	profiler.begin_gpu("pattern");
+
 	if (need_recount) {
 		// Runs after the point pass so the world prefix sum it reads is already valid.
-		CountPatternCenters(device, context);
+		CountPatternCenters(context);
 		need_recount = false;
 	}
 
 	RunPatternPass(context);
 
+	profiler.end_gpu("pattern");
+
 	// --- curve-body draw --------------------------------------------------------------
+	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
 	calculated_points->BindOrdered(ShaderStage::Vertex, 0, context); // t0: points & packed colours
@@ -176,6 +208,8 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
 	context->get()->DrawInstanced(5, total_points - 1u, 0, 0);
+	profiler.end_gpu("draw");
 
 	ClearDrawBindings(context);
+	EndDraw();
 }

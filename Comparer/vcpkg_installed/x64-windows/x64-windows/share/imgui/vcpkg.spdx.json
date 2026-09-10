@@ -3,13 +3,13 @@
   "spdxVersion": "SPDX-2.2",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "documentNamespace": "https://spdx.org/spdxdocs/imgui-x64-windows-1.91.9-d055a2a8-08e1-4f78-9bc8-17a18ed7edfd",
-  "name": "imgui:x64-windows@1.91.9 c1271da32f3e490ee13a4ce1c80d45f5a9d6e217b974f3d1c4b7d3b8957a3359",
+  "documentNamespace": "https://spdx.org/spdxdocs/imgui-x64-windows-1.91.9-a44dd3ba-ea29-4121-85e3-c91f3f5aaaec",
+  "name": "imgui:x64-windows@1.91.9 df9ff1a7bb4d6b358fed1dab74186d18934ee64a8ebdaf8a5e91eb6b6ba4ea0d",
   "creationInfo": {
     "creators": [
-      "Tool: vcpkg-8a83681f921b10d86ae626fd833c253f4f8c355b"
+      "Tool: vcpkg-2026-07-13-bf04c909169fdbb30821c02c6eb01f1cd1295d05"
     ],
-    "created": "2026-08-27T08:08:45Z"
+    "created": "2026-09-10T11:53:34Z"
   },
   "relationships": [
     {
@@ -20,47 +20,112 @@
     {
       "spdxElementId": "SPDXRef-port",
       "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-file-0"
+      "relatedSpdxElement": "SPDXRef-port-file-0"
     },
     {
       "spdxElementId": "SPDXRef-port",
       "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-file-1"
+      "relatedSpdxElement": "SPDXRef-port-file-1"
     },
     {
       "spdxElementId": "SPDXRef-port",
       "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-file-2"
+      "relatedSpdxElement": "SPDXRef-port-file-2"
     },
     {
       "spdxElementId": "SPDXRef-port",
       "relationshipType": "CONTAINS",
-      "relatedSpdxElement": "SPDXRef-file-3"
+      "relatedSpdxElement": "SPDXRef-port-file-3"
+    },
+    {
+      "spdxElementId": "SPDXRef-port-file-3",
+      "relationshipType": "DEPENDENCY_MANIFEST_OF",
+      "relatedSpdxElement": "SPDXRef-port"
     },
     {
       "spdxElementId": "SPDXRef-binary",
-      "relationshipType": "GENERATED_FROM",
-      "relatedSpdxElement": "SPDXRef-port"
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-0"
     },
     {
-      "spdxElementId": "SPDXRef-file-0",
-      "relationshipType": "CONTAINED_BY",
-      "relatedSpdxElement": "SPDXRef-port"
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-1"
     },
     {
-      "spdxElementId": "SPDXRef-file-1",
-      "relationshipType": "CONTAINED_BY",
-      "relatedSpdxElement": "SPDXRef-port"
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-2"
     },
     {
-      "spdxElementId": "SPDXRef-file-2",
-      "relationshipType": "CONTAINED_BY",
-      "relatedSpdxElement": "SPDXRef-port"
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-3"
     },
     {
-      "spdxElementId": "SPDXRef-file-3",
-      "relationshipType": "CONTAINED_BY",
-      "relatedSpdxElement": "SPDXRef-port"
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-4"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-5"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-6"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-7"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-8"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-9"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-10"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-11"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-12"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-13"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-14"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-15"
+    },
+    {
+      "spdxElementId": "SPDXRef-binary",
+      "relationshipType": "CONTAINS",
+      "relatedSpdxElement": "SPDXRef-binary-file-16"
     }
   ],
   "packages": [
@@ -74,12 +139,19 @@
       "licenseDeclared": "NOASSERTION",
       "copyrightText": "NOASSERTION",
       "description": "Bloat-free Immediate Mode Graphical User interface for C++ with minimal dependencies.",
-      "comment": "This is the port (recipe) consumed by vcpkg."
+      "comment": "This is the port (recipe) consumed by vcpkg.",
+      "externalRefs": [
+        {
+          "referenceCategory": "PACKAGE_MANAGER",
+          "referenceType": "purl",
+          "referenceLocator": "pkg:vcpkg/imgui@1.91.9?triplet=x64-windows&vcs_url=git%2Bhttps%3A%2F%2Fgithub.com%2Fmicrosoft%2Fvcpkg%40cecad336497c19491c07fead1897ac139a173ed2"
+        }
+      ]
     },
     {
       "name": "imgui:x64-windows",
       "SPDXID": "SPDXRef-binary",
-      "versionInfo": "c1271da32f3e490ee13a4ce1c80d45f5a9d6e217b974f3d1c4b7d3b8957a3359",
+      "versionInfo": "df9ff1a7bb4d6b358fed1dab74186d18934ee64a8ebdaf8a5e91eb6b6ba4ea0d",
       "downloadLocation": "NONE",
       "licenseConcluded": "MIT",
       "licenseDeclared": "NOASSERTION",
@@ -87,7 +159,7 @@
       "comment": "This is a binary package built by vcpkg."
     },
     {
-      "SPDXID": "SPDXRef-resource-1",
+      "SPDXID": "SPDXRef-resource-0",
       "name": "ocornut/imgui",
       "downloadLocation": "git+https://github.com/ocornut/imgui@v1.91.9-docking",
       "licenseConcluded": "NOASSERTION",
@@ -101,7 +173,35 @@
       ]
     },
     {
+      "SPDXID": "SPDXRef-resource-1",
+      "name": "ocornut/imgui",
+      "downloadLocation": "git+https://github.com/ocornut/imgui@v1.91.9",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "c9393bd9f6b49b036ad6ab3ba4d972876c6f60ce7f5c13a7a56ff11b3559ea3211b0caa03eed10b4f4fbe9c371e14f7f24866bd476652f543f3ed3aa878ea930"
+        }
+      ]
+    },
+    {
       "SPDXID": "SPDXRef-resource-2",
+      "name": "ocornut/imgui_test_engine",
+      "downloadLocation": "git+https://github.com/ocornut/imgui_test_engine@v1.91.9",
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA512",
+          "checksumValue": "44d6fd1c26c9c2cb3fcbd1560dba8e056f84dc170051dcb8db5d642945fb26475006a8166486f7f62e900a97d65f2f98d364ac06c121a57309b3229cc41556a4"
+        }
+      ]
+    },
+    {
+      "SPDXID": "SPDXRef-resource-3",
       "name": "imgui_fonts_droid_sans.h",
       "packageFileName": "imgui_fonts_droid_sans.h",
       "downloadLocation": "https://raw.githubusercontent.com/libigl/libigl-imgui/c3efb9b62780f55f9bba34561f79a3087e057fc0/imgui_fonts_droid_sans.h",
@@ -118,8 +218,8 @@
   ],
   "files": [
     {
-      "fileName": "./C:/Users/NewPC/AppData/Local/vcpkg/registries/git-trees/cecad336497c19491c07fead1897ac139a173ed2/CMakeLists.txt",
-      "SPDXID": "SPDXRef-file-0",
+      "fileName": "./CMakeLists.txt",
+      "SPDXID": "SPDXRef-port-file-0",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -130,8 +230,8 @@
       "copyrightText": "NOASSERTION"
     },
     {
-      "fileName": "./C:/Users/NewPC/AppData/Local/vcpkg/registries/git-trees/cecad336497c19491c07fead1897ac139a173ed2/imgui-config.cmake.in",
-      "SPDXID": "SPDXRef-file-1",
+      "fileName": "./imgui-config.cmake.in",
+      "SPDXID": "SPDXRef-port-file-1",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -142,8 +242,8 @@
       "copyrightText": "NOASSERTION"
     },
     {
-      "fileName": "./C:/Users/NewPC/AppData/Local/vcpkg/registries/git-trees/cecad336497c19491c07fead1897ac139a173ed2/portfile.cmake",
-      "SPDXID": "SPDXRef-file-2",
+      "fileName": "./portfile.cmake",
+      "SPDXID": "SPDXRef-port-file-2",
       "checksums": [
         {
           "algorithm": "SHA256",
@@ -154,12 +254,216 @@
       "copyrightText": "NOASSERTION"
     },
     {
-      "fileName": "./C:/Users/NewPC/AppData/Local/vcpkg/registries/git-trees/cecad336497c19491c07fead1897ac139a173ed2/vcpkg.json",
-      "SPDXID": "SPDXRef-file-3",
+      "fileName": "./vcpkg.json",
+      "SPDXID": "SPDXRef-port-file-3",
       "checksums": [
         {
           "algorithm": "SHA256",
           "checksumValue": "97a8aa8938479cd67948c728c9c7e55848cf46c1f35a90921056bf1fa054268d"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./BUILD_INFO",
+      "SPDXID": "SPDXRef-binary-file-0",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5bacb3bbb20da44b331b0cfd5c6c295c0c2b19de7fab181f77130c731bded41a"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./debug/lib/imguid.lib",
+      "SPDXID": "SPDXRef-binary-file-1",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "de55960fe1537e814a39593da0b1773516f2825378bf4c40e9c5ce941c6fc529"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imconfig.h",
+      "SPDXID": "SPDXRef-binary-file-2",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "0884061cc43e27e1d346fe18dcd1425792eb2532d3d16610a82eb5ac751f7594"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imgui.h",
+      "SPDXID": "SPDXRef-binary-file-3",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "d9d28b1dfbd23841d99bb0a3f2474a28a2cae4e706919f74ef803ab9d9a67c9d"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imgui_impl_dx11.h",
+      "SPDXID": "SPDXRef-binary-file-4",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "cf55f23132dcd240c31995494e0828abb84e552adee71be20f384d68eca21697"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imgui_impl_sdl3.h",
+      "SPDXID": "SPDXRef-binary-file-5",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "a6866cb9f9d9eb69ad64d49075fbcc247cadb9c872fcdfb0569f4b93ccb802a6"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imgui_internal.h",
+      "SPDXID": "SPDXRef-binary-file-6",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "da27f62ccb1d9ece6a4c14b63cca4cf6cfd713f5f18bdb8868e0d199ead6d333"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imgui_stdlib.h",
+      "SPDXID": "SPDXRef-binary-file-7",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "36aa98f5b89470cf84fe4d548e42cce124fbd27e1f7e3481bbb972bc5a134585"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imstb_rectpack.h",
+      "SPDXID": "SPDXRef-binary-file-8",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "2efa3d5f7d003c19743b15155dad9f46d9f9fc783a18893d703b431d3c990972"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imstb_textedit.h",
+      "SPDXID": "SPDXRef-binary-file-9",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "77010e494caf72c178b573569612aec409d24380409676325a31d02de0ec64b7"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./include/imstb_truetype.h",
+      "SPDXID": "SPDXRef-binary-file-10",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "87f08919ae8e7223451d0e9d06b62829075d3e920c9e6ad436db9d7e7427ffce"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./lib/imgui.lib",
+      "SPDXID": "SPDXRef-binary-file-11",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "b088d718466cb862193f3795e67767161e1d43e2097e8cb68e7eb7e4c5106b5e"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./share/imgui/copyright",
+      "SPDXID": "SPDXRef-binary-file-12",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "c80c5789748d955c4a650562baa0d750494e2c7128c2ca66aaebe2e3c4e198bf"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./share/imgui/imgui-config.cmake",
+      "SPDXID": "SPDXRef-binary-file-13",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "5b2af75e66acf40955437bcf450a26cdba80084b3c393e98fef604fecf00b0b4"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./share/imgui/imgui-targets-debug.cmake",
+      "SPDXID": "SPDXRef-binary-file-14",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "e996d8a9ead32f58d362a21c55ecb3382e5287ca738c550ae670b6b7cd131720"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./share/imgui/imgui-targets-release.cmake",
+      "SPDXID": "SPDXRef-binary-file-15",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "4fafb99bc6d1cebe40becf9d2263b19440d327af89f5d6cf9f7cd751f17153ba"
+        }
+      ],
+      "licenseConcluded": "NOASSERTION",
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "./share/imgui/imgui-targets.cmake",
+      "SPDXID": "SPDXRef-binary-file-16",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "006171dac852dfed23c6725ae8fb47d8e1c684cfd412d3d8ad0f7ffe4472e9a7"
         }
       ],
       "licenseConcluded": "NOASSERTION",

@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <cmath>
 #include <limits>
 
 using namespace Axodox::Graphics;
@@ -99,8 +100,20 @@ void ClearDrawBindings(GraphicsDeviceContext* context) {
 }
 
 
-BezierRendererBase::BezierRendererBase(const GraphicsDevice& device) {
+BezierRendererBase::BezierRendererBase(const GraphicsDevice& device) : profiler(device) {
 	viewport_data = std::make_unique<ConstantBuffer>(device, camera_cb_data);
+}
+
+void BezierRendererBase::BeginDraw() {
+	profiler.begin_frame();
+	profiler.begin_cpu("total");
+	profiler.begin_gpu("total");
+}
+
+void BezierRendererBase::EndDraw() {
+	profiler.end_gpu("total");
+	profiler.end_cpu("total");
+	profiler.end_frame();
 }
 
 void BezierRendererBase::SetViewport(float width, float height) { camera_cb_data.wh = { width, height }; }
@@ -127,6 +140,8 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 	if (total_points < 2u || curve_count == 0u) {
 		total_points = 0;
+		// UploadCurveData, which normally recomputes it, is not reached on this path.
+		pattern_upper_bound = 0;
 		return;
 	}
 
@@ -172,15 +187,32 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 }
 
 void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
+	pattern_upper_bound = 0;
+
 	if (curves.empty() || !bezier_data || !curve_styles) return;
 
 	std::vector<UploadBezierData> upload_data;
 	upload_data.reserve(curves.size());
 
+	uint64_t bound = 0;
+
 	int32_t current = 0;
 	for (const auto& bez : curves) {
 		XMFLOAT3 p0, p1, p2, p3;
 		ToCubic(bez, p0, p1, p2, p3);
+
+		// The control polygon bounds the arc length, which bounds the chord sum the point pass
+		// measures, so this can only ever over-count. See PatternBound() in bezier_common.h - this
+		// loop already has the cubic form in hand, which is why the bound is computed here.
+		if (bez.spacing > 0.f) {
+			const float polygon =
+				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p1) - XMLoadFloat3(&p0))) +
+				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p2) - XMLoadFloat3(&p1))) +
+				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p3) - XMLoadFloat3(&p2)));
+
+			const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(bez.spacing)) + 1.0;
+			bound += static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
+		}
 
 		const int32_t first = current;
 		const int32_t last = current + static_cast<int32_t>(bez.resolution) - 1;
@@ -197,24 +229,34 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 		current += static_cast<int32_t>(bez.resolution);
 	}
 
+	pattern_upper_bound = static_cast<uint32_t>(std::min<uint64_t>(bound, maxPatternCount));
+
 	bezier_data->Upload(std::span<const UploadBezierData>{ upload_data }, context);
 
 	UploadStyles(context);
 }
 
 bool BezierRendererBase::UpdateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+	// CPU only: this is buffer allocation and the staging uploads, the GPU side of it is a copy the
+	// driver folds into the next pass. On a frame that changes nothing this measures the two bool
+	// tests below and nothing else, which is what makes a spike here easy to spot.
+	profiler.begin_cpu("update");
+
+	bool updated = false;
 	if (need_resize) {
 		AllocateBuffers(device, context);
 		need_resize = false;
 		need_upload = false;
-		return true;
+		updated = true;
 	}
-	if (need_upload) {
+	else if (need_upload) {
 		UploadCurveData(context);
 		need_upload = false;
-		return true;
+		updated = true;
 	}
-	return false;
+
+	profiler.end_cpu("update");
+	return updated;
 }
 
 void BezierRendererBase::UploadCameraData(const XMMATRIX& view_proj, GraphicsDeviceContext* context) {

@@ -5,6 +5,7 @@
 #include <memory>
 #include <span>
 #include "pipeline.h"
+#include "profiler.h"
 
 enum class CurveCap : uint8_t {
 	Butt = 0,
@@ -69,6 +70,18 @@ struct UploadBezierData {
 	float    padding[2];
 };
 
+// Compute-stage b1 for the pattern/dot calc passes: how many entries the pattern buffer actually
+// holds, so a shader can clamp instead of writing past the end. See PatternBound() below.
+struct PatternCapacityBuffer {
+	uint32_t capacity;
+	uint32_t padding[3];
+};
+
+// Ceiling on the CPU-side pattern bound, so a curve with a near-zero spacing asks for a buffer of a
+// sane size rather than one of a few billion entries. Past this the calc shaders clamp and the tail
+// of the pattern simply is not drawn.
+constexpr uint32_t maxPatternCount = 4'000'000u;
+
 unsigned next_pow2(unsigned x);
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
@@ -88,16 +101,50 @@ public:
 	BezierRendererBase(const BezierRendererBase&) = delete;
 	BezierRendererBase& operator=(const BezierRendererBase&) = delete;
 
+	// One profiler frame per Draw() call. Every renderer records the same metric names so the three
+	// can be compared row by row, a renderer simply has no entry for a stage it does not have:
+	//
+	//   update   cpu   buffer resize + curve/style upload (UpdateBuffers)
+	//   calc     gpu   the point pass compute shader
+	//   scan     gpu   the segmented prefix sum          (not in the solid renderer)
+	//   pattern  gpu   pattern/dot ini + calc            (not in the solid renderer)
+	//                 no longer includes a CPU readback, so it stays flat across a scene change
+	//   draw     gpu   binds + DrawInstanced
+	//   total    cpu   the whole Draw() call
+	//   total    gpu   the whole Draw() call
+	Profiler profiler;
+
 	BezierCurve Add(const BezierData& curve);
 	BezierCurve At(size_t index);
 	size_t Count() const { return curves.size(); }
 
 	void SetViewport(float width, float height);
 
+	// The number of pattern centres (or dots) the scene can possibly produce, computed on the CPU
+	// from the curve data alone - no compute pass, no readback, no lag. A cubic's arc length never
+	// exceeds its control polygon |P0P1| + |P1P2| + |P2P3|, and the polyline the point pass actually
+	// measures is a chord sum that never exceeds the true arc length, so
+	//
+	//     floor(polygon / spacing) + 1  >=  floor(sampled arc / spacing) + 1
+	//
+	// which is exactly what curve_pattern_ini.hlsl / dot_ini.hlsl count. Sizing the pattern buffer
+	// from this is therefore always sufficient, and it is the reason the GPU count no longer has to
+	// come back to the CPU mid-frame. 0 for the solid renderer, which has no pattern buffer.
+	uint32_t PatternBound() const { return pattern_upper_bound; }
+
+	// The EXACT count the GPU arrived at, mirrored back a few frames late, purely so the bound above
+	// can be checked against reality. Never size anything from it. 0 where a renderer has no count.
+	virtual uint32_t PatternCount() const { return 0u; }
+	virtual bool PatternCountValid() const { return false; }
+	virtual uint32_t PatternCapacity() const { return 0u; }
+
 	virtual void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) = 0;
 
 protected:
 	std::vector<BezierData> curves;
+
+	// Recomputed alongside every curve upload; see PatternBound().
+	uint32_t pattern_upper_bound = 0;
 
 	bool need_resize = true;
 	bool need_upload = false;
@@ -122,6 +169,11 @@ protected:
 
 	bool UpdateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
 	void UploadCameraData(const DirectX::XMMATRIX& view_proj, Axodox::Graphics::GraphicsDeviceContext* context);
+
+	// Opens and closes the profiler frame and the "total" metric. Every Draw() override must call
+	// BeginDraw() first and EndDraw() on every exit path, early returns included.
+	void BeginDraw();
+	void EndDraw();
 
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 	virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
