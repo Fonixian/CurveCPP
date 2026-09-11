@@ -7,6 +7,7 @@
 #include "Include/Axodox.Storage.h"
 #include <cmath>
 #include <iostream>
+#include <random>
 
 using namespace Axodox::Storage;
 using namespace Axodox::Graphics;
@@ -57,6 +58,30 @@ namespace
 			cosf(hue * 3.14159f),
 			cosf(hue * 3.14159f + 2.09f),
 			cosf(hue * 3.14159f + 4.19f)
+		};
+	}
+
+	// --- Test screen ---------------------------------------------------------------------------
+	// Index order must match App::test_degree_index; the degree is the index + 1.
+	const char* const DegreeNames[] = { "Linear (2 points)", "Quadratic (3 points)", "Cubic (4 points)" };
+	constexpr int DegreeCount = int(sizeof(DegreeNames) / sizeof(DegreeNames[0]));
+
+	// Fixed seed on purpose. A performance comparison is only worth anything if pressing Add twice in
+	// two different builds produces the same curves, so this is deterministic per run rather than
+	// seeded from the clock. It still advances between presses, so consecutive batches differ.
+	std::mt19937 test_rng{ 0x5EED1234u };
+
+	float RandRange(float low, float high)
+	{
+		return std::uniform_real_distribution<float>(low, high)(test_rng);
+	}
+
+	XMFLOAT3 RandInBox(const XMFLOAT3& half_extents)
+	{
+		return {
+			RandRange(-half_extents.x, half_extents.x),
+			RandRange(-half_extents.y, half_extents.y),
+			RandRange(-half_extents.z, half_extents.z)
 		};
 	}
 }
@@ -114,6 +139,74 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		stroke.C1 = gallery_color;
 		scene.gallery[i] = renderer.Add(stroke);
 	}
+}
+
+void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing)
+{
+	const auto cap_front = static_cast<CurveCap>(style_cap_front);
+	const auto cap_back = static_cast<CurveCap>(link_caps ? style_cap_front : style_cap_back);
+	const int degree = test_degree_index + 1;
+	const auto resolution = static_cast<unsigned>(test_resolution);
+
+	scene.test_curves.reserve(scene.test_curves.size() + size_t(test_count));
+
+	for (int i = 0; i < test_count; ++i)
+	{
+		TestCurve test;
+		test.degree = degree;
+		test.resolution = resolution;
+
+		// An origin somewhere in the box, then each control point scattered around it. Picking every
+		// control point independently across the whole box instead would give curves that all span the
+		// full extent and sit on top of each other; scattering keeps them local and lets a batch read
+		// as many separate strokes, which is what makes an overdraw difference visible.
+		const XMFLOAT3 origin = RandInBox(test_range);
+		const XMFLOAT3 spread = { test_spread, test_spread, test_spread };
+		for (int k = 0; k <= degree; ++k)
+			test.P[k] = Add3(origin, RandInBox(spread));
+
+		// Control points go in already offset into this renderer's column; PoseScene() keeps them
+		// there afterwards from the LOCAL copy held in TestCurve::P.
+		const float dx = scene.x_offset;
+		XMFLOAT3 placed[4];
+		for (int k = 0; k <= degree; ++k)
+			placed[k] = { test.P[k].x + dx, test.P[k].y, test.P[k].z };
+
+		BezierData data;
+		switch (degree)
+		{
+		case 1:  data = Linear(placed[0], placed[1]); break;
+		case 2:  data = Quadratic(placed[0], placed[1], placed[2]); break;
+		default: data = Cubic(placed[0], placed[1], placed[2], placed[3]); break;
+		}
+
+		// The properties are the ones the window is showing - only the geometry is random. Everything
+		// here is what ApplyStyle() would push anyway, set at Add time so a curve looks right on the
+		// frame it appears rather than on the next one.
+		data.width = style_width;
+		data.cap_front = cap_front;
+		data.cap_back = cap_back;
+		data.join = static_cast<CurveJoin>(style_join);
+		data.dash_length = style_dash_length;
+		data.spacing = (style_patterned || force_spacing) ? style_spacing : 0.0f;
+		data.min_height = style_min_height;
+		data.max_height = style_max_height;
+		data.resolution = resolution;
+
+		// Hue by index so a batch is legible as separate strokes rather than one solid mass. Test
+		// curves are not repainted afterwards, so this is the only place their colour is decided.
+		const XMFLOAT3 color = HueColor(float(scene.test_curves.size()) * 0.137f);
+		data.C0 = color;
+		data.C1 = HueColor(float(scene.test_curves.size()) * 0.137f + 0.5f);
+
+		test.handle = renderer.Add(data);
+		scene.test_curves.push_back(test);
+	}
+
+	// The new handles still have to be picked up by both per-frame passes: PoseScene() so they track
+	// their column, ApplyStyle() so a later style change reaches them.
+	scene_dirty = true;
+	style_dirty = true;
 }
 
 void App::PoseScene(Scene& scene)
@@ -219,6 +312,24 @@ void App::PoseScene(Scene& scene)
 		const XMFLOAT3 back = animate_colors ? HueColor(float(i) / GalleryCount + t * 0.1f) : gallery_color;
 		scene.gallery[i].colors({ 1.0f, 1.0f, 1.0f }, back);
 	}
+
+	// --- test curves: static geometry, slid into this copy's column ------------------------------
+	// They do not animate; the only thing this loop does is re-apply x_offset, so that a test batch
+	// added while (say) all three renderers were visible stays in its own column after one is
+	// unticked and the layout re-centres. Colours were fixed at Add time and are left alone.
+	for (auto& test : scene.test_curves)
+	{
+		XMFLOAT3 placed[4];
+		for (int k = 0; k <= test.degree; ++k)
+			placed[k] = { test.P[k].x + dx, test.P[k].y, test.P[k].z };
+
+		switch (test.degree)
+		{
+		case 1:  test.handle.control_points(placed[0], placed[1]); break;
+		case 2:  test.handle.control_points(placed[0], placed[1], placed[2]); break;
+		default: test.handle.control_points(placed[0], placed[1], placed[2], placed[3]); break;
+		}
+	}
 }
 
 void App::ApplyStyle(Scene& scene, bool force_spacing)
@@ -260,6 +371,12 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 	// at two points, because a straight line gains nothing from subdivision.
 	for (auto& stroke : scene.gallery)
 		apply(stroke, true, GalleryResolution);
+
+	// Test curves follow every style control EXCEPT resolution: each keeps the one it was added with,
+	// so a scene can mix a batch at 8 points with a batch at 400 and the Timings table shows what that
+	// costs. The Stroke section's Resolution slider only ever moves the example groups.
+	for (auto& test : scene.test_curves)
+		apply(test.handle, false, test.resolution);
 }
 
 SDL_AppResult App::Init()
@@ -327,8 +444,15 @@ SDL_AppResult App::Init()
 void App::Update(float delta)
 {
 	orbital_manipulator.Update(delta);
+
+	bool repose = scene_dirty;
+	scene_dirty = false;
+
 	if (!paused)
+	{
 		animation_time += delta;
+		repose = true;
+	}
 
 	// Evenly space whichever of the three are visible, in the fixed left-to-right order patterned /
 	// solid / dots, centred on the origin. A hidden renderer's offset doesn't matter - it is never
@@ -346,30 +470,53 @@ void App::Update(float delta)
 			++slot;
 		}
 
-		patterned_scene.x_offset = offsets[0];
-		solid_scene.x_offset = offsets[1];
-		dot_scene.x_offset = offsets[2];
+		// A moved column has to be re-posed even while paused, otherwise the curves stay behind at the
+		// old offset - so ticking a renderer or dragging the comparison gap counts as a scene change.
+		Scene* scenes[3] = { &patterned_scene, &solid_scene, &dot_scene };
+		for (int i = 0; i < 3; ++i)
+		{
+			if (scenes[i]->x_offset == offsets[i]) continue;
+			scenes[i]->x_offset = offsets[i];
+			repose = true;
+		}
 	}
 
 	// All three copies are kept up to date even while hidden: the setters only raise dirty flags, and
 	// the actual upload happens inside Draw(), which a hidden renderer never reaches.
-	PoseScene(patterned_scene);
-	PoseScene(solid_scene);
-	PoseScene(dot_scene);
-	ApplyStyle(patterned_scene);
-	ApplyStyle(solid_scene);
-	ApplyStyle(dot_scene, true);
+	//
+	// Both passes call touch() on every curve they visit, and need_upload is coarse - one touched
+	// curve re-uploads the entire buffer - so neither runs unless something actually changed. That is
+	// what makes "Pause animation" free, which is what makes the Test screen's numbers mean anything
+	// once the scene is a few thousand curves deep.
+	if (repose)
+	{
+		PoseScene(patterned_scene);
+		PoseScene(solid_scene);
+		PoseScene(dot_scene);
+	}
+
+	if (style_dirty)
+	{
+		ApplyStyle(patterned_scene);
+		ApplyStyle(solid_scene);
+		ApplyStyle(dot_scene, true);
+		style_dirty = false;
+	}
 }
 
 void App::Gui()
 {
 	ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(360, 660), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(380, 700), ImGuiCond_FirstUseEver);
 
 	if (ImGui::Begin("Curve Style"))
 	{
+		// --- shared header: true on both screens ------------------------------------------------
 		ImGui::Text("%.1f FPS (%.2f ms/frame)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
 		ImGui::Checkbox("Pause animation", &paused);
+		ImGui::SameLine();
+		ImGui::Checkbox("Timings window", &show_timings);
+		ImGui::TextDisabled("Paused now skips the per-frame re-upload entirely.");
 
 		ImGui::SeparatorText("Renderers");
 		ImGui::Checkbox("Patterned", &draw_patterned);
@@ -377,97 +524,246 @@ void App::Gui()
 		ImGui::Checkbox("Solid", &draw_solid);
 		ImGui::SameLine();
 		ImGui::Checkbox("Dots", &draw_dots);
-		ImGui::TextDisabled("%u curves each, %u total",
+
+		// Not "each" any more - the Test screen adds to one renderer at a time, so the three counts
+		// are allowed to differ and it matters which is which.
+		ImGui::TextDisabled("curves: %u / %u / %u  (%u total)",
 			unsigned(patterned_renderer->Count()),
+			unsigned(solid_renderer->Count()),
+			unsigned(dot_renderer->Count()),
 			unsigned(patterned_renderer->Count() + solid_renderer->Count() + dot_renderer->Count()));
 
 		const int visible_renderer_count = int(draw_patterned) + int(draw_solid) + int(draw_dots);
 		ImGui::BeginDisabled(visible_renderer_count <= 1);
 		ImGui::SliderFloat("Comparison gap", &compare_offset, 0.0f, 14.0f, "%.1f world units");
 		ImGui::EndDisabled();
-		ImGui::TextWrapped(
-			"Left to right (whichever are ticked): Patterned, Solid, Dots. BezierSolidRenderer draws "
-			"every curve solid - it has no pattern pipeline at all - so untick \"Patterned\" and those "
-			"two should look identical; any difference in cost between them is the price of the pattern "
-			"pipeline. BezierDotRenderer always draws only dots: it ignores dash length and the "
-			"\"Patterned\" checkbox entirely and places each one from its own position + direction "
-			"rather than a shared line strip - see the Pattern section below.");
 
-		ImGui::SeparatorText("Stroke");
-		ImGui::SliderFloat("Width (px)", &style_width, 1.0f, 40.0f, "%.1f");
-		ImGui::SliderInt("Resolution", &style_resolution, 2, 400);
-
-		ImGui::SeparatorText("Caps");
-		ImGui::Checkbox("Same cap at both ends", &link_caps);
-		ImGui::Combo("Front cap", &style_cap_front, CapNames, CapCount);
-
-		// While linked the back picker mirrors the front one instead of showing a stale value.
-		int shown_back_cap = link_caps ? style_cap_front : style_cap_back;
-		ImGui::BeginDisabled(link_caps);
-		if (ImGui::Combo("Back cap", &shown_back_cap, CapNames, CapCount))
-			style_cap_back = shown_back_cap;
-		ImGui::EndDisabled();
-		ImGui::TextWrapped(
-			"The row of straight strokes at the top ignores these and keeps one fixed pair each, so "
-			"every cap stays visible. Their white end is the front.");
-
-		ImGui::SeparatorText("Join");
-		ImGui::RadioButton("Round##join", &style_join, 0);
-		ImGui::SameLine();
-		ImGui::RadioButton("Square##join", &style_join, 1);
-
-		ImGui::SeparatorText("Pattern");
-		ImGui::Checkbox("Patterned", &style_patterned);
-		ImGui::SameLine();
-		ImGui::TextDisabled("(off = spacing 0 = solid, Patterned/Solid only)");
-
-		ImGui::BeginDisabled(!style_patterned);
-		ImGui::SliderFloat("Dash length (px)", &style_dash_length, 0.0f, 200.0f, "%.1f");
-		ImGui::EndDisabled();
-		// Spacing is NOT gated behind style_patterned: BezierDotRenderer always reads it (ApplyStyle
-		// passes force_spacing = true for dot_scene), so leaving it live even with "Patterned" off
-		// keeps the dots column responsive instead of quietly freezing.
-		ImGui::SliderFloat("Spacing", &style_spacing, 0.05f, 2.0f, "%.2f world units");
-
-		// A dot is not a mode for the first two renderers: it is a zero-length dash whose two round
-		// caps land on top of each other, leaving a disc of radius `width`. This button just sets
-		// those three values. The third renderer always draws dots regardless of dash length.
-		if (ImGui::Button("Make dots"))
+		// --- the two screens ---------------------------------------------------------------------
+		if (ImGui::BeginTabBar("screens"))
 		{
-			style_dash_length = 0.0f;
-			style_cap_front = int(CurveCap::Round);
-			style_cap_back = int(CurveCap::Round);
-			link_caps = true;
+			if (ImGui::BeginTabItem("Example"))
+			{
+				ExampleGui();
+				ImGui::EndTabItem();
+			}
+
+			if (ImGui::BeginTabItem("Test"))
+			{
+				TestGui();
+				ImGui::EndTabItem();
+			}
+
+			ImGui::EndTabBar();
 		}
-		ImGui::SameLine();
-		ImGui::TextDisabled("dash length 0 + round caps");
-		ImGui::TextWrapped(
-			"Dash length is the pixel length of one dash, cap to cap; both of its ends wear the cap "
-			"chosen above, so 0 draws nothing unless that cap is Round (Patterned/Solid only - Dots "
-			"ignores dash length and always draws one shape per spacing interval). The cap gallery "
-			"keeps its own caps, which is why its strokes differ from everything else in all three "
-			"columns.");
-
-		ImGui::SeparatorText("Colour");
-		ImGui::Checkbox("Animate colours", &animate_colors);
-		ImGui::BeginDisabled(animate_colors);
-		ImGui::ColorEdit3("Wave A", &wave_color0.x);
-		ImGui::ColorEdit3("Wave B", &wave_color1.x);
-		ImGui::ColorEdit3("Petals", &petal_color.x);
-		ImGui::ColorEdit3("Ribbon A", &ribbon_color0.x);
-		ImGui::ColorEdit3("Ribbon B", &ribbon_color1.x);
-		ImGui::ColorEdit3("Gallery", &gallery_color.x);
-		ImGui::EndDisabled();
-
-		ImGui::SeparatorText("Colour by height");
-		ImGui::TextWrapped("Min >= max blends by curve t instead of world Y.");
-		ImGui::SliderFloat("Min height", &style_min_height, -5.0f, 5.0f, "%.2f");
-		ImGui::SliderFloat("Max height", &style_max_height, -5.0f, 5.0f, "%.2f");
 	}
 
 	ImGui::End();
 
-	ProfilerGui();
+	if (show_timings)
+		ProfilerGui();
+}
+
+void App::ExampleGui()
+{
+	ImGui::TextWrapped(
+		"Left to right (whichever are ticked): Patterned, Solid, Dots. BezierSolidRenderer draws "
+		"every curve solid - it has no pattern pipeline at all - so untick \"Patterned\" and those "
+		"two should look identical; any difference in cost between them is the price of the pattern "
+		"pipeline. BezierDotRenderer always draws only dots: it ignores dash length and the "
+		"\"Patterned\" checkbox entirely and places each one from its own position + direction "
+		"rather than a shared line strip - see the Pattern section below.");
+
+	StyleGui();
+
+	// Colours belong to this screen: they drive the four hand-built groups only. Test curves get a
+	// fixed hue at Add time and are never repainted.
+	ImGui::SeparatorText("Colour");
+	bool changed = ImGui::Checkbox("Animate colours", &animate_colors);
+	ImGui::BeginDisabled(animate_colors);
+	changed |= ImGui::ColorEdit3("Wave A", &wave_color0.x);
+	changed |= ImGui::ColorEdit3("Wave B", &wave_color1.x);
+	changed |= ImGui::ColorEdit3("Petals", &petal_color.x);
+	changed |= ImGui::ColorEdit3("Ribbon A", &ribbon_color0.x);
+	changed |= ImGui::ColorEdit3("Ribbon B", &ribbon_color1.x);
+	changed |= ImGui::ColorEdit3("Gallery", &gallery_color.x);
+	ImGui::EndDisabled();
+
+	// Colours are written by PoseScene(), which no longer runs every frame - so a picker moved while
+	// paused has to say so or nothing would happen until the animation is resumed.
+	if (changed)
+		scene_dirty = true;
+}
+
+void App::TestGui()
+{
+	ImGui::TextWrapped(
+		"Spawns random curves into ONE renderer at a time - the three scenes are allowed to diverge, "
+		"which is the only way to give one renderer a heavier load than the others and watch the "
+		"Timings table split. Only the geometry is random: every other property comes from the "
+		"controls below, the same ones the example scene is drawn with.");
+
+	ImGui::SeparatorText("Batch");
+	ImGui::Combo("Degree", &test_degree_index, DegreeNames, DegreeCount);
+	ImGui::SliderInt("Count", &test_count, 1, 2000);
+	// Deliberately a separate slider from the Stroke section's Resolution, which is also on this tab:
+	// this one is baked into each curve at Add time and never moves again, so batches at different
+	// resolutions can coexist in one scene. Named differently so the two are not confusable on screen.
+	ImGui::SliderInt("New curve resolution", &test_resolution, 2, 400);
+	ImGui::TextDisabled("One press adds `count` curves, all at that resolution.");
+
+	ImGui::SeparatorText("Random placement");
+	ImGui::SliderFloat3("Range", &test_range.x, 0.0f, 8.0f, "%.1f");
+	ImGui::SliderFloat("Spread", &test_spread, 0.05f, 4.0f, "%.2f");
+	ImGui::TextWrapped(
+		"Range is the half-extent of the box a curve's origin falls in, measured in its own column's "
+		"local coordinates; spread is how far that curve's control points scatter around the origin. "
+		"One copy of the example scene occupies about 3 x 4.5, so a range near that keeps a batch "
+		"inside its own column instead of sprawling across the neighbouring one.");
+
+	ImGui::SeparatorText("Add");
+	if (ImGui::Button("Add to Patterned"))
+		AddTestCurves(*patterned_renderer, patterned_scene, false);
+	ImGui::SameLine();
+	if (ImGui::Button("Add to Solid"))
+		AddTestCurves(*solid_renderer, solid_scene, false);
+	ImGui::SameLine();
+	if (ImGui::Button("Add to Dots"))
+		AddTestCurves(*dot_renderer, dot_scene, true);
+
+	// Rewinding the generator between the three calls makes them the SAME curves rather than three
+	// independent batches, which is the only way the three columns stay a like-for-like comparison.
+	if (ImGui::Button("Add to all three (identical curves)"))
+	{
+		const std::mt19937 batch_start = test_rng;
+		AddTestCurves(*patterned_renderer, patterned_scene, false);
+		test_rng = batch_start;
+		AddTestCurves(*solid_renderer, solid_scene, false);
+		test_rng = batch_start;
+		AddTestCurves(*dot_renderer, dot_scene, true);
+	}
+
+	ImGui::SeparatorText("In the scene");
+
+	// Sample points, not curves, is what the point pass and the buffers are actually sized by, so it
+	// is the number worth watching next to the Timings window.
+	auto sample_points = [](const Scene& scene)
+	{
+		size_t total = 0;
+		for (const auto& test : scene.test_curves) total += test.resolution;
+		return total;
+	};
+
+	constexpr ImGuiTableFlags table_flags =
+		ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
+
+	if (ImGui::BeginTable("test_counts", 4, table_flags))
+	{
+		const Scene* scenes[3] = { &patterned_scene, &solid_scene, &dot_scene };
+		const char* names[3] = { "Patterned", "Solid", "Dots" };
+
+		ImGui::TableSetupColumn("");
+		for (int i = 0; i < 3; i++) ImGui::TableSetupColumn(names[i]);
+		ImGui::TableHeadersRow();
+
+		ImGui::TableNextRow();
+		ImGui::TableNextColumn();
+		ImGui::TextUnformatted("test curves");
+		for (int i = 0; i < 3; i++)
+		{
+			ImGui::TableNextColumn();
+			ImGui::Text("%u", unsigned(scenes[i]->test_curves.size()));
+		}
+
+		ImGui::TableNextRow();
+		ImGui::TableNextColumn();
+		ImGui::TextUnformatted("their points");
+		for (int i = 0; i < 3; i++)
+		{
+			ImGui::TableNextColumn();
+			ImGui::Text("%u", unsigned(sample_points(*scenes[i])));
+		}
+
+		ImGui::EndTable();
+	}
+
+	ImGui::TextDisabled("No renderer has a Clear() - restart to reset.");
+
+	StyleGui();
+}
+
+void App::StyleGui()
+{
+	bool changed = false;
+
+	ImGui::SeparatorText("Stroke");
+	changed |= ImGui::SliderFloat("Width (px)", &style_width, 1.0f, 40.0f, "%.1f");
+	// Only the example groups follow this; every test curve keeps the resolution it was added with,
+	// which is why the Test tab has a slider of its own for that.
+	changed |= ImGui::SliderInt("Resolution (example scene)", &style_resolution, 2, 400);
+
+	ImGui::SeparatorText("Caps");
+	changed |= ImGui::Checkbox("Same cap at both ends", &link_caps);
+	changed |= ImGui::Combo("Front cap", &style_cap_front, CapNames, CapCount);
+
+	// While linked the back picker mirrors the front one instead of showing a stale value.
+	int shown_back_cap = link_caps ? style_cap_front : style_cap_back;
+	ImGui::BeginDisabled(link_caps);
+	if (ImGui::Combo("Back cap", &shown_back_cap, CapNames, CapCount))
+	{
+		style_cap_back = shown_back_cap;
+		changed = true;
+	}
+	ImGui::EndDisabled();
+	ImGui::TextWrapped(
+		"The row of straight strokes at the top ignores these and keeps one fixed pair each, so "
+		"every cap stays visible. Their white end is the front.");
+
+	ImGui::SeparatorText("Join");
+	changed |= ImGui::RadioButton("Round##join", &style_join, 0);
+	ImGui::SameLine();
+	changed |= ImGui::RadioButton("Square##join", &style_join, 1);
+
+	ImGui::SeparatorText("Pattern");
+	changed |= ImGui::Checkbox("Patterned", &style_patterned);
+	ImGui::SameLine();
+	ImGui::TextDisabled("(off = spacing 0 = solid, Patterned/Solid only)");
+
+	ImGui::BeginDisabled(!style_patterned);
+	changed |= ImGui::SliderFloat("Dash length (px)", &style_dash_length, 0.0f, 200.0f, "%.1f");
+	ImGui::EndDisabled();
+	// Spacing is NOT gated behind style_patterned: BezierDotRenderer always reads it (ApplyStyle
+	// passes force_spacing = true for dot_scene), so leaving it live even with "Patterned" off
+	// keeps the dots column responsive instead of quietly freezing.
+	changed |= ImGui::SliderFloat("Spacing", &style_spacing, 0.05f, 2.0f, "%.2f world units");
+
+	// A dot is not a mode for the first two renderers: it is a zero-length dash whose two round
+	// caps land on top of each other, leaving a disc of radius `width`. This button just sets
+	// those three values. The third renderer always draws dots regardless of dash length.
+	if (ImGui::Button("Make dots"))
+	{
+		style_dash_length = 0.0f;
+		style_cap_front = int(CurveCap::Round);
+		style_cap_back = int(CurveCap::Round);
+		link_caps = true;
+		changed = true;
+	}
+	ImGui::SameLine();
+	ImGui::TextDisabled("dash length 0 + round caps");
+	ImGui::TextWrapped(
+		"Dash length is the pixel length of one dash, cap to cap; both of its ends wear the cap "
+		"chosen above, so 0 draws nothing unless that cap is Round (Patterned/Solid only - Dots "
+		"ignores dash length and always draws one shape per spacing interval). The cap gallery "
+		"keeps its own caps, which is why its strokes differ from everything else in all three "
+		"columns.");
+
+	ImGui::SeparatorText("Colour by height");
+	ImGui::TextWrapped("Min >= max blends by curve t instead of world Y.");
+	changed |= ImGui::SliderFloat("Min height", &style_min_height, -5.0f, 5.0f, "%.2f");
+	changed |= ImGui::SliderFloat("Max height", &style_max_height, -5.0f, 5.0f, "%.2f");
+
+	// ApplyStyle() re-uploads the whole curve buffer, so it runs only when one of the above moved.
+	if (changed)
+		style_dirty = true;
 }
 
 void App::ProfilerGui()

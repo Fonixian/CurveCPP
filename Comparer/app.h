@@ -5,6 +5,7 @@
 #include "bezier.h"
 #include "bezier_solid.h"
 #include "bezier_dots.h"
+#include <vector>
 
 class App
 {
@@ -45,10 +46,25 @@ private:
 	// two ends and no joins - which is what makes it a clean cap reference.
 	static constexpr unsigned GalleryResolution = 2u;
 
-	// One renderer's worth of scene. Curves are added once in BuildScene() and never removed
-	// (none of the three renderers has a Clear()), so animation reposes them in place through these
-	// handles every frame instead. x_offset slides the whole copy sideways so the copies can be
+	// One curve spawned by the Test screen. Its control points are stored in the copy's LOCAL
+	// coordinates - x_offset is added back in PoseScene() - so a test curve keeps following its own
+	// column when the layout shifts (a renderer being ticked on or off, or the comparison gap moving).
+	// Resolution is per curve rather than per style: it is chosen at Add time and is exactly what the
+	// test is varying, so the Stroke section's global Resolution slider deliberately does not touch it.
+	struct TestCurve
+	{
+		BezierCurve handle;
+		DirectX::XMFLOAT3 P[4] = {};  // only the first `degree + 1` are meaningful
+		int degree = 3;               // 1 linear, 2 quadratic, 3 cubic
+		unsigned resolution = 120u;
+	};
+
+	// One renderer's worth of scene. The four example groups are added once in BuildScene() and never
+	// removed (none of the three renderers has a Clear()), so animation reposes them in place through
+	// these handles every frame instead. x_offset slides the whole copy sideways so the copies can be
 	// compared; BezierCurve itself is renderer-agnostic, so the same Scene type serves all three.
+	//
+	// test_curves grows from the Test screen and, for the same reason, never shrinks.
 	struct Scene
 	{
 		float x_offset = 0.0f;
@@ -56,11 +72,39 @@ private:
 		BezierCurve petals[PetalCount];
 		BezierCurve ribbon[RibbonLinks];
 		BezierCurve gallery[GalleryCount];
+		std::vector<TestCurve> test_curves;
 	};
 
 	Scene patterned_scene;
 	Scene solid_scene;
 	Scene dot_scene;
+
+	// --- screens -------------------------------------------------------------------
+	// Two tabs in the control window. Example is the hand-built demo scene; Test spawns random curves
+	// into one renderer at a time so the Timings window has something to measure. Both screens share
+	// the renderer checkboxes, the style controls, and the same three scenes - the tab only decides
+	// which controls are on screen, never what is drawn.
+	bool show_timings = true;
+
+	// Set by anything that changes what PoseScene() / ApplyStyle() would produce. Both passes touch()
+	// every curve they visit, which raises need_upload and so re-uploads the WHOLE curve buffer, so
+	// running them unconditionally every frame made "Pause animation" cost exactly as much as playing
+	// it. With a scene of a few thousand test curves that upload is the measurement, so both are now
+	// gated: paused really means idle, and the Timings window then shows the draw cost alone.
+	bool scene_dirty = true;
+	bool style_dirty = true;
+
+	// --- Test screen ---------------------------------------------------------------
+	int test_degree_index = 2;      // 0 linear, 1 quadratic, 2 cubic
+	int test_count = 50;            // curves added per button press
+	int test_resolution = 120;      // sample points per added curve, kept per curve afterwards
+	// Half-extents of the box a new curve's origin lands in, in one copy's local coordinates. The
+	// example scene occupies x in [-3, 3], y in [-4.4, 4.6], so the defaults keep test curves roughly
+	// inside their own column rather than sprawling across the neighbouring one.
+	DirectX::XMFLOAT3 test_range = { 2.5f, 3.5f, 1.5f };
+	// How far the individual control points scatter from that origin. Small values give short, tame
+	// strokes; large ones give scribbles that span the box.
+	float test_spread = 0.8f;
 
 	// --- what gets drawn -----------------------------------------------------------
 	bool draw_patterned = true;
@@ -97,12 +141,24 @@ private:
 
 	void Update(float delta);
 	void Gui();
+	// The Example tab: what the demo scene is, plus the per-group colour pickers.
+	void ExampleGui();
+	// The Test tab: the random-curve spawner and one Add button per renderer.
+	void TestGui();
+	// Stroke / caps / join / pattern / height band. Shown on both tabs because it drives every curve
+	// in every scene, test curves included.
+	void StyleGui();
 	// The timings window. Reads each renderer's public Profiler, one column per renderer.
 	void ProfilerGui();
 	void Render();
 
 	// Adds one copy of the scene to `renderer` and fills `scene` with handles to it.
 	void BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset);
+	// Spawns test_count random curves into ONE renderer and records them in that renderer's scene.
+	// Deliberately per renderer rather than broadcast: the scenes are allowed to diverge, which is the
+	// only way to give one renderer a heavier load than the others and watch the Timings table split.
+	// `force_spacing` matches ApplyStyle()'s parameter - see there.
+	void AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing);
 	// Re-poses and re-colours one copy for the current animation_time and x_offset.
 	void PoseScene(Scene& scene);
 	// Pushes the runtime style controls onto one copy. The gallery keeps its own caps. `force_spacing`
