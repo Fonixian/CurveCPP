@@ -187,6 +187,7 @@ void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context) {
 
 void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
 	auto* context = device.ImmediateContext();
+	context->get()->Flush();
 	BeginDraw();
 
 	if (UpdateBuffers(device, context)) need_recount = true;

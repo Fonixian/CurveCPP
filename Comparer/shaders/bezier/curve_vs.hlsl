@@ -28,8 +28,8 @@ float min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
 float max2(float2 v) { return max(v.x, v.y); }
 float min2(float2 v) { return min(v.x, v.y); }
 
-bool clip(inout float4 B, inout float3 color_B, float2 distance_B, inout float3 position_B,
-          inout float4 C, inout float3 color_C, float2 distance_C, inout float3 position_C,
+bool clip(inout float4 B, inout float3 color_B, inout float2 distance_B, inout float3 position_B,
+          inout float4 C, inout float3 color_C, inout float2 distance_C, inout float3 position_C,
           inout float4 A, inout float4 D) {
     if (isnan(B.x) || isnan(C.x)) return false;
 
@@ -282,7 +282,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // other four assert - so it was writing a sign-flipped lateral. Invisible while everything read
     // abs(SDF.x), except inside the wedge triangle, where the magnitude was being interpolated from a
     // wrong-signed corner. Negating puts all five on one convention.
-    o.SDF.x = index == 4 ? (-dot(offset, dir_BC_r) * width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
+    o.SDF.x = index == 4 ? (dot(offset, dir_BC_r) * -width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
     o.SDF.y = sdf;
     o.SDF.zw = float2(width_pixel, l_CB);
 

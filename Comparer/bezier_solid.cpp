@@ -61,6 +61,7 @@ void BezierSolidRenderer::RunPointPass(GraphicsDeviceContext* context) {
 
 void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
 	auto* context = device.ImmediateContext();
+	context->get()->Flush();
 	BeginDraw();
 
 	UpdateBuffers(device, context);
@@ -87,8 +88,13 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context);
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);
 
-	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	context->get()->DrawInstanced(5, total_points - 1u, 0, 0);
+	// ONE TRIANGLE PER SEGMENT, three vertices, not a 5-vertex strip: solid_vert.hlsl takes the
+	// segment from SV_VertexID / 3 and the corner from SV_VertexID % 3 and emits a loose triangle
+	// that merely CONTAINS the stroke - solid_ps.hlsl bounds it instead of the rasteriser. There is
+	// still one segment per point PAIR, including the pairs that straddle two curves; those emit NaN
+	// and die in the vertex shader exactly as the old strip's invalid instances did.
+	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	context->get()->Draw((total_points - 1u) * 3u, 0);
 	profiler.end_gpu("draw");
 
 	ClearDrawBindings(context);

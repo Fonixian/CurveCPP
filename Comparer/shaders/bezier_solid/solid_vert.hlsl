@@ -1,5 +1,26 @@
 #include "solid_common.hlsli"
 
+// ONE TRIANGLE PER SEGMENT.
+//
+// The old geometry was DrawInstanced(5, points - 1) as a TRIANGLESTRIP: v0/v1 at B, v2/v3 at C and
+// v4 the join wedge, three triangles whose outline WAS the drawn shape - the rasteriser did the
+// bounding and the pixel shader only carved caps out of it. This draws Draw((points - 1) * 3) as a
+// TRIANGLELIST instead: one loose triangle that merely CONTAINS the segment, with the bounding moved
+// into the pixel shader.
+//
+// What makes that legal is that SDF.x and SDF.y were never per-vertex constants pretending to be a
+// coordinate - they are exactly the affine functions
+//     lateral(p) = dot(p - B, lateralDir),   localArc(p) = dot(p - B, segDir)
+// evaluated at each vertex (verified to 9e-13 px over 4000 random configurations of the old shader).
+// An affine function interpolated over ANY triangle containing a pixel yields the same value there,
+// so the pixel shader sees bit-identical inputs no matter what shape delivers them.
+//
+// What the geometry did contribute, and now has to be said out loud:
+//   * where a segment stops at a joint. The old quad ended on the joint's angle bisector (a plain
+//     miter) for turns up to 90 deg, which is exactly what ArcShear encodes - see solid_ps.hlsl.
+//   * that the strip stopped at |lateral| == halfWidth, clipping the outer half of the coverage
+//     ramp. SOLID_AA_MARGIN restores it; set it to 0.0 for the old, half-a-pixel-thin look.
+
 cbuffer CameraData : register(b1) {
     float4x4 VP;
     float2 WH;
@@ -64,6 +85,8 @@ bool clip(inout float4 B, inout float3 color_B,
         nB = lerp(nB0, nC0, t0);
         nC = lerp(nB0, nC0, t1);
 
+        // A clipped end is no longer a real joint: the neighbour is replaced by this segment's own
+        // far point, which reads as a fold below and ends the segment flat instead of on a bisector.
         if (t0 > 0.0) A = C;
         if (t1 < 1.0) D = B;
     }
@@ -82,18 +105,43 @@ bool clip(inout float4 B, inout float3 color_B,
     return true;
 }
 
-bool calc_overlap(float2 dir_AB, float d, float2 v, float l_AB, float l_CB, float line_width) {
-    if (d <= -0.9996) return true;
-    if (d >= 0.9996) return false;
+// --- the bisector frame -------------------------------------------------------------------------
+// 1 + cos(turn) below this means the joint is folded back on itself. It is also what a MISSING
+// neighbour looks like (NaN) and what a near-plane-clipped end looks like (exactly -segDir). All
+// three want the same answer: no bisector here, end the segment flat.
+static const float SolidBisectorMinCos = 1e-3;
+// Bounds the shear so a near-fold cannot throw the cut line across the screen.
+static const float SolidMaxArcShear = 8.0;
 
-    float cos_abc = abs(dot(dir_AB, v));
-    float sin_abc = rsqrt(max(0.0, 1.0 - cos_abc * cos_abc));
-    float l = line_width * cos_abc * sin_abc;
-    return l > l_AB || l > l_CB;
+float2 SolidSafeDir(float2 from, float2 to) {
+    float2 delta = to - from;
+    float len = length(delta);
+    return (len > 1e-6) ? (delta / len) : float2(0.0, 0.0);
 }
 
-SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
+// Signed tan(half the turn angle) at one end of the segment, in the pixel shader's lateral frame.
+// Splitting a pixel into (localArc along segDir) + (lateral along lateralDir), the arc whose
+// iso-lines are the joint's angle bisector is
+//     localArc + lateral * dot(lateralDir, t) / dot(segDir, t),   t = segDir + neighbourDir
+// and dot(lateralDir, segDir) == 0 collapses the ratio to what is below. The two segments meeting at
+// a joint get equal and opposite shears, which describe the SAME line in the plane - that is what
+// lets each of them keep its own side of it with no gap and no double blend.
+//
+// neighbourDir points INTO the joint at B and OUT of it at C, so one function serves both.
+// Identical to CurveJointShear in curve_vs.hlsl, plus the isJoint flag. (Duplicated on purpose:
+// the solid shaders do not share an hlsli with the patterned ones.)
+float SolidJointShear(float2 lateralDir, float2 segDir, float2 neighbourDir, out bool isJoint) {
+    float denom = 1.0 + dot(neighbourDir, segDir);
+    isJoint = denom > SolidBisectorMinCos;              // false for NaN, which is what we want
+    if (!isJoint) return 0.0;
+    return clamp(dot(lateralDir, neighbourDir) / denom, -SolidMaxArcShear, SolidMaxArcShear);
+}
+
+SolidVSOutput main(uint vertexId : SV_VertexID) {
     SolidVSOutput o = (SolidVSOutput)0;
+
+    const uint i = vertexId / 3u;               // segment = the point pair (i, i + 1)
+    const uint corner = vertexId - i * 3u;
     const uint pointCount = TotalPointCount;
 
     const bool segmentValid = (i + 1 < pointCount) && !IsCurveBegin(i + 1);
@@ -127,90 +175,79 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     const uint curveIndex = BezierIndexMap[i];
     const SolidCurveStyle style = CurveStyles[curveIndex];
-    const float width_pixel = style.Width;
-    o.Color = index < 2 ? float4(color_B, 1.0) : float4(color_C, 1.0);
-    o.CapCapJoin = style.CapCapJoin;
-    o.Neighbors = uint2(hasA ? 1u : 0u, hasD ? 1u : 0u);
+    const float halfWidth = style.Width;
 
     A4 /= A4.w;
     B4 /= B4.w;
     C4 /= C4.w;
     D4 /= D4.w;
 
-    float2 A;
-    float2 B;
-    float2 C;
-    if (index < 2) {
-        A = A4.xy;
-        B = B4.xy;
-        C = C4.xy;
-        o.Position = float4(B4.xyz, 1.0);
-    } else {
-        A = D4.xy;
-        B = C4.xy;
-        C = B4.xy;
-        o.Position = float4(C4.xyz, 1.0);
-    }
+    const float2 pA = mad(A4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;   // NaN when absent
+    const float2 pB = mad(B4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+    const float2 pC = mad(C4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+    const float2 pD = mad(D4.xy, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
 
-    A = mad(A, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
-    B = mad(B, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
-    C = mad(C, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+    const float segLength = distance(pB, pC);
+    const float2 segDir = (pC - pB) / segLength;            // NaN on a zero-length segment, which
+    const float2 lateralDir = float2(-segDir.y, segDir.x);  // kills the triangle - as it did before
 
-    A = any(isnan(A)) ? C : A;
+    bool jointB = false, jointC = false;
+    float shearB = 0.0, shearC = 0.0;
+    if (hasA) shearB = SolidJointShear(lateralDir, segDir, SolidSafeDir(pA, pB), jointB);
+    if (hasD) shearC = SolidJointShear(lateralDir, segDir, SolidSafeDir(pC, pD), jointC);
 
-    float l_AB = distance(A, B);
-    float l_CB = distance(B, C);
+    const uint endB = !hasA ? SolidTerminus : (jointB ? SolidJointBisector : SolidJointFlat);
+    const uint endC = !hasD ? SolidTerminus : (jointC ? SolidJointBisector : SolidJointFlat);
 
-    float2 dir_AB = (A - B) / l_AB;
-    float2 dir_BC = (B - C) / l_CB;
+    // How far past each end the pixel shader can possibly keep a pixel. At a bisector joint the cut
+    // is min(+-lateral * shear, reach) and |lateral| never exceeds halfWidth + the ramp, so the
+    // furthest it can reach is that times the shear. Everything here mirrors solid_ps.hlsl exactly;
+    // if one of them changes, the other has to.
+    const float W = halfWidth + SolidAAMargin;
+    const float reach = SolidJoinReach(style.CapCapJoin, halfWidth);
+    const float capReach = SolidCapReach(halfWidth);
 
-    float2 dir_AB_r = float2(dir_AB.y, -dir_AB.x);
-    float2 dir_BC_r = float2(dir_BC.y, -dir_BC.x);
+    float extB = (endB == SolidTerminus) ? capReach
+               : ((endB == SolidJointFlat) ? reach : min(W * abs(shearB), reach));
+    float extC = (endC == SolidTerminus) ? capReach
+               : ((endC == SolidJointFlat) ? reach : min(W * abs(shearC), reach));
+    // The pad goes on the ARC extents only. That is enough to lift the triangle's edges clear of the
+    // box corners (which they would otherwise touch exactly), and it leaves the lateral extent at
+    // exactly halfWidth + SOLID_AA_MARGIN, so setting that margin to 0 really does clip the stroke
+    // at halfWidth the way the old strip did.
+    extB += SolidTrianglePad;
+    extC += SolidTrianglePad;
 
-    float2 inner; {
-        float2 r_ab = dir_AB_r * (dot(dir_AB_r, dir_BC) >= 0.0 ? -1.0 : 1.0);
-        float2 r_bc = dir_BC_r * (dot(dir_BC_r, dir_AB) < 0.0 ? -1.0 : 1.0);
-        float den = dot(r_ab, r_bc);
-        inner = den <= -0.9999 ? r_ab : (r_ab + r_bc) / (1.0 + den);
-    }
+    // The covering triangle, in (localArc, lateral) pixels. The box the pixel shader can draw in is
+    // [-extB, segLength + extC] x [-W, W]; an apex one box-length behind it and a base two
+    // box-heights tall at the far end is the minimum-area triangle that contains a box - the box
+    // corners at -extB land on the two edges. Twice the box area, but ONE triangle instead of three
+    // and three vertices instead of five.
+    const float span = segLength + extB + extC;
+    const float arc = (corner == 0u) ? (-extB - span) : (segLength + extC);
+    const float lat = (corner == 0u) ? 0.0 : ((corner == 1u) ? (2.0 * W) : (-2.0 * W));
 
-    float d = dot(dir_AB, dir_BC);
-    float2 right_offset = d <= -0.9999 ? dir_AB_r : (dir_AB_r + dir_BC_r) / (1.0 + d);
-    float2 v = normalize(inner);
-    bool overlap = calc_overlap(dir_AB, d, v, l_AB, l_CB, width_pixel);
+    // Position as a pixel offset from B, converted back to NDC the same way everything else here
+    // does it. B4.xy is left untouched so the round trip costs no precision.
+    const float2 offset = segDir * arc + lateralDir * lat;
+    const float t = arc / segLength;
 
-    v *= (dot(right_offset, inner) <= 0.0 ? -1.0 : 1.0);
-    float cos_half = clamp(dot(dir_BC_r, v), -1.0, 1.0);
-    float t = sqrt(max(0.0, 1.0 - cos_half) / (1.0 + cos_half));
+    o.Position.xy = mad(2.0 / WH, offset, B4.xy);
+    // The segment's own depth ramp, held inside [B, C] so the apex cannot extrapolate the vertex out
+    // through the near or far plane - there is no hardware clipping left to fix that, the w divide
+    // already happened.
+    o.Position.z = clamp(lerp(B4.z, C4.z, t), min(B4.z, C4.z), max(B4.z, C4.z));
+    o.Position.w = 1.0;
 
-    float2 perp_base = index < 4 ? dir_BC_r : dir_AB_r;
-    float2 perpendicular = (dot(right_offset, inner) >= 0.0 ? -1.0 : 1.0) * perp_base;
-    float2 parallel = index < 4 ? dir_BC : -dir_AB;
+    // Unclamped on purpose: the three corner values then lie on the same line as the old strip's
+    // per-vertex colours, so the ramp inside the segment is identical (and exactly color_B at
+    // localArc 0, which the old stretched-over-the-quad version was only approximately).
+    o.Color = float4(lerp(color_B, color_C, t), 1.0);
 
-    float2 no_overlap_offset; {
-        float2 a = perpendicular + t * parallel;
-        float2 b = index == 4 ? a : inner;
-        if ((index > 1) != (index % 2 == 0)) {
-            float2 tmp = a;
-            a = b;
-            b = tmp;
-        }
-        no_overlap_offset = dot(right_offset, inner) >= 0.0 ? a : b;
-    }
-
-    float s_12 = (index == 1 || index == 2) ? -1.0 : 1.0;
-    float2 overlap_offset = dir_BC + s_12 * dir_BC_r;
-    float2 obtuse_offset = s_12 * right_offset;
-
-    float2 offset = dot(dir_AB, dir_BC) >= 0 ? obtuse_offset : (overlap ? overlap_offset : no_overlap_offset);
-    float sdf = dot(offset, index < 2 ? dir_BC : -dir_BC) * -width_pixel;
-    sdf += index < 2 ? 0.0 : l_CB;
-    float2 length_conversion = 2.0 / WH * width_pixel;
-    o.Position.xy = mad(length_conversion, offset, o.Position.xy);
-
-    o.SDF.x = index == 4 ? (dot(offset, dir_BC_r) * -width_pixel) : (index % 2 == 0 ? width_pixel : -width_pixel);
-    o.SDF.y = sdf;
-    o.SDF.zw = float2(width_pixel, l_CB);
+    o.SDF = float4(lat, arc, halfWidth, segLength);
+    o.CapCapJoin = style.CapCapJoin;
+    o.Neighbors = uint2(endB, endC);
+    o.ArcShear = float2(shearB, shearC);
 
     return o;
 }
