@@ -19,7 +19,7 @@ bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
     return ((w >> (pointIndex & 31u)) & 1u) != 0u;
 }
 
-float4 side_dist(float4 p) { return float4(p.x, -p.x, p.y, -p.y) + p.w; }
+float4 side_dist(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
 float2 depth_dist(float4 p) { return float2(p.z, p.w - p.z); }
 
 float max4(float4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
@@ -80,24 +80,35 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // one gets fetched and transformed.
     const bool nearSide = index < 2u;
     const uint ni = nearSide ? (i - 1u) : (i + 2u);
+    
+    const uint wordBase = i >> 5u;
+    const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
+    const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
+    const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
+    const bool hasN = nearSide ? hasA : hasD;
 
     // Every memory request is issued before the first branch so the two-step
     // BezierIndexMap -> CurveStyles chain overlaps the transform + clip math.
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
-    const float3 rawN = CalculatedPoints[ni].xyz;
-    const uint styleIndex = BezierIndexMap[i];
-    const uint wordBase = i >> 5u;
-    const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
+    float3 rawN = hasN ? CalculatedPoints[ni].xyz : 0.0/0.0;
+    if (nearSide)
+    {
+        if (hasN && distance(rawN, rawB.xyz) < 0.00001)
+            if (i > 1u)
+                rawN = CalculatedPoints[i - 2u].xyz;
+    }
+    else
+    {
+        if (hasN && distance(rawN, rawC.xyz) < 0.00001)
+            if (i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u))
+                rawN = CalculatedPoints[i + 3u].xyz;
+    }
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
         return o;
     }
-
-    const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
-    const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
-    const bool hasN = nearSide ? hasA : hasD;
 
     float4 B4 = mul(float4(rawB.xyz, 1.0), VP);
     float4 C4 = mul(float4(rawC.xyz, 1.0), VP);
@@ -125,7 +136,7 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         if (uN > 0.0) N4 = lerp(N4, P, uN);
     }
 
-    const SolidCurveStyle style = CurveStyles[styleIndex];
+    const SolidCurveStyle style = CurveStyles[BezierIndexMap[i]];
     const float width_pixel = style.Width;
 
     const float3 cB = UnpackColorBits(asuint(rawB.w)).xyz;
@@ -146,7 +157,7 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     const float2 B = nearSide ? scrB : scrC;
     const float2 C = nearSide ? scrC : scrB;
-    const float2 A = (hasN && !any(isnan(scrN))) ? scrN : C;
+    const float2 A = (hasN && !isnan(scrN.x)) ? scrN : C;
 
     const float l_AB = distance(A, B);
     const float l_CB = distance(B, C);
