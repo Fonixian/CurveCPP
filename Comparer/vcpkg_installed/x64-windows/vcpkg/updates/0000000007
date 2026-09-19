@@ -1,6 +1,0 @@
-Package: imgui
-Feature: dx11-binding
-Architecture: x64-windows
-Multi-Arch: same
-Description: Make available DirectX11 binding
-Status: install ok half-installed

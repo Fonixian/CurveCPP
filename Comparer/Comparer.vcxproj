@@ -161,6 +161,7 @@
     <ClCompile Include="pipeline.cpp" />
     <ClCompile Include="profiler.cpp" />
     <ClCompile Include="SegmentedScan.cpp" />
+    <ClCompile Include="ParalellScan.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\axodox-common\Axodox.Common.Desktop\Axodox.Common.Desktop.vcxproj">
@@ -179,12 +180,14 @@
     <ClInclude Include="pipeline.h" />
     <ClInclude Include="profiler.h" />
     <ClInclude Include="SegmentedScan.h" />
+    <ClInclude Include="ParalellScan.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\bezier\curve_common.hlsli" />
     <None Include="shaders\bezier_solid\solid_common.hlsli" />
     <None Include="shaders\bezier_dots\dot_common.hlsli" />
     <None Include="shaders\segmented_scan_common.hlsli" />
+    <None Include="shaders\paralell_scan_common.hlsli" />
     <None Include="vcpkg.json" />
   </ItemGroup>
   <ItemGroup>
@@ -235,6 +238,14 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
     <FxCompile Include="shaders\segmented_scan_local.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\paralell_scan_local.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\paralell_scan_add_offsets.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>

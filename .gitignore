@@ -427,3 +427,6 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# vcpkg manifest-mode install tree - restored by vcpkg on build, never versioned
+vcpkg_installed/
