@@ -3,58 +3,37 @@
 
 using namespace Axodox::Graphics;
 
-// Work-efficient (Blelloch) exclusive prefix sum over uint - the unsegmented
-// counterpart of SegmentedScan. There is no flag buffer: one running total
-// crosses the whole range instead of restarting at each segment boundary.
-//
-// What it is for here: turning the per-curve pattern/dot counts into per-curve
-// base offsets. offset[i] = counts[0] + ... + counts[i-1], which depends on
-// curve order alone, so the same scene lays its patterns out identically on
-// every run and on every machine. The InterlockedAdd this replaced handed out
-// the same slices in whatever order the thread groups happened to retire.
-// The price is one extra uint per curve plus this class's block-sum buffers -
-// a scan needs somewhere to put the counts it consumes, an atomic does not.
-//
-// Each thread group scans ElementsPerGroup elements with ThreadGroupSize
-// threads (two elements each) by an up-sweep/down-sweep over a groupshared
-// reduction tree, costing O(n) adds where SegmentedScan's Hillis-Steele pass
-// costs O(n log n). Every group leaves its own total behind; those totals are
-// scanned by the same algorithm one level up and added back, recursively, so a
-// single Scan() call covers any element count up to the maxElementCount given
-// at construction.
-//
-// ElementsPerGroup matches SegmentedScan::GroupSize on purpose, so both scans
-// cut the same data into the same blocks and their timings compare directly.
-class ParalellScan
-{
+class ParalellScan {
 public:
-    static constexpr uint32_t ThreadGroupSize = 512u;
+    static constexpr uint32_t ThreadGroupSize = 256u;
     static constexpr uint32_t ElementsPerGroup = ThreadGroupSize * 2u;
 
     ParalellScan(const GraphicsDevice&, uint32_t maxElementCount);
 
-    // Scans `values` in place: values[i] becomes the sum of values[0..i-1]. The
-    // grand total is not written anywhere - it is values[count-1] plus that
-    // element's original count, which the caller already has.
-    void Scan(RWStructuredBuffer& values, uint32_t count, GraphicsDeviceContext* context = nullptr);
+
+    // Exclusive prefix sum over the first `count` elements, in place.
+    //
+    // With appendTotal, one more slot is written: values[count] comes back holding the sum of all
+    // `count` elements, so the total is a plain load rather than a second pass reassembling it from
+    // the last offset plus the last count. The caller's buffer must therefore have room for
+    // count + 1 elements - a structured-buffer UAV drops an out-of-range store silently, so a buffer
+    // sized to exactly `count` loses the total instead of faulting.
+    void Scan(RWStructuredBuffer& values, uint32_t count, GraphicsDeviceContext* context, bool appendTotal = false);
 
     ParalellScan(const ParalellScan&) = delete;
     ParalellScan& operator=(const ParalellScan&) = delete;
     ParalellScan(ParalellScan&&) = default;
     ParalellScan& operator=(ParalellScan&&) = default;
 private:
-    // One per recursion step: level 0 scans the caller's buffer, level 1 scans
-    // level 0's block sums, and so on until a single group covers them all.
     struct Level {
         uint32_t capacity = 0u;
         std::unique_ptr<RWStructuredBuffer> blockSums;
         std::unique_ptr<ConstantBuffer> constants;
     };
 
-    GraphicsDevice _device;
     ComputeShader* _localScan;
     ComputeShader* _addBlockOffsets;
     std::vector<Level> _levels;
 
-    void ScanLevel(RWStructuredBuffer& values, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context);
+    void ScanLevel(RWStructuredBuffer& values, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context, bool appendTotal);
 };

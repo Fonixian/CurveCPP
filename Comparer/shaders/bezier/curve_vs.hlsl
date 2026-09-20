@@ -9,11 +9,14 @@ cbuffer CameraData : register(b1) {
 
 StructuredBuffer<float4> CalculatedPoints : register(t0);
 StructuredBuffer<uint> CurveBegins : register(t1);
-StructuredBuffer<float2> Distances : register(t2);
+StructuredBuffer<float> WorldDistances : register(t2);
 StructuredBuffer<BezierCurveData> BezierData : register(t3);
 StructuredBuffer<uint> BezierIndexMap : register(t4);
-StructuredBuffer<uint2> PatternRanges : register(t5);
+StructuredBuffer<uint> PatternOffsets : register(t5);
 StructuredBuffer<CurveStyle> CurveStyles : register(t6);
+// Appended at the end rather than next to WorldDistances so the slot numbers t0..t6 that the solid
+// renderer's vertex shader also uses keep lining up and the two stay easy to diff.
+StructuredBuffer<float> ScreenDistances : register(t7);
 
 // i, i+1, i+2 and i+3 always fall inside two consecutive 32-bit words, so two loads
 // cover every begin-bit this shader needs instead of four separate dependent loads.
@@ -182,20 +185,20 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     const float3 cB = UnpackColorBits(asuint(rawB.w)).xyz;
     const float3 cC = UnpackColorBits(asuint(rawC.w)).xyz;
-    const float2 dB = Distances[i];
-    const float2 dC = Distances[i + 1u];
+    const float2 dB = float2(WorldDistances[i], ScreenDistances[i]);
+    const float2 dC = float2(WorldDistances[i + 1u], ScreenDistances[i + 1u]);
     const float tEnd = nearSide ? t0 : t1;
 
     o.Color = float4(lerp(cB, cC, tEnd), 1.0);
     o.TotalDistance = lerp(dB.x, dC.x, tEnd);
     o.ScreenArcBegin = lerp(dB.y, dC.y, t0);
-    o.ScreenArcEnd = Distances[BezierData[curveIndex].LastIndex].y;
+    o.ScreenArcEnd = ScreenDistances[BezierData[curveIndex].LastIndex];
     o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
     o.CapCapJoin = style.CapCapJoin;
 
     // --- where this curve's centres live in the flat pattern array ----------------------------
-    // Distances is chain-cumulative, so the centre grid is shared by every curve in the chain and
+    // WorldDistances is chain-cumulative, so the centre grid is shared by every curve in the chain and
     // curve_pattern_ini hands each curve the WINDOW of it that falls inside its own arc span. The
     // pixel shader inverts a pixel's distance back into a GLOBAL grid index, so it needs the bias
     // that maps that index onto this curve's slice - patternFirst - patternBase.
@@ -204,15 +207,19 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // on the next curve can still reach back across the joint, and without the widening it would be
     // sliced off exactly at the joint - the very seam this is meant to remove. The flat array is an
     // exclusive scan over the counts in curve order, and the chain runs in curve order too, so
-    // slice.x - 1 IS the previous centre along the chain and slice.x + slice.y the next one, empty
-    // slices in between costing nothing. Both are clamped to what pattern_calc actually wrote:
-    // 0 at the bottom, and at the top the grand total, which is the last curve's offset plus its
-    // own count - the same number curve_pattern_resolve publishes to PatternCounter.
-    const uint2 patternSlice = PatternRanges[curveIndex];
-    const uint2 patternLast = PatternRanges[max(TotalCurveCount, 1u) - 1u];
-    const int patternTotal = int(patternLast.x + patternLast.y);
+    // sliceBegin - 1 IS the previous centre along the chain and sliceEnd the next one, empty slices
+    // in between costing nothing. Both are clamped to what pattern_calc actually wrote: 0 at the
+    // bottom, and at the top the grand total.
+    //
+    // PatternOffsets is an exclusive scan with the total appended one slot past the last curve, so
+    // this curve's slice is the gap between neighbouring offsets and the total is a single load at
+    // [TotalCurveCount]. It used to be a uint2 per curve plus a second read of the LAST curve's pair
+    // to reassemble that total; the appended slot is the same number, already summed.
+    const uint sliceBegin = PatternOffsets[curveIndex];
+    const uint sliceEnd = PatternOffsets[curveIndex + 1u];
+    const int patternTotal = (TotalCurveCount > 0u) ? int(PatternOffsets[TotalCurveCount]) : 0;
 
-    const float curveArcBegin = Distances[BezierData[curveIndex].FirstIndex].x;
+    const float curveArcBegin = WorldDistances[BezierData[curveIndex].FirstIndex];
     const int patternBase = (curveArcBegin > 0.0 && style.Spacing > 0.0)
         ? (int) floor(curveArcBegin / style.Spacing) + 1
         : 0;
@@ -222,9 +229,9 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // that owns nothing can still show the tail of its neighbour's dash. The one real special case
     // is a chain with no centres at all, where there is nothing to read and hi < lo says so.
     o.PatternSlot = int3(
-        int(patternSlice.x) - patternBase,
-        (patternTotal > 0) ? max(int(patternSlice.x) - 1, 0) : 0,
-        (patternTotal > 0) ? min(int(patternSlice.x + patternSlice.y), patternTotal - 1) : -1);
+        int(sliceBegin) - patternBase,
+        (patternTotal > 0) ? max(int(sliceBegin) - 1, 0) : 0,
+        (patternTotal > 0) ? min(int(sliceEnd), patternTotal - 1) : -1);
 
     const float3 ndcB = B4.xyz / B4.w;
     const float3 ndcC = C4.xyz / C4.w;

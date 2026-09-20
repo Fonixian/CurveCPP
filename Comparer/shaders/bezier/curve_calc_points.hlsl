@@ -11,7 +11,10 @@ StructuredBuffer<BezierCurveData> BezierData     : register(t0);
 StructuredBuffer<uint>            BezierIndexMap : register(t1);
 
 RWStructuredBuffer<float4> CalculatedPoints : register(u0);
-RWStructuredBuffer<float2> Distances        : register(u1);
+// Segment lengths, one float per point, in two separate buffers - each gets its own segmented scan
+// and every reader downstream wants one channel or the other, never both interleaved.
+RWStructuredBuffer<float>  WorldDistances   : register(u1);
+RWStructuredBuffer<float>  ScreenDistances  : register(u2);
 
 float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t) {
     float omt = 1.0 - t;
@@ -58,7 +61,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float2 bScreen = (b.xy * 0.5 + 0.5) * WH;
         dist_screen = distance(aScreen, bScreen);
     }
-    Distances[pointIndex] = float2(dist, dist_screen);
+    WorldDistances[pointIndex]  = dist;
+    ScreenDistances[pointIndex] = dist_screen;
 
     float blend = t;
     if (bez.MinHeight < bez.MaxHeight)

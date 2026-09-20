@@ -9,8 +9,8 @@ uint ReadFlag(uint index) {
     }
 }
 
-groupshared float2 gValue[2][GROUP_SIZE];
-groupshared uint   gFlag[2][GROUP_SIZE];
+groupshared float gValue[2][GROUP_SIZE];
+groupshared uint  gFlag[2][GROUP_SIZE];
 
 [numthreads(GROUP_SIZE, 1, 1)]
 void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
@@ -21,7 +21,7 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
 
     uint blockCount = min(GROUP_SIZE, ElementCount - blockIndex * GROUP_SIZE);
 
-    float2 originalValue = active ? Values[globalIndex] : 0.0f;
+    float originalValue = active ? Values[globalIndex] : 0.0f;
     uint originalFlag = active ? ReadFlag(globalIndex) : 0u;
 
     uint src = 0u;
@@ -32,11 +32,11 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
     for (uint offset = 1u; offset < GROUP_SIZE; offset <<= 1u) {
         uint dst = 1u - src;
 
-        float2 value = gValue[src][localIndex];
+        float value = gValue[src][localIndex];
         uint flag = gFlag[src][localIndex];
 
         if (localIndex >= offset) {
-            float2 leftValue = gValue[src][localIndex - offset];
+            float leftValue = gValue[src][localIndex - offset];
             uint leftFlag = gFlag[src][localIndex - offset];
 
             value = (flag != 0u) ? value : (leftValue + value);
@@ -50,7 +50,7 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
         GroupMemoryBarrierWithGroupSync();
     }
     
-    float2 finalValue;
+    float finalValue;
     bool needsCarry;
     if (IsTopLevel != 0u) {
         finalValue = (localIndex == 0u || originalFlag != 0u) ? 0.0f : gValue[src][localIndex - 1u];

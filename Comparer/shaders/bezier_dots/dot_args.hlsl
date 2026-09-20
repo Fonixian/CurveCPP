@@ -1,11 +1,12 @@
 #include "dot_common.hlsli"
 
-// Turns the dot total dot_ini accumulated into the argument buffer for DrawInstancedIndirect, so the
-// instance count never has to travel to the CPU and back. One thread, four uints.
-//
-// DrawArgs is a RWByteAddressBuffer and not a RWStructuredBuffer because D3D11 forbids
-// D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS together with D3D11_RESOURCE_MISC_BUFFER_STRUCTURED - see
-// IndirectDrawArgs in gpu_buffers.h.
+cbuffer CameraData : register(b0)
+{
+    float4x4 VP;
+    float2 WH;
+    uint TotalPointCount;
+    uint TotalCurveCount;
+};
 
 cbuffer DotCapacity : register(b1)
 {
@@ -13,22 +14,17 @@ cbuffer DotCapacity : register(b1)
     uint3 CapacityPadding;
 };
 
-StructuredBuffer<uint> DotCounter : register(t0);
-
-RWByteAddressBuffer DrawArgs : register(u0);
-
-// One screen-aligned quad per dot as a triangle strip; must match dotVertexCount in bezier_dots.cpp
-// and dot_vert.hlsl's corner numbering.
-static const uint DotVertexCount = 4u;
+RWStructuredBuffer<uint> DotIndices : register(u0);
+RWByteAddressBuffer      DrawArgs   : register(u1);
 
 [numthreads(1, 1, 1)]
 void main()
 {
-    // Belt and braces: the dots buffer is sized from a CPU-side upper bound that cannot be smaller
-    // than this count, so the clamp should never bite. If it ever does, the tail of the dots is left
-    // undrawn rather than instanced against slots dot_calc could not write.
-    uint dotCount = min(DotCounter[0], Capacity);
+    // With no curves there is no appended total to read - DotIndices[0] would be whatever the last
+    // scene left behind.
+    uint instanceCount = (TotalCurveCount > 0u)
+        ? min(DotIndices[TotalCurveCount], Capacity)
+        : 0u;
 
-    // VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation
-    DrawArgs.Store4(0, uint4(DotVertexCount, dotCount, 0u, 0u));
+    DrawArgs.Store4(0, uint4(4u, instanceCount, 0u, 0u));
 }

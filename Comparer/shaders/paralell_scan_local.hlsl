@@ -21,8 +21,12 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
     // The tail block is zero padded up to a full ELEMENTS_PER_GROUP so the tree
     // stays a perfect power of two. Zero is the identity of the sum, so the
     // padding contributes nothing to the block total.
-    gTree[sharedA] = (globalA < ElementCount) ? Values[globalA] : 0u;
-    gTree[sharedB] = (globalB < ElementCount) ? Values[globalB] : 0u;
+    //
+    // Reads stop at InputCount, writes at ElementCount. When a total is being
+    // appended the two differ by one, and that one slot is padding on the way
+    // in and a real result on the way out.
+    gTree[sharedA] = (globalA < InputCount) ? Values[globalA] : 0u;
+    gTree[sharedB] = (globalB < InputCount) ? Values[globalB] : 0u;
 
     // Up-sweep (reduce). After the pass with stride `offset`, the element at
     // k * offset - 1 holds the sum of the `offset` elements ending there, and

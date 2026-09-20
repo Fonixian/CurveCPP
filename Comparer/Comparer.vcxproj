@@ -158,6 +158,7 @@
     <ClCompile Include="gpu_buffers.cpp" />
     <ClCompile Include="CurveApp.cpp" />
     <ClCompile Include="orbital_camera.cpp" />
+    <Text Include="paralell_scan.cpp" />
     <ClCompile Include="pipeline.cpp" />
     <ClCompile Include="profiler.cpp" />
     <ClCompile Include="SegmentedScan.cpp" />
@@ -177,6 +178,7 @@
     <ClInclude Include="camera.h" />
     <ClInclude Include="gpu_buffers.h" />
     <ClInclude Include="orbital_camera.h" />
+    <Text Include="paralell_scan.h" />
     <ClInclude Include="pipeline.h" />
     <ClInclude Include="profiler.h" />
     <ClInclude Include="SegmentedScan.h" />
@@ -196,10 +198,6 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
     <FxCompile Include="shaders\bezier\curve_pattern_ini.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
-    </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_pattern_resolve.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
@@ -262,12 +260,6 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
     <FxCompile Include="shaders\bezier_dots\dot_ini.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
-    </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_resolve.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>

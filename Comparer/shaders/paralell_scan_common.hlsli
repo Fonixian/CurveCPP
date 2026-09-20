@@ -17,16 +17,23 @@
 // of a wave in the same LDS bank; one spare slot per bank-width skews the rows
 // apart again.
 
-#define THREAD_GROUP_SIZE  512u
+#define THREAD_GROUP_SIZE  256u
 #define ELEMENTS_PER_GROUP (THREAD_GROUP_SIZE * 2u)
 
 #define LOG_BANK_COUNT 5u
 #define CONFLICT_FREE_OFFSET(index) ((index) >> LOG_BANK_COUNT)
 #define PADDED_SHARED_SIZE (ELEMENTS_PER_GROUP + (ELEMENTS_PER_GROUP >> LOG_BANK_COUNT))
 
+// ElementCount is how many slots are written back; InputCount is how many of them actually hold
+// input. They are equal for an ordinary scan. Calling Scan() with appendTotal makes ElementCount one
+// larger, so the slot just past the input reads as 0 (zero is the identity of the sum, so it changes
+// nothing) and comes out of the down-sweep holding the exclusive prefix of everything before it -
+// which is the grand total. That is how the dot renderer gets its instance count without a second
+// dispatch to assemble it from the last offset plus the last count.
 cbuffer ScanConstants : register(b0) {
     uint ElementCount;
-    uint3 Padding;
+    uint InputCount;
+    uint2 Padding;
 };
 
 // Scanned in place. Unlike SegmentedScan there is no flag buffer: the running

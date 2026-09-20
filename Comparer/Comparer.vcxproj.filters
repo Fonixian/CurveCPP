@@ -191,4 +191,12 @@
       <Filter>shaders\bezier dots</Filter>
     </FxCompile>
   </ItemGroup>
+  <ItemGroup>
+    <Text Include="paralell_scan.cpp">
+      <Filter>Source Files</Filter>
+    </Text>
+    <Text Include="paralell_scan.h">
+      <Filter>Header Files</Filter>
+    </Text>
+  </ItemGroup>
 </Project>

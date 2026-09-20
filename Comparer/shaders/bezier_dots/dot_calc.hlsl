@@ -19,9 +19,12 @@ cbuffer DotCapacity : register(b1)
 };
 
 StructuredBuffer<BezierCurveData> BezierData  : register(t0);
-StructuredBuffer<float2>          Distances   : register(t1);
+StructuredBuffer<float>           Distances   : register(t1);
 StructuredBuffer<DotStyle>        DotStyles   : register(t3);
-StructuredBuffer<uint2>           DotRanges   : register(t4);
+// Exclusive scan of dot_ini's per-curve counts, with the grand total appended one slot past the
+// last curve. DotOffsets[i] is curve i's base index into Dots and the gap to DotOffsets[i + 1] is
+// its count - the last curve included, which is what the appended total buys.
+StructuredBuffer<uint>            DotOffsets  : register(t4);
 
 RWStructuredBuffer<DotSample> Dots : register(u0);
 
@@ -33,9 +36,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (curveIndex >= TotalCurveCount) return;
 
-    uint2 range    = DotRanges[curveIndex];
-    uint  dotFirst = range.x;
-    uint  dotCount = range.y;
+    uint dotFirst = DotOffsets[curveIndex];
+    uint dotCount = DotOffsets[curveIndex + 1u] - dotFirst;
 
     if (dotCount == 0) return;
 
@@ -44,7 +46,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint            sampleEndIdx   = (uint)bez.LastIndex;
     float           worldSpacing   = DotStyles[curveIndex].Spacing;
     
-    float prevArcLength = Distances[BezierData[curveIndex].FirstIndex].x;
+    float prevArcLength = Distances[BezierData[curveIndex].FirstIndex];
     float curveSpacing = DotStyles[curveIndex].Spacing;
 
     uint base_index = (prevArcLength > 0.0 && curveSpacing > 0.0)
@@ -64,7 +66,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         while (low <= high) {
             uint mid = (low + high) / 2;
-            if (Distances[mid].x <= targetWorldDist) {
+            if (Distances[mid] <= targetWorldDist) {
                 sampleA = mid;
                 low     = mid + 1;
             } else {
@@ -75,8 +77,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         uint sampleB = min(sampleA + 1, sampleEndIdx);
 
-        float distA = Distances[sampleA].x;
-        float distB = Distances[sampleB].x;
+        float distA = Distances[sampleA];
+        float distB = Distances[sampleB];
         float segmentLength = distB - distA;
 
         float segmentT = (segmentLength > 0.00001f)
@@ -87,7 +89,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         dot.SampleA = sampleA;
         dot.SampleB = sampleB;
         dot.SegmentT = saturate(segmentT);
-        dot.Padding = 0.0;
+        // Carried so dot_vert can reach BezierData without the point -> curve index map.
+        dot.CurveIndex = curveIndex;
         Dots[globalIdx] = dot;
     }
 }

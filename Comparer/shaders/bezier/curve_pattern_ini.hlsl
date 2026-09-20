@@ -1,12 +1,19 @@
 #include "curve_common.hlsli"
 
-// Pass 1 of 3 in the deterministic pattern layout: count only, no offsets.
+// Pass 1 of 2 in the deterministic pattern layout: count only, no offsets.
 //
 // This used to hand each curve its base offset with an InterlockedAdd on a
 // shared counter, which made a curve's slice depend on the order the thread
 // groups retired - the same scene could lay its patterns out differently from
 // one frame or one machine to the next. Now each curve only writes its own
-// count and ParalellScan turns the counts into offsets (curve_pattern_resolve).
+// count and ParalellScan turns the counts into offsets, in place.
+//
+// There is no third pass any more. curve_pattern_resolve existed to fold those
+// offsets back into a uint2's .x and to add the last offset to the last count
+// for a grand total; ParalellScan's appendTotal writes that total itself, one
+// slot past the last curve, and everything downstream recovers the count it
+// needs as offsets[i + 1] - offsets[i]. Which is why the count is written ONCE
+// here, into the buffer the scan consumes, and nowhere else.
 
 cbuffer CameraData : register(b0)
 {
@@ -16,15 +23,16 @@ cbuffer CameraData : register(b0)
     uint     TotalCurveCount;
 };
 
-StructuredBuffer<BezierCurveData> BezierData  : register(t0);
-StructuredBuffer<float2>          Distances   : register(t1);
-StructuredBuffer<CurveStyle>      CurveStyles : register(t2);
+StructuredBuffer<BezierCurveData> BezierData     : register(t0);
+// World arc length only. The count is camera-independent, so the screen channel - now a buffer of
+// its own rather than the .y of this one - is not bound to this pass at all.
+StructuredBuffer<float>           WorldDistances : register(t1);
+StructuredBuffer<CurveStyle>      CurveStyles    : register(t2);
 
-// Scanned in place by ParalellScan straight after this pass, so the count has
-// to survive somewhere else too - hence the second copy in PatternRanges.y.
-// That duplicate uint per curve is the whole memory cost of dropping the atomic.
-RWStructuredBuffer<uint>  PatternOffsets : register(u0);
-RWStructuredBuffer<uint2> PatternRanges  : register(u1);
+// Scanned in place by ParalellScan straight after this pass. The counts do not
+// survive that, and do not need to: an exclusive scan with the total appended
+// leaves every count recoverable as the gap between neighbouring offsets.
+RWStructuredBuffer<uint> PatternOffsets : register(u0);
 
 [numthreads(64, 1, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
@@ -32,7 +40,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint curveIndex = dispatchThreadId.x;
     if (curveIndex >= TotalCurveCount) return;
 
-    // Distances is a CHAIN-cumulative prefix sum - bezier_common sets ONE begin bit for the whole
+    // WorldDistances is a CHAIN-cumulative prefix sum - bezier_common sets ONE begin bit for the whole
     // scene - so a curve does not start its pattern at zero. The grid of centres belongs to the
     // chain, at world distances n * spacing measured from the chain's origin, and each curve takes
     // the WINDOW of that grid falling inside its own arc span:
@@ -43,8 +51,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     // ENDS there and no centre is counted twice. The first curve has arcBegin == 0 and keeps n = 0
     // as well. This window is what makes the pattern read as ONE dash sequence across merged
     // curves, and it is the same window dot_ini.hlsl counts.
-    float arcBegin     = Distances[BezierData[curveIndex].FirstIndex].x;
-    float arcEnd       = Distances[BezierData[curveIndex].LastIndex].x;
+    float arcBegin     = WorldDistances[BezierData[curveIndex].FirstIndex];
+    float arcEnd       = WorldDistances[BezierData[curveIndex].LastIndex];
     float curveSpacing = CurveStyles[curveIndex].Spacing;
 
     uint patternBase = (arcBegin > 0.0 && curveSpacing > 0.0)
@@ -62,7 +70,4 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint patternCount = (patternEnd > patternBase) ? (patternEnd - patternBase) : 0u;
 
     PatternOffsets[curveIndex] = patternCount;
-
-    // .x is left at 0 and filled in by curve_pattern_resolve once the scan has run.
-    PatternRanges[curveIndex] = uint2(0u, patternCount);
 }

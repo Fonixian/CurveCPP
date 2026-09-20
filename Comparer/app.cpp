@@ -847,21 +847,21 @@ void App::ProfilerGui()
 
 		ImGui::Separator();
 		ImGui::TextUnformatted("pattern centres");
-		ImGui::TextDisabled("how far the CPU bound overshoots the real count");
+		ImGui::TextDisabled("the CPU bound and what was allocated from it");
 
-		// The measurement the readback exists for. "bound" is what allocation actually uses and is
-		// current; "count" is the GPU's exact answer, a few frames late, and is never sized from.
+		// The exact GPU count used to sit between these two, mirrored back a few frames late through
+		// a GpuCounter that curve_pattern_resolve / dot_resolve wrote. Those passes are gone - the
+		// scan's appended total stays on the GPU, where the shaders that need it read it directly -
+		// so there is no count to show any more, and no dispatch is worth adding to produce one.
 		struct CountRow
 		{
 			const char* label;
 			uint32_t (*value)(const BezierRendererBase*);
-			bool needs_readback; // only "count" comes from the GPU, and only it can be absent
 		};
 
 		static const CountRow count_rows[] = {
-			{ "bound",     [](const BezierRendererBase* r) { return r->PatternBound(); },    false },
-			{ "count",     [](const BezierRendererBase* r) { return r->PatternCount(); },    true  },
-			{ "allocated", [](const BezierRendererBase* r) { return r->PatternCapacity(); }, false },
+			{ "bound",     [](const BezierRendererBase* r) { return r->PatternBound(); } },
+			{ "allocated", [](const BezierRendererBase* r) { return r->PatternCapacity(); } },
 		};
 
 		if (ImGui::BeginTable("counts", renderer_count + 1, table_flags))
@@ -880,10 +880,8 @@ void App::ProfilerGui()
 				{
 					ImGui::TableNextColumn();
 
-					// The solid renderer has no pattern buffer at all, and the exact count is absent
-					// until the first non-blocking readback lands - both show as a dash.
-					const bool has_patterns = renderers[i]->PatternCapacity() > 0;
-					if (!has_patterns || (row.needs_readback && !renderers[i]->PatternCountValid()))
+					// The solid renderer has no pattern buffer at all, so it shows as a dash.
+					if (renderers[i]->PatternCapacity() == 0)
 					{
 						ImGui::TextDisabled("-");
 						continue;

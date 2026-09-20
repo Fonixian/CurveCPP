@@ -149,7 +149,8 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	const uint32_t curves_required = next_pow2(curve_count);
 
 	if (points_allocated < points_required) {
-		calculated_points.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT4>(points_required)));
+		if (NeedsCalculatedPoints())
+			calculated_points.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT4>(points_required)));
 		curve_begins.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
 		bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
 		AllocatePointBuffers(device, points_required);
@@ -172,7 +173,7 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
 		const BezierData& bez = curves[curveIndex];
 
-		if (curveIndex == 0) curve_begin_bits[current / 32u] |= (1u << (current % 32u));
+		/*if (curveIndex == 0) */curve_begin_bits[current / 32u] |= (1u << (current % 32u));
 
 		for (unsigned i = 0; i < bez.resolution; ++i)
 			index_map.push_back(curveIndex);

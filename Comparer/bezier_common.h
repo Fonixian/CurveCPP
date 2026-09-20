@@ -136,10 +136,10 @@ public:
 	// pattern buffer.
 	uint32_t PatternBound() const { return pattern_upper_bound; }
 
-	// The EXACT count the GPU arrived at, mirrored back a few frames late, purely so the bound above
-	// can be checked against reality. Never size anything from it. 0 where a renderer has no count.
-	virtual uint32_t PatternCount() const { return 0u; }
-	virtual bool PatternCountValid() const { return false; }
+	// How much was actually allocated from the bound above. 0 where a renderer has no pattern buffer
+	// at all. There is deliberately no PatternCount(): the GPU's exact total now lives in the slot
+	// ParalellScan appends past the last curve and is read there by the shaders that need it, so
+	// mirroring it back to the CPU would mean adding a dispatch purely to feed a diagnostic.
 	virtual uint32_t PatternCapacity() const { return 0u; }
 
 	virtual void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) = 0;
@@ -178,6 +178,13 @@ protected:
 	// BeginDraw() first and EndDraw() on every exit path, early returns included.
 	void BeginDraw();
 	void EndDraw();
+
+	// Whether this renderer wants `calculated_points` - one float4 per sample point, world position
+	// plus packed colour. The strip-based renderers do: their vertex shaders walk every sample. The
+	// dot renderer does not: it touches only the two samples bracketing each dot, and dot_vert
+	// evaluates those itself, so allocating the buffer would cost 16 bytes per sample point that
+	// nothing ever reads.
+	virtual bool NeedsCalculatedPoints() const { return true; }
 
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 	virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
