@@ -40,7 +40,17 @@ struct CurveVSOutput {
     nointerpolation float ScreenArcBegin : TEXCOORD3;
     nointerpolation float ScreenArcEnd : TEXCOORD8;
     nointerpolation float DashLength : TEXCOORD4;
-    nointerpolation uint2 PatternRange : TEXCOORD5;
+    // How a CHAIN-global centre index turns into a slot in the flat pattern array:
+    //     slot = clamp(globalIndex + PatternSlot.x, PatternSlot.y, PatternSlot.z)
+    // x is first slot - first global index, so it undoes the window curve_pattern_ini gave this
+    // curve. y/z are the slots this curve may read: its own slice widened by one centre at each end
+    // where a neighbour has one, because a dash centred just across a joint still has to reach back
+    // over it. Both ends stay inside the region pattern_calc wrote, and z < y says the chain holds
+    // no centre at all - the curve is then all gap, NOT solid. Solid is Spacing <= 0, nothing else.
+    //
+    // This replaced a uint2 (first, count) range: a curve that owns no centre of its own is a
+    // normal thing now, so its count no longer answers any question the pixel shader asks.
+    nointerpolation int3 PatternSlot : TEXCOORD5;
     nointerpolation uint CapCapJoin : TEXCOORD6;
     // Signed tan(theta/2) of the screen-space turn at each joint: x at B (SDF.y == 0), y at C
     // (SDF.y == l_CB). 0 where there is no neighbour. Turns the segment-local arc into the arc

@@ -7,7 +7,7 @@
 void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
     const uint blockIndex = groupId.x;
     const uint blockBase = blockIndex * ELEMENTS_PER_GROUP;
-    const float2 blockOffset = BlockSums[blockIndex];
+    const uint blockOffset = BlockSums[blockIndex];
 
     // Same two-elements-per-thread split as the local pass.
     const uint globalA = blockBase + groupThreadId.x;

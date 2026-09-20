@@ -35,10 +35,14 @@ struct DotSample {
 // --- BezierDotRenderer -------------------------------------------------------------------------
 
 BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
-	: BezierRendererBase(device), dot_counter{ device }, draw_args{ device, dotVertexCount }, scan{ device, maxElementCount }
+	// offset_scan runs over curve counts, and a curve is worth at least one point, so maxElementCount
+	// bounds the curve count too - no separate cap, and its buffers cost a few KB at that size.
+	: BezierRendererBase(device), dot_counter{ device }, draw_args{ device, dotVertexCount },
+	  scan{ device, maxElementCount }, offset_scan{ device, maxElementCount }
 {
 	calc_points = Pipeline::getCS(device, "dot_calc_points.cso");
 	dot_ini = Pipeline::getCS(device, "dot_ini.cso");
+	dot_resolve = Pipeline::getCS(device, "dot_resolve.cso");
 	dot_calc = Pipeline::getCS(device, "dot_calc.cso");
 	dot_args = Pipeline::getCS(device, "dot_args.cso");
 
@@ -61,6 +65,8 @@ void BezierDotRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint3
 
 void BezierDotRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
 	dot_ranges.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMUINT2>(curves_required)));
+	// The extra uint per curve the prefix sum needs; see the note in bezier_dots.h.
+	dot_offsets.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(curves_required)));
 }
 
 void BezierDotRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint32_t curves_required) {
@@ -126,26 +132,51 @@ void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device, Graphics
 	dot_capacity->Upload(capacity_cb_data, context);
 }
 
+// Count, scan, resolve, then the indirect args. No atomic anywhere in here, so curve i's slice of
+// the dot array is a function of the curve data alone - reproducible frame to frame, run to run, and
+// across GPUs. It matters more here than in the patterned renderer: a dot's index IS its instance id,
+// so a reshuffled layout used to mean a reshuffled draw.
 void BezierDotRenderer::CountDots(GraphicsDeviceContext* context) {
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
-	// One-way CPU->GPU write, not a synchronisation point.
+	// One-way CPU->GPU write, not a synchronisation point. Still needed: with no curves at all
+	// nothing below writes the counter, and a stale total would become a stale instance count.
 	dot_counter.Reset(context);
+
+	if (curve_count == 0u || !dot_offsets) return;
 
 	ClearComputeBindings(context);
 
+	// 1. Per curve, how many dots it has. Each thread writes only its own element now.
 	viewport_data->Bind(ShaderStage::Compute, 0, context);      // b0
 	bezier_data->Bind(ShaderStage::Compute, 0, context);        // t0
 	distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1
 	curve_styles->Bind(ShaderStage::Compute, 2, context);       // t2
-	dot_counter.BindUnordered(0, context);                      // u0
+	dot_offsets->BindUnordered(0, context);                     // u0
 	dot_ranges->BindUnordered(1, context);                      // u1
 
 	dot_ini->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
 
 	ClearComputeBindings(context);
 
-	// One thread, reading the total dot_ini just accumulated and writing it into the indirect draw
+	// 2. Exclusive prefix sum over those counts, in place: dot_offsets[i] becomes the number of dots
+	// in curves 0..i-1, which is exactly curve i's base index into the flat dot array.
+	offset_scan.Scan(*dot_offsets, curve_count, context);
+
+	ClearComputeBindings(context);
+
+	// 3. Fold the offsets into dot_ranges.x and publish the grand total. The scan binds its own
+	// constants at b0, hence the rebind of viewport_data here.
+	viewport_data->Bind(ShaderStage::Compute, 0, context);       // b0
+	dot_offsets->BindOrdered(ShaderStage::Compute, 0, context);  // t0
+	dot_counter.BindUnordered(0, context);                       // u0
+	dot_ranges->BindUnordered(1, context);                       // u1
+
+	dot_resolve->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
+
+	ClearComputeBindings(context);
+
+	// One thread, reading the total dot_resolve just wrote and putting it into the indirect draw
 	// arguments. This is the step that replaces the readback: the instance count reaches the draw
 	// without ever touching the CPU, so it is always the CURRENT frame's count.
 	dot_capacity->Bind(ShaderStage::Compute, 1, context);       // b1
@@ -210,8 +241,8 @@ void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& vi
 	RunPointPass(context);
 
 	// Named "pattern" rather than "dots" so it lines up with the patterned renderer's row: same
-	// stages, ini + args + calc. No readback stall on the recount frames any more, so this row should
-	// stay flat across a scene change.
+	// stages, ini + scan + resolve + args + calc. No readback stall on the recount frames, so this
+	// row should stay flat across a scene change.
 	profiler.begin_gpu("pattern");
 
 	if (need_recount) {

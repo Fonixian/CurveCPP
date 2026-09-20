@@ -92,16 +92,16 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 
 	// Initial poses barely matter - PoseScene() overwrites every control point and colour on the
 	// very first frame. They only have to be valid enough for Add()'s asserts.
-	BezierData wave = Cubic(
+	/*BezierData wave = Cubic(
 		{ -3.0f, WaveY - 0.5f, 0.0f },
 		{ -1.5f, WaveY + 0.7f, 0.0f },
 		{  1.5f, WaveY + 0.7f, 0.0f },
 		{  3.0f, WaveY - 0.5f, 0.0f });
 	wave.C0 = wave_color0;
 	wave.C1 = wave_color1;
-	scene.wave = renderer.Add(wave);
+	scene.wave = renderer.Add(wave);*/
 
-	for (int i = 0; i < PetalCount; ++i)
+	/*for (int i = 0; i < PetalCount; ++i)
 	{
 		BezierData petal = Quadratic(
 			{ PetalRadius, PetalCenterY, 0.0f },
@@ -110,7 +110,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		petal.C0 = petal_color;
 		petal.C1 = petal_color;
 		scene.petals[i] = renderer.Add(petal);
-	}
+	}*/
 
 	for (int i = 0; i < RibbonLinks; ++i)
 	{
@@ -127,7 +127,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 	// The cap gallery is the one group whose caps are NOT driven by the style panel: each stroke
 	// keeps the pair it was built with, so all five caps stay on screen at once while you change
 	// everything else around them.
-	for (int i = 0; i < GalleryCount; ++i)
+	/*for (int i = 0; i < GalleryCount; ++i)
 	{
 		BezierData stroke = Linear(
 			{ 0.0f, GalleryBottom, 0.0f },
@@ -138,7 +138,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		stroke.C0 = { 1.0f, 1.0f, 1.0f };
 		stroke.C1 = gallery_color;
 		scene.gallery[i] = renderer.Add(stroke);
-	}
+	}*/
 }
 
 void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing)
@@ -215,7 +215,7 @@ void App::PoseScene(Scene& scene)
 	const float t = animation_time;
 
 	// --- wave: one cubic swinging its two inner control points sideways -------------------------
-	{
+	/*{
 		const float swing = sinf(t * 2.0f);
 
 		XMFLOAT3 c0 = wave_color0;
@@ -232,10 +232,10 @@ void App::PoseScene(Scene& scene)
 			{ dx + 1.5f + swing, WaveY + 0.7f, 0.0f },
 			{ dx + 3.0f,         WaveY - 0.5f, 0.0f });
 		scene.wave.colors(c0, c1);
-	}
+	}*/
 
 	// --- petals: quadratic arcs spaced around a rotating ring, with gaps between them ------------
-	for (int i = 0; i < PetalCount; ++i)
+	/*for (int i = 0; i < PetalCount; ++i)
 	{
 		const float angle = t + (Tau * i / PetalCount);
 		const float nextAngle = angle + (Tau / (2.0f * PetalCount));
@@ -250,7 +250,7 @@ void App::PoseScene(Scene& scene)
 
 		scene.petals[i].control_points(P0, P1, P2);
 		scene.petals[i].colors(color, color);
-	}
+	}*/
 
 	// --- ribbon: a C1-continuous chain of cubics along a 3D path ---------------------------------
 	// Each link is its own curve, so the chain also shows what caps do at an interior joint: with
@@ -301,7 +301,7 @@ void App::PoseScene(Scene& scene)
 	// --- cap gallery: five straight strokes, one per cap pair ------------------------------------
 	// Static apart from following x_offset. The front (P0) end is white so it is obvious which cap
 	// is which way round.
-	for (int i = 0; i < GalleryCount; ++i)
+	/*for (int i = 0; i < GalleryCount; ++i)
 	{
 		const float x = dx + (i - (GalleryCount - 1) * 0.5f) * GalleryStride;
 
@@ -311,7 +311,7 @@ void App::PoseScene(Scene& scene)
 
 		const XMFLOAT3 back = animate_colors ? HueColor(float(i) / GalleryCount + t * 0.1f) : gallery_color;
 		scene.gallery[i].colors({ 1.0f, 1.0f, 1.0f }, back);
-	}
+	}*/
 
 	// --- test curves: static geometry, slid into this copy's column ------------------------------
 	// They do not animate; the only thing this loop does is re-apply x_offset, so that a test batch
@@ -361,16 +361,16 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 
 	const auto resolution = static_cast<unsigned>(style_resolution);
 
-	apply(scene.wave, false, resolution);
+	/*apply(scene.wave, false, resolution);
 	for (auto& petal : scene.petals)
-		apply(petal, false, resolution);
+		apply(petal, false, resolution);*/
 	for (auto& link : scene.ribbon)
 		apply(link, false, resolution);
 
 	// The gallery keeps the cap pair it was built with - that is the whole point of it - and stays
 	// at two points, because a straight line gains nothing from subdivision.
-	for (auto& stroke : scene.gallery)
-		apply(stroke, true, GalleryResolution);
+	/*for (auto& stroke : scene.gallery)
+		apply(stroke, true, GalleryResolution);*/
 
 	// Test curves follow every style control EXCEPT resolution: each keeps the one it was added with,
 	// so a scene can mix a batch at 8 points with a batch at 400 and the Timings table shows what that

@@ -127,9 +127,13 @@ public:
 	//
 	//     floor(polygon / spacing) + 1  >=  floor(sampled arc / spacing) + 1
 	//
-	// which is exactly what curve_pattern_ini.hlsl / dot_ini.hlsl count. Sizing the pattern buffer
-	// from this is therefore always sufficient, and it is the reason the GPU count no longer has to
-	// come back to the CPU mid-frame. 0 for the solid renderer, which has no pattern buffer.
+	// which is exactly what curve_pattern_ini.hlsl / dot_ini.hlsl USED to count. Both now take a
+	// window of a chain-global centre grid instead - floor(arcEnd / spacing) - floor(arcBegin /
+	// spacing) - so the pattern runs continuously across merged curves. The bound still holds: that
+	// difference is at most floor(own arc / spacing) + 1, which is the same quantity again. Sizing
+	// the pattern buffer from this is therefore always sufficient, and it is the reason the GPU
+	// count no longer has to come back to the CPU mid-frame. 0 for the solid renderer, which has no
+	// pattern buffer.
 	uint32_t PatternBound() const { return pattern_upper_bound; }
 
 	// The EXACT count the GPU arrived at, mirrored back a few frames late, purely so the bound above

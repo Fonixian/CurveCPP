@@ -2,6 +2,7 @@
 #include "bezier_common.h"
 #include "gpu_buffers.h"
 #include "SegmentedScan.h"
+#include "ParalellScan.h"
 
 // The dot/point renderer. Draws ONLY dot patterns: spacing <= 0 means no dots at all for that curve -
 // there is no "solid" fallback the way spacing <= 0 means solid in BezierRenderer, because this
@@ -65,10 +66,15 @@ private:
 	// renderer) - screen arc length is never needed here.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dot_ranges;  // per curve: uint2(first dot, dot count)
+	// Per curve: written as the dot count by dot_ini, then scanned IN PLACE into that curve's base
+	// offset. The count itself survives in dot_ranges.y, which is why both exist.
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dot_offsets;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dots;        // per dot: bracketing sample pair + t between them
 
-	// Single uint, atomically summed by dot_ini to hand each curve its base offset; read back without
-	// stalling. dot_args turns it into the instance count without the CPU ever seeing it.
+	// Single uint, written once by dot_resolve as the last curve's offset plus its own count; read
+	// back without stalling. dot_args turns it into the instance count without the CPU ever seeing
+	// it, and because it is a prefix sum rather than an atomic total it is now the same number on
+	// every run - so is every dot's index within it.
 	GpuCounter dot_counter;
 	IndirectDrawArgs draw_args;
 
@@ -77,7 +83,10 @@ private:
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> dot_capacity;
 
 	Axodox::Graphics::ComputeShader* dot_ini;
+	Axodox::Graphics::ComputeShader* dot_resolve;
 	Axodox::Graphics::ComputeShader* dot_calc;
 	Axodox::Graphics::ComputeShader* dot_args;
 	SegmentedScan scan;
+	// Over curve counts, not points - at most one element per curve, so its own buffers are tiny.
+	ParalellScan offset_scan;
 };

@@ -17,10 +17,14 @@ struct UploadCurveStyle {
 // --- BezierRenderer ----------------------------------------------------------------------------
 
 BezierRenderer::BezierRenderer(const GraphicsDevice& device)
-	: BezierRendererBase(device), pattern_counter{ device }, scan{ device, maxElementCount }
+	// offset_scan runs over curve counts, and a curve is worth at least one point, so maxElementCount
+	// bounds the curve count too - no separate cap, and its buffers cost a few KB at that size.
+	: BezierRendererBase(device), pattern_counter{ device }, scan{ device, maxElementCount },
+	  offset_scan{ device, maxElementCount }
 {
 	calc_points = Pipeline::getCS(device, "curve_calc_points.cso");
 	pattern_ini = Pipeline::getCS(device, "curve_pattern_ini.cso");
+	pattern_resolve = Pipeline::getCS(device, "curve_pattern_resolve.cso");
 	pattern_calc = Pipeline::getCS(device, "curve_pattern_calc.cso");
 
 	curve_draw.vs = Pipeline::getVS(device, "curve_vs.cso");
@@ -42,6 +46,8 @@ void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t
 
 void BezierRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
 	pattern_ranges.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMUINT2>(curves_required)));
+	// The extra uint per curve the prefix sum needs; see the note in bezier.h.
+	pattern_offsets.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(curves_required)));
 }
 
 void BezierRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint32_t curves_required) {
@@ -105,22 +111,45 @@ void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device, Graphic
 	pattern_capacity->Upload(capacity_cb_data, context);
 }
 
+// Count, scan, resolve. No atomic anywhere in here, so curve i's slice of the pattern array is a
+// function of the curve data alone - reproducible frame to frame, run to run, and across GPUs.
 void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
-	// One-way CPU->GPU write, not a synchronisation point.
+	// One-way CPU->GPU write, not a synchronisation point. Still needed: with no curves at all
+	// nothing below writes the counter, and a stale total would outlive the scene it was counted from.
 	pattern_counter.Reset(context);
+
+	if (curve_count == 0u || !pattern_offsets) return;
 
 	ClearComputeBindings(context);
 
+	// 1. Per curve, how many centres it has. Each thread writes only its own element now.
 	viewport_data->Bind(ShaderStage::Compute, 0, context);      // b0
 	bezier_data->Bind(ShaderStage::Compute, 0, context);        // t0
 	distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1
 	curve_styles->Bind(ShaderStage::Compute, 2, context);       // t2
-	pattern_counter.BindUnordered(0, context);                  // u0
+	pattern_offsets->BindUnordered(0, context);                 // u0
 	pattern_ranges->BindUnordered(1, context);                  // u1
 
 	pattern_ini->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
+
+	ClearComputeBindings(context);
+
+	// 2. Exclusive prefix sum over those counts, in place: pattern_offsets[i] becomes the number of
+	// centres in curves 0..i-1, which is exactly curve i's base index into the flat pattern array.
+	offset_scan.Scan(*pattern_offsets, curve_count, context);
+
+	ClearComputeBindings(context);
+
+	// 3. Fold the offsets into pattern_ranges.x and publish the grand total. The scan binds its own
+	// constants at b0, hence the rebind of viewport_data here.
+	viewport_data->Bind(ShaderStage::Compute, 0, context);           // b0
+	pattern_offsets->BindOrdered(ShaderStage::Compute, 0, context);  // t0
+	pattern_counter.BindUnordered(0, context);                       // u0
+	pattern_ranges->BindUnordered(1, context);                       // u1
+
+	pattern_resolve->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
 
 	ClearComputeBindings(context);
 
@@ -174,9 +203,9 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	// every frame. Only the centre COUNT is camera-independent.
 	RunPointPass(context);
 
-	// ini + calc under one metric. On a steady frame need_recount is false and this is calc alone;
-	// the frames that recount add pattern_ini on top. It no longer carries a readback stall, so this
-	// row should stay flat across a scene change instead of spiking.
+	// ini + scan + resolve + calc under one metric. On a steady frame need_recount is false and this
+	// is calc alone; the frames that recount add the count/scan/resolve trio on top. It still carries
+	// no readback stall, so this row should stay flat across a scene change instead of spiking.
 	profiler.begin_gpu("pattern");
 
 	if (need_recount) {

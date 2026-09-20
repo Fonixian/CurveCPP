@@ -42,13 +42,27 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint            sampleStartIdx = (uint)bez.FirstIndex;
     uint            sampleEndIdx   = (uint)bez.LastIndex;
     float           worldSpacing   = CurveStyles[curveIndex].Spacing;
-    
+
+    // The centre grid is CHAIN-global (see curve_pattern_ini.hlsl): centre n sits at world distance
+    // n * spacing from the chain's origin, not from this curve's own start. patternBase is the first
+    // n this curve owns, recomputed from the same two numbers ini counted from, so slot
+    // patternFirst + localIdx always holds grid index patternBase + localIdx.
+    float arcBegin = Distances[sampleStartIdx].x;
+
+    uint patternBase = (arcBegin > 0.0 && worldSpacing > 0.0)
+        ? (uint) floor(arcBegin / worldSpacing) + 1u
+        : 0u;
+
     for (uint localIdx = threadLaneIdx; localIdx < patternCount; localIdx += 8)
     {
         uint  globalIdx       = patternFirst + localIdx;
         if (globalIdx >= Capacity) continue;
 
-        float targetWorldDist = (float)localIdx * worldSpacing;
+        // One multiply from the grid index, so this lands on exactly the distance curve_ps.hlsl
+        // inverts with floor(totalDistance / spacing) - accumulating base * spacing separately would
+        // not. Every target is inside (arcBegin, arcEnd] by construction, so the search below always
+        // brackets it properly instead of clamping to an end sample.
+        float targetWorldDist = (float)(patternBase + localIdx) * worldSpacing;
 
         uint low     = sampleStartIdx;
         uint high    = sampleEndIdx;

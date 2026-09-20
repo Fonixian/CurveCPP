@@ -172,7 +172,7 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
 		const BezierData& bez = curves[curveIndex];
 
-		/*if (curveIndex == 0) */curve_begin_bits[current / 32u] |= (1u << (current % 32u));
+		if (curveIndex == 0) curve_begin_bits[current / 32u] |= (1u << (current % 32u));
 
 		for (unsigned i = 0; i < bez.resolution; ++i)
 			index_map.push_back(curveIndex);

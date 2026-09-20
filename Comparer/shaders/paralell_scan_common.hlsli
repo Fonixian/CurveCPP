@@ -1,4 +1,4 @@
-// Work-efficient (Blelloch) exclusive prefix sum - shared declarations.
+// Work-efficient (Blelloch) exclusive prefix sum over uint - shared declarations.
 //
 // One thread group scans ELEMENTS_PER_GROUP consecutive elements with
 // THREAD_GROUP_SIZE threads, two elements per thread. An up-sweep builds a
@@ -6,9 +6,11 @@
 // down into an exclusive scan, so a block costs O(n) adds instead of the
 // O(n log n) a naive Hillis-Steele pass (see segmented_scan_local.hlsl) spends.
 //
-// ELEMENTS_PER_GROUP deliberately matches SegmentedScan's GROUP_SIZE: the two
-// scans then cut the same data into the same blocks and recurse to the same
-// depth, so their timings compare directly.
+// This is what turns the per-curve pattern counts into per-curve base offsets:
+// offset[i] = sum of counts[0..i-1], decided by curve order alone. The atomic
+// InterlockedAdd it replaced handed out the same slices in whatever order the
+// groups happened to retire, so the same scene could lay its patterns out
+// differently from one run to the next.
 //
 // Groupshared indices are padded by CONFLICT_FREE_OFFSET. Both sweeps address
 // the tree with a power-of-two stride, which unpadded would land every thread
@@ -29,5 +31,5 @@ cbuffer ScanConstants : register(b0) {
 
 // Scanned in place. Unlike SegmentedScan there is no flag buffer: the running
 // total crosses the whole range rather than restarting at segment boundaries.
-RWStructuredBuffer<float2> Values    : register(u0);
-RWStructuredBuffer<float2> BlockSums : register(u1);
+RWStructuredBuffer<uint> Values    : register(u0);
+RWStructuredBuffer<uint> BlockSums : register(u1);

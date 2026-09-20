@@ -43,13 +43,20 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint            sampleStartIdx = (uint)bez.FirstIndex;
     uint            sampleEndIdx   = (uint)bez.LastIndex;
     float           worldSpacing   = DotStyles[curveIndex].Spacing;
+    
+    float prevArcLength = Distances[BezierData[curveIndex].FirstIndex].x;
+    float curveSpacing = DotStyles[curveIndex].Spacing;
+
+    uint base_index = (prevArcLength > 0.0 && curveSpacing > 0.0)
+        ? (uint) floor(prevArcLength / curveSpacing) + 1u
+        : 0u;
 
     for (uint localIdx = threadLaneIdx; localIdx < dotCount; localIdx += 8)
     {
         uint  globalIdx       = dotFirst + localIdx;
         if (globalIdx >= Capacity) continue;
 
-        float targetWorldDist = (float)localIdx * worldSpacing;
+        float targetWorldDist = (float) localIdx * worldSpacing + worldSpacing * (float)base_index;
 
         uint low     = sampleStartIdx;
         uint high    = sampleEndIdx;

@@ -30,7 +30,7 @@ ParalellScan::ParalellScan(const GraphicsDevice& device, uint32_t maxElementCoun
         level.capacity = levelCapacity;
 
         auto blockCount = DivRoundUp(levelCapacity, ElementsPerGroup);
-        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<DirectX::XMFLOAT2>(blockCount));
+        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
         level.constants = std::make_unique<ConstantBuffer>(device, ParalellScanConstants{});
 
         _levels.push_back(std::move(level));

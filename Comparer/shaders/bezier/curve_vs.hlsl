@@ -192,8 +192,39 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     o.ScreenArcEnd = Distances[BezierData[curveIndex].LastIndex].y;
     o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
-    o.PatternRange = PatternRanges[curveIndex];
     o.CapCapJoin = style.CapCapJoin;
+
+    // --- where this curve's centres live in the flat pattern array ----------------------------
+    // Distances is chain-cumulative, so the centre grid is shared by every curve in the chain and
+    // curve_pattern_ini hands each curve the WINDOW of it that falls inside its own arc span. The
+    // pixel shader inverts a pixel's distance back into a GLOBAL grid index, so it needs the bias
+    // that maps that index onto this curve's slice - patternFirst - patternBase.
+    //
+    // It also needs to be allowed one slot past either end of the slice: a dash whose centre sits
+    // on the next curve can still reach back across the joint, and without the widening it would be
+    // sliced off exactly at the joint - the very seam this is meant to remove. The flat array is an
+    // exclusive scan over the counts in curve order, and the chain runs in curve order too, so
+    // slice.x - 1 IS the previous centre along the chain and slice.x + slice.y the next one, empty
+    // slices in between costing nothing. Both are clamped to what pattern_calc actually wrote:
+    // 0 at the bottom, and at the top the grand total, which is the last curve's offset plus its
+    // own count - the same number curve_pattern_resolve publishes to PatternCounter.
+    const uint2 patternSlice = PatternRanges[curveIndex];
+    const uint2 patternLast = PatternRanges[max(TotalCurveCount, 1u) - 1u];
+    const int patternTotal = int(patternLast.x + patternLast.y);
+
+    const float curveArcBegin = Distances[BezierData[curveIndex].FirstIndex].x;
+    const int patternBase = (curveArcBegin > 0.0 && style.Spacing > 0.0)
+        ? (int) floor(curveArcBegin / style.Spacing) + 1
+        : 0;
+
+    // An EMPTY slice needs no special case: its offset sits exactly where its centres would have
+    // been, so lo/hi collapse onto the two centres bracketing the curve - the whole reason a curve
+    // that owns nothing can still show the tail of its neighbour's dash. The one real special case
+    // is a chain with no centres at all, where there is nothing to read and hi < lo says so.
+    o.PatternSlot = int3(
+        int(patternSlice.x) - patternBase,
+        (patternTotal > 0) ? max(int(patternSlice.x) - 1, 0) : 0,
+        (patternTotal > 0) ? min(int(patternSlice.x + patternSlice.y), patternTotal - 1) : -1);
 
     const float3 ndcB = B4.xyz / B4.w;
     const float3 ndcC = C4.xyz / C4.w;

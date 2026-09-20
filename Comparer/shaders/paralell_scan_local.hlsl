@@ -1,6 +1,6 @@
 #include "paralell_scan_common.hlsli"
 
-groupshared float2 gTree[PADDED_SHARED_SIZE];
+groupshared uint gTree[PADDED_SHARED_SIZE];
 
 [numthreads(THREAD_GROUP_SIZE, 1, 1)]
 void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
@@ -21,8 +21,8 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
     // The tail block is zero padded up to a full ELEMENTS_PER_GROUP so the tree
     // stays a perfect power of two. Zero is the identity of the sum, so the
     // padding contributes nothing to the block total.
-    gTree[sharedA] = (globalA < ElementCount) ? Values[globalA] : float2(0.0f, 0.0f);
-    gTree[sharedB] = (globalB < ElementCount) ? Values[globalB] : float2(0.0f, 0.0f);
+    gTree[sharedA] = (globalA < ElementCount) ? Values[globalA] : 0u;
+    gTree[sharedB] = (globalB < ElementCount) ? Values[globalB] : 0u;
 
     // Up-sweep (reduce). After the pass with stride `offset`, the element at
     // k * offset - 1 holds the sum of the `offset` elements ending there, and
@@ -51,7 +51,7 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
     const uint rootIndex = (ELEMENTS_PER_GROUP - 1u) + CONFLICT_FREE_OFFSET(ELEMENTS_PER_GROUP - 1u);
     if (localIndex == 0u) {
         BlockSums[blockIndex] = gTree[rootIndex];
-        gTree[rootIndex] = float2(0.0f, 0.0f);
+        gTree[rootIndex] = 0u;
     }
 
     // Down-sweep. At each node the left child takes the parent's prefix and the
@@ -68,7 +68,7 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
             ai += CONFLICT_FREE_OFFSET(ai);
             bi += CONFLICT_FREE_OFFSET(bi);
 
-            float2 leftPrefix = gTree[ai];
+            uint leftPrefix = gTree[ai];
             gTree[ai] = gTree[bi];
             gTree[bi] += leftPrefix;
         }

@@ -30,6 +30,9 @@ StructuredBuffer<float> PatternPosition : register(t1);
 
 static const float CurveInvSqrt2 = 0.70710678118;
 static const float CurveSdfInside = -1e30;
+// max()ed into the stroke, so this erases the body outright - a patterned curve with no centre
+// anywhere near it draws nothing, which is a gap in the pattern, not a solid run.
+static const float CurveSdfOutside = 1e30;
 
 // --- shared building blocks --------------------------------------------------------
 float CurveBodySDF(float2 coord, float halfWidth)
@@ -150,15 +153,19 @@ float CurvePatternArc(
 #endif
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
-float CurvePatternCentreSpan(uint2 patternRange, int i0, int i1, float c0, float c1)
+// slot0/slot1 are absolute slots in the flat pattern array, and loSlot is the lowest one this curve
+// may read - so at the start of a curve the span is measured against the PREVIOUS curve's last
+// centre rather than being given up on, which is what keeps the first dash of a curve the same size
+// as the last dash of the one before it.
+float CurvePatternCentreSpan(int slot0, int slot1, int loSlot, float c0, float c1)
 {
-    if (i1 != i0)
+    if (slot1 != slot0)
     {
         return abs(c1 - c0);
     }
-    if (i0 > 0)
+    if (slot0 > loSlot)
     {
-        return abs(c0 - PatternPosition[patternRange.x + uint(i0 - 1)]);
+        return abs(c0 - PatternPosition[uint(slot0 - 1)]);
     }
     return 0.0;
 }
@@ -183,22 +190,39 @@ float CurvePatternSDF(
     float  patternArc,
     float  totalDistance,
     float  spacing,
-    uint2  patternRange,
+    int3   patternSlot,
     float  dashLength,
     float  halfWidth,
     uint   capCapJoin)
 {
-    if (patternRange.y == 0u)
+    // SOLID is spacing <= 0 and nothing else. It used to be tested as "this curve owns no pattern
+    // centres", which meant the same thing only while every curve started its own pattern at its
+    // own arc 0 and therefore always owned at least one. On the chain-global grid a curve shorter
+    // than the gap between two grid points legitimately owns NONE - at spacing 2.0 most curves in
+    // a scene do - and reading that as solid turns those curves into full-width strokes. Written
+    // !(spacing > 0) so a NaN spacing is solid rather than patterned.
+    if (!(spacing > 0.0))
     {
         return CurveSdfInside;
     }
-    
-    const int lastPattern = int(patternRange.y) - 1;
-    const int i0 = clamp(int(floor(totalDistance / max(spacing, 1e-6))), 0, lastPattern);
-    const int i1 = min(i0 + 1, lastPattern);
 
-    const float c0 = PatternPosition[patternRange.x + uint(i0)];
-    const float c1 = PatternPosition[patternRange.x + uint(i1)];
+    // Patterned, but the chain has no centre this curve can reach - it is all gap.
+    if (patternSlot.z < patternSlot.y)
+    {
+        return CurveSdfOutside;
+    }
+
+    // floor(distance / spacing) is an index into the CHAIN-global centre grid, because
+    // totalDistance is the chain-cumulative world arc. PatternSlot.x maps that onto this curve's
+    // slice of the flat array and the clamp keeps the pair inside the slots it may read - see
+    // curve_common.hlsli. The bias is what makes the dash sequence continue across a joint instead
+    // of restarting at each curve's own centre 0.
+    const int globalIndex = int(floor(totalDistance / max(spacing, 1e-6)));
+    const int slot0 = clamp(globalIndex + patternSlot.x, patternSlot.y, patternSlot.z);
+    const int slot1 = min(slot0 + 1, patternSlot.z);
+
+    const float c0 = PatternPosition[uint(slot0)];
+    const float c1 = PatternPosition[uint(slot1)];
 
     const float a0 = patternArc - c0;
     const float a1 = patternArc - c1;
@@ -207,7 +231,7 @@ float CurvePatternSDF(
     
 #if CURVE_PATTERN_SHRINK_TO_FIT
     arcDist *= CurvePatternArcScale(
-        CurvePatternCentreSpan(patternRange, i0, i1, c0, c1),
+        CurvePatternCentreSpan(slot0, slot1, patternSlot.y, c0, c1),
         CurvePatternElementLength(dashLength, halfWidth, cap));
 #endif
     return CurveCapSDF(float2(abs(lateral), arcDist + dashLength * 0.5), dashLength, halfWidth, cap);
@@ -251,7 +275,7 @@ float4 main(CurveVSOutput input) : SV_Target
         patternArc,
         input.TotalDistance,
         input.Spacing,
-        input.PatternRange,
+        input.PatternSlot,
         input.DashLength,
         halfWidth,
         input.CapCapJoin));
