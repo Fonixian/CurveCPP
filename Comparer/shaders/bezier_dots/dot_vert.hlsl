@@ -52,8 +52,8 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     float tA = SampleT(bez, s.Sample);
     float tB = SampleT(bez, s.Sample + 1u);
 
-    float3 posA = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, tA);
-    float3 posB = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, tB);
+    float3 posA = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tA);
+    float3 posB = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tB);
 
     float4 clipA = mul(float4(posA, 1.0), VP);
     float4 clipB = mul(float4(posB, 1.0), VP);
@@ -76,7 +76,7 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     // SampleA > 0 always holds, because Add() asserts resolution >= 2.
     if (tangentLen < 1e-5) {
         uint prevIndex = s.Sample > 0 ? s.Sample - 1 : s.Sample;
-        float3 posPrev = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, SampleT(bez, prevIndex));
+        float3 posPrev = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, SampleT(bez, prevIndex));
         float4 clipPrev = mul(float4(posPrev, 1.0), VP);
         if (clipPrev.w > 1e-5) {
             float2 screenPrev = ProjectToScreen(clipPrev);

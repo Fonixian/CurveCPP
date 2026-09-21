@@ -56,14 +56,27 @@ struct CameraDataBuffer {
 	uint32_t TotalCurveCount;
 };
 
+// The four float3 slots hold the curve in the MONOMIAL (power) basis, not its control points:
+//
+//     P(t) = K0 + t * (K1 + t * (K2 + t * K3))
+//
+// Same cubic, same 80 bytes, same slots - only what the numbers mean changed. The GPU never wants
+// the control points themselves, only something it can evaluate, and Horner does that in three
+// fused multiply-adds per component where the Bernstein form needs three weight products and four
+// scale-adds. ToPowerBasis in bezier_common.cpp does the conversion once per upload; the control
+// points stay in BezierData on the CPU side, which is what PatternBound() and ToCubic() read.
+//
+// Whoever adds a GPU pass that genuinely needs P0..P3 (subdivision, a control-polygon bound on the
+// GPU, hull rendering) has to convert back or carry them separately - the conversion is not
+// invertible in-place without the Bernstein matrix.
 struct UploadBezierData {
-	DirectX::XMFLOAT3 P0;
+	DirectX::XMFLOAT3 K0;
 	int32_t  first_index;
-	DirectX::XMFLOAT3 P1;
+	DirectX::XMFLOAT3 K1;
 	int32_t  last_index;
-	DirectX::XMFLOAT3 P2;
+	DirectX::XMFLOAT3 K2;
 	uint32_t color_begin;
-	DirectX::XMFLOAT3 P3;
+	DirectX::XMFLOAT3 K3;
 	uint32_t color_end;
 	float    min_height;
 	float    max_height;
@@ -86,6 +99,10 @@ unsigned next_pow2(unsigned x);
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
 void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3& p3);
+// Cubic control points -> the monomial coefficients UploadBezierData carries. Call it on ToCubic's
+// output, and only after anything that needs the control polygon itself (the pattern bound) is done.
+void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
+	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
 
 void ClearComputeBindings(Axodox::Graphics::GraphicsDeviceContext* context);
 void ClearDrawBindings(Axodox::Graphics::GraphicsDeviceContext* context);

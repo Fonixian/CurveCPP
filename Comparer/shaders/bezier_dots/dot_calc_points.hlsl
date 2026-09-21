@@ -44,8 +44,8 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
         float t     = float(pointIndex - firstIndex) / float(resolution);
         float tNext = float(pointIndex - firstIndex + 1) / float(resolution);
 
-        float3 position     = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, t);
-        float3 nextPosition = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, tNext);
+        float3 position     = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, t);
+        float3 nextPosition = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tNext);
         dist = distance(position, nextPosition);
     }
 

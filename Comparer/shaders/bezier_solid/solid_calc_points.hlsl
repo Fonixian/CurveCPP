@@ -12,14 +12,12 @@ StructuredBuffer<uint>            BezierIndexMap : register(t1);
 
 RWStructuredBuffer<float4> CalculatedPoints : register(u0);
 
-float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t) {
-    float omt = 1.0 - t;
-    float omt2 = omt * omt;
-    float t2 = t * t;
-    return omt2 * omt * p0
-         + 3.0 * omt2 * t * p1
-         + 3.0 * omt * t2 * p2
-         + t2 * t * p3;
+// Horner over the monomial coefficients BezierCurveData carries (see solid_common.hlsli): three
+// fused multiply-adds per component, against the Bernstein form's three weight products plus four
+// scale-adds. Deliberately duplicated from curve_calc_points.hlsl, like the rest of this folder.
+float3 EvaluateBezier(float3 k0, float3 k1, float3 k2, float3 k3, float t)
+{
+    return mad(mad(mad(k3, t, k2), t, k1), t, k0);
 }
 
 [numthreads(256, 1, 1)]
@@ -34,7 +32,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     int lastIndex  = bez.LastIndex;
 
     float t = float(pointIndex - firstIndex) / float(lastIndex - firstIndex);
-    float3 position = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, t);
+    float3 position = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, t);
 
     float blend = t;
     if (bez.MinHeight < bez.MaxHeight)

@@ -1,14 +1,18 @@
 #ifndef DOT_COMMON_HLSLI
 #define DOT_COMMON_HLSLI
 
+// K0..K3 are the curve in the MONOMIAL basis, NOT its control points:
+//     P(t) = K0 + t * (K1 + t * (K2 + t * K3))
+// The CPU converts once per upload (ToPowerBasis in bezier_common.cpp); the slots and the 80-byte
+// layout are unchanged, so this costs nothing to load. Do not read K1 expecting P1.
 struct BezierCurveData {
-    float3 P0;
+    float3 K0;
     int    FirstIndex;
-    float3 P1;
+    float3 K1;
     int    LastIndex;
-    float3 P2;
+    float3 K2;
     uint   ColorBegin;
-    float3 P3;
+    float3 K3;
     uint   ColorEnd;
     float  MinHeight;
     float  MaxHeight;
@@ -64,14 +68,13 @@ float Width(uint cap_cap_width) { return float(cap_cap_width & 0xFFFF) / 65535.0
 // - two spellings of a cubic that agree algebraically can still disagree in the last bit, and a dot
 // placed a hair off the arc length it was counted from is exactly the kind of drift that shows up as
 // a seam.
-float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t) {
-    float omt = 1.0 - t;
-    float omt2 = omt * omt;
-    float t2 = t * t;
-    return omt2 * omt * p0
-         + 3.0 * omt2 * t * p1
-         + 3.0 * omt * t2 * p2
-         + t2 * t * p3;
+//
+// Horner over the monomial coefficients: three fused multiply-adds per component, against the
+// Bernstein form's three weight products plus four scale-adds. The coefficients arrive that way
+// already (see BezierCurveData above), so this is the whole evaluation.
+float3 EvaluateBezier(float3 k0, float3 k1, float3 k2, float3 k3, float t)
+{
+    return mad(mad(mad(k3, t, k2), t, k1), t, k0);
 }
 
 // Curve parameter of one sample index. resolution - 1 intervals span t in [0, 1].

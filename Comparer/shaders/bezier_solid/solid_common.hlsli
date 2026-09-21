@@ -1,14 +1,18 @@
 #ifndef SOLID_COMMON_HLSLI
 #define SOLID_COMMON_HLSLI
 
+// K0..K3 are the curve in the MONOMIAL basis, NOT its control points:
+//     P(t) = K0 + t * (K1 + t * (K2 + t * K3))
+// The CPU converts once per upload (ToPowerBasis in bezier_common.cpp); the slots and the 80-byte
+// layout are unchanged, so this costs nothing to load. Do not read K1 expecting P1.
 struct BezierCurveData {
-    float3 P0;
+    float3 K0;
     int    FirstIndex;
-    float3 P1;
+    float3 K1;
     int    LastIndex;
-    float3 P2;
+    float3 K2;
     uint   ColorBegin;
-    float3 P3;
+    float3 K3;
     uint   ColorEnd;
     float  MinHeight;
     float  MaxHeight;

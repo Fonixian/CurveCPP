@@ -32,7 +32,7 @@ StructuredBuffer<uint>            PatternOffsets  : register(t4);
 
 RWStructuredBuffer<float> PatternPosition : register(u0);
 
-[numthreads(8, 32, 1)]
+[numthreads(8, 8, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint curveIndex    = dispatchThreadId.y;
