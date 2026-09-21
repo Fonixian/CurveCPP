@@ -850,7 +850,8 @@ void App::ProfilerGui()
 		ImGui::TextDisabled("the CPU bound and what was allocated from it");
 
 		// The exact GPU count used to sit between these two, mirrored back a few frames late through
-		// a GpuCounter that curve_pattern_resolve / dot_resolve wrote. Those passes are gone - the
+		// a 
+		// that curve_pattern_resolve / dot_resolve wrote. Those passes are gone - the
 		// scan's appended total stays on the GPU, where the shaders that need it read it directly -
 		// so there is no count to show any more, and no dispatch is worth adding to produce one.
 		struct CountRow

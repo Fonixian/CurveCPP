@@ -33,7 +33,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     float prev_arc = Distances[BezierData[curveIndex].FirstIndex];
     float current_arc = Distances[BezierData[curveIndex].LastIndex];
-    float spacing = DotStyles[curveIndex].Spacing;
+    float spacing = DotStyles[curveIndex].spacing;
     
     uint dot_count = pattern_count(current_arc, spacing) - pattern_count(prev_arc, spacing);
     

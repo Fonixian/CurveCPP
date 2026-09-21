@@ -44,13 +44,12 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     BezierCurveData bez            = BezierData[curveIndex];
     uint            sampleStartIdx = (uint)bez.FirstIndex;
     uint            sampleEndIdx   = (uint)bez.LastIndex;
-    float           worldSpacing   = DotStyles[curveIndex].Spacing;
+    float           worldSpacing   = DotStyles[curveIndex].spacing;
     
     float prevArcLength = Distances[BezierData[curveIndex].FirstIndex];
-    float curveSpacing = DotStyles[curveIndex].Spacing;
 
-    uint base_index = (prevArcLength > 0.0 && curveSpacing > 0.0)
-        ? (uint) floor(prevArcLength / curveSpacing) + 1u
+    uint base_index = (prevArcLength > 0.0 && worldSpacing > 0.0)
+        ? (uint) floor(prevArcLength / worldSpacing) + 1u
         : 0u;
 
     for (uint localIdx = threadLaneIdx; localIdx < dotCount; localIdx += 8)
@@ -86,10 +85,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
             : 0.0f;
 
         DotSample dot;
-        dot.SampleA = sampleA;
-        dot.SampleB = sampleB;
+        dot.Sample = sampleA;
         dot.SegmentT = saturate(segmentT);
-        // Carried so dot_vert can reach BezierData without the point -> curve index map.
         dot.CurveIndex = curveIndex;
         Dots[globalIdx] = dot;
     }

@@ -6,32 +6,18 @@ using namespace DirectX;
 
 constexpr uint32_t maxElementCount = 1'200'000u;
 
-// One screen-aligned quad per dot, as a triangle strip. dot_args writes this into the indirect
-// argument buffer's VertexCountPerInstance field, so it has to agree with dot_vert.hlsl's corner
-// numbering and with the topology set in Draw().
-constexpr uint32_t dotVertexCount = 4u;
-
-// Width / cap / spacing, as dot_common.hlsli's DotStyle reads it. Join is meaningless for dots (they
-// never join), so the low byte of capcapjoin is always 0 - kept only so the packing matches the other
-// two renderers' style structs bit for bit, which makes them easy to diff against each other.
 struct UploadDotStyle {
-	float    width;
-	uint32_t capcapjoin;
-	float    spacing;
-	float    padding;
+	float spacing;
+	uint32_t cap_cap_width;
+	UploadDotStyle(float spacing, uint8_t front, uint8_t back, float width) :
+		spacing(spacing),
+		cap_cap_width(uint32_t(front) << 24u | uint32_t(back) << 16u |
+			static_cast<uint16_t>(std::round((std::clamp(width, 0.0f, 500.0f) / 500.0f) * 65535.0f))) {}
 };
 
-// One dot: which two consecutive curve samples bracket it, and how far between them (0 = at
-// sampleA, 1 = at sampleB). dot_vert.hlsl evaluates both samples from the control points, projects
-// them and interpolates in screen space, rather than carrying a pre-lerped world position, so its
-// tangent direction comes from the same two projected points the position does.
-//
-// curve_index is what used to be padding. dot_calc has it anyway, and carrying it here means
-// dot_vert can index BezierData directly instead of going through the point -> curve index map.
 struct DotSample {
-	uint32_t sampleA;
-	uint32_t sampleB;
-	float    segmentT;
+	uint32_t sample;
+	float    segmentT; // sample, sample + 1
 	uint32_t curve_index;
 };
 
@@ -40,7 +26,7 @@ struct DotSample {
 BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
 	// offset_scan runs over curve counts, and a curve is worth at least one point, so maxElementCount
 	// bounds the curve count too - no separate cap, and its buffers cost a few KB at that size.
-	: BezierRendererBase(device), draw_args{ device, dotVertexCount },
+	: BezierRendererBase(device), draw_args{ device },
 	  scan{ device, maxElementCount }, offset_scan{ device, maxElementCount }
 {
 	calc_points = Pipeline::getCS(device, "dot_calc_points.cso");
@@ -81,20 +67,8 @@ void BezierDotRenderer::UploadStyles(GraphicsDeviceContext* context) {
 	std::vector<UploadDotStyle> style_data;
 	style_data.reserve(curves.size());
 
-	for (const auto& bez : curves) {
-		// Packed the same way as the other two renderers' capcapjoin (front<<16 | back<<8), join bits
-		// left at 0 - see the struct comment above.
-		uint32_t capcapjoin =
-			(uint32_t(bez.cap_front) << 16) |
-			(uint32_t(bez.cap_back) << 8);
-
-		style_data.push_back(UploadDotStyle{
-			bez.width,
-			capcapjoin,
-			bez.spacing,
-			0.0f
-		});
-	}
+	for (const auto& bez : curves)
+		style_data.push_back(UploadDotStyle{ bez.spacing, uint8_t(bez.cap_front), uint8_t(bez.cap_back), bez.width });
 
 	curve_styles->Upload(std::span<const UploadDotStyle>{ style_data }, context);
 }

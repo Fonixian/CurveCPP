@@ -139,9 +139,6 @@
     <FxCompile Include="shaders\bezier\curve_pattern_calc.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_pattern_resolve.hlsl">
-      <Filter>shaders\bezier</Filter>
-    </FxCompile>
     <FxCompile Include="shaders\bezier\curve_ps.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
@@ -173,9 +170,6 @@
       <Filter>shaders\bezier dots</Filter>
     </FxCompile>
     <FxCompile Include="shaders\bezier_dots\dot_ini.hlsl">
-      <Filter>shaders\bezier dots</Filter>
-    </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_resolve.hlsl">
       <Filter>shaders\bezier dots</Filter>
     </FxCompile>
     <FxCompile Include="shaders\bezier_dots\dot_calc.hlsl">

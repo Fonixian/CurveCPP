@@ -16,10 +16,8 @@ struct BezierCurveData {
 };
 
 struct DotStyle {
-    float Width;
-    uint  CapCapJoin;
-    float Spacing;
-    float Padding;
+    float spacing;
+    uint cap_cap_width;
 };
 
 // One dot: which two consecutive curve samples bracket it, and how far between them.
@@ -29,10 +27,9 @@ struct DotStyle {
 // index map - which matters now that dot_vert evaluates the curve itself rather than reading a
 // position someone else stored.
 struct DotSample {
-    uint  SampleA;
-    uint  SampleB;
+    uint Sample;
     float SegmentT;
-    uint  CurveIndex;
+    uint CurveIndex;
 };
 
 static const uint CurveCapButt        = 0u;
@@ -57,8 +54,9 @@ uint PackColorBits(float4 color) {
     return (a << 24) | (b << 16) | (g << 8) | r;
 }
 
-uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
-uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
+uint FrontCap(uint cap_cap_width) { return (cap_cap_width >> 24) & 0xFF; }
+uint BackCap(uint cap_cap_width) { return (cap_cap_width >> 16) & 0xFF; }
+float Width(uint cap_cap_width) { return float(cap_cap_width & 0xFFFF) / 65535.0f * 500.0f; }
 
 // Shared by dot_calc_points and dot_vert. The point pass evaluates the curve to measure chord
 // lengths and throws the positions away; dot_vert evaluates the same curve again at the two samples

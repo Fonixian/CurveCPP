@@ -47,10 +47,10 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
 
     BezierCurveData bez = BezierData[curveIndex];
     DotStyle style = DotStyles[curveIndex];
-    const float halfWidth = style.Width;
+    const float halfWidth = Width(style.cap_cap_width);
 
-    float tA = SampleT(bez, s.SampleA);
-    float tB = SampleT(bez, s.SampleB);
+    float tA = SampleT(bez, s.Sample);
+    float tB = SampleT(bez, s.Sample + 1u);
 
     float3 posA = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, tA);
     float3 posB = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, tB);
@@ -75,7 +75,7 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     // past the curve's last sample. Fall back to the direction of the preceding interval.
     // SampleA > 0 always holds, because Add() asserts resolution >= 2.
     if (tangentLen < 1e-5) {
-        uint prevIndex = s.SampleA > 0 ? s.SampleA - 1 : s.SampleA;
+        uint prevIndex = s.Sample > 0 ? s.Sample - 1 : s.Sample;
         float3 posPrev = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, SampleT(bez, prevIndex));
         float4 clipPrev = mul(float4(posPrev, 1.0), VP);
         if (clipPrev.w > 1e-5) {
@@ -117,7 +117,7 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     o.Color = float4(color, 1.0);
     o.Local = cornerSign * extent;
     o.HalfWidth = halfWidth;
-    o.CapCapJoin = style.CapCapJoin;
+    o.CapCapJoin = style.cap_cap_width;
 
     return o;
 }

@@ -18,7 +18,6 @@ struct BezierCurveData {
 struct SolidCurveStyle {
     float Width;
     uint CapCapJoin;
-    float Padding[2];
 };
 
 static const uint CurveCapButt        = 0u;
