@@ -144,7 +144,7 @@ void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
 	curve_styles->Bind(ShaderStage::Compute, 2, context);             // t2
 	pattern_offsets->BindUnordered(0, context);                 // u0
 
-	pattern_ini->Run({ (curve_count + 64u - 1u) / 64u, 1u, 1u }, context);
+	pattern_ini->Run({ (curve_count + 256u - 1u) / 256u, 1u, 1u }, context);
 
 	ClearComputeBindings(context);
 

@@ -102,38 +102,25 @@ bool calc_overlap(float2 dir_AB, float d, float2 v, float l_AB, float l_CB, floa
 CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     CurveVSOutput o = (CurveVSOutput)0;
     const uint pointCount = TotalPointCount;
-
-    // Vertices 0,1 sit on B, vertices 2,3,4 on C (4 is the join wedge). Which end a vertex belongs
-    // to decides which corner it miters, which colour and arc length it carries, and which of the
-    // two clip parameters applies to it.
+    
     const bool nearSide = index < 2u;
-
     const uint wordBase = (i > 0u ? i - 1u : 0u) >> 5u;
     const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
     const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
     const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
 
-    // Every memory request is issued before the first branch so the two-step
-    // BezierIndexMap -> CurveStyles chain overlaps the transform + clip math. Unlike the solid
-    // shader this one cannot drop the far neighbour: ArcShear is nointerpolation and has to hold the
-    // same pair of shears whichever vertex the rasteriser happens to take it from, so both ends of
-    // the joint frame are needed on every vertex.
-    //
-    // A missing neighbour is indexed onto this segment's own far endpoint rather than carried as a
-    // NaN sentinel: every index stays in range (i - 1u wraps to 0xFFFFFFFF at i == 0), and the value
-    // is overwritten by the terminus branch below anyway.
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
 
-    const uint iA = hasA ? step_over_duplicate(i - 1u, i - 2u,
+    const uint indexA = hasA ? step_over_duplicate(i - 1u, i - 2u,
                                i > 1u && !IsCurveBegin(beginWords, wordBase, i - 1u), rawB.xyz)
                          : (i + 1u);
-    const uint iD = hasD ? step_over_duplicate(i + 2u, i + 3u,
+    const uint indexD = hasD ? step_over_duplicate(i + 2u, i + 3u,
                                i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u), rawC.xyz)
                          : i;
 
-    const float3 rawA = CalculatedPoints[iA].xyz;
-    const float3 rawD = CalculatedPoints[iD].xyz;
+    const float3 rawA = CalculatedPoints[indexA].xyz;
+    const float3 rawD = CalculatedPoints[indexD].xyz;
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
@@ -256,8 +243,6 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     float2 offset;
     if (d >= 0.0) {
-        // Dense tessellation keeps consecutive segments near-collinear, so this is the
-        // overwhelmingly common case: plain miter, nothing else needed.
         offset = s_12 * ((dir_AB_r + dir_BC_r) / (1.0 + d));
     }
     else {
@@ -298,11 +283,6 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     if (index >= 2u)
         sdf = l_CB - sdf;
 
-    // Index 4 (the join wedge) is the only vertex whose lateral is COMPUTED, and it sits in the
-    // index >= 2 half where the local dir_BC_r points the OPPOSITE way from the +width_pixel side the
-    // other four assert - so it was writing a sign-flipped lateral. Invisible while everything read
-    // abs(SDF.x), except inside the wedge triangle, where the magnitude was being interpolated from a
-    // wrong-signed corner. Negating puts all five on one convention.
     o.SDF.x = (index == 4u) ? (dot(offset, dir_BC_r) * -width_pixel)
                             : (((index & 1u) == 0u) ? width_pixel : -width_pixel);
     o.SDF.y = sdf;

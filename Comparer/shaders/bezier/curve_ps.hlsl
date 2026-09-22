@@ -19,13 +19,6 @@
 #define CURVE_PATTERN_BISECTOR 1
 #endif
 
-// Multiplier on the stretch at each end over which the bisector frame is held at full strength.
-// 1.0 pins exactly as far as the two segments' geometry reaches into each other; 0 ramps across the
-// whole segment.
-#ifndef CURVE_PATTERN_BISECTOR_MARGIN
-#define CURVE_PATTERN_BISECTOR_MARGIN 1.0
-#endif
-
 StructuredBuffer<float> PatternPosition : register(t1);
 
 static const float CurveInvSqrt2 = 0.70710678118;
@@ -130,8 +123,8 @@ float CurvePatternArc(
     float  halfWidth,
     float2 arcShear)
 {
-    const float wantB = CURVE_PATTERN_BISECTOR_MARGIN * halfWidth * abs(arcShear.x);
-    const float wantC = CURVE_PATTERN_BISECTOR_MARGIN * halfWidth * abs(arcShear.y);
+    const float wantB = halfWidth * abs(arcShear.x);
+    const float wantC = halfWidth * abs(arcShear.y);
 
     // Too short to hold both bands (fat stroke, coarse sampling, hairpin): scale them down TOGETHER
     // so the sharper joint keeps the larger share, and always leave a fifth of the segment to ramp

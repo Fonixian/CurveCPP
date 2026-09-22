@@ -24,22 +24,16 @@ cbuffer CameraData : register(b0)
 };
 
 StructuredBuffer<BezierCurveData> BezierData     : register(t0);
-// World arc length only. The count is camera-independent, so the screen channel - now a buffer of
-// its own rather than the .y of this one - is not bound to this pass at all.
 StructuredBuffer<float>           WorldDistances : register(t1);
 StructuredBuffer<CurveStyle>      CurveStyles    : register(t2);
 
-// Scanned in place by ParalellScan straight after this pass. The counts do not
-// survive that, and do not need to: an exclusive scan with the total appended
-// leaves every count recoverable as the gap between neighbouring offsets.
 RWStructuredBuffer<uint> PatternOffsets : register(u0);
 
-uint pattern_count(float arc, float spacing)
-{
+uint pattern_count(float arc, float spacing) {
     return (arc > 0.0 && spacing > 0.0) ? (uint) floor(arc / spacing) + 1u : 0u;
 }
 
-[numthreads(64, 1, 1)]
+[numthreads(256, 1, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
     uint curveIndex = dispatchThreadId.x;
