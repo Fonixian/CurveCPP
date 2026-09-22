@@ -158,49 +158,39 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const float2 dC = float2(WorldDistances[i + 1u], ScreenDistances[i + 1u]);
     const float tEnd = nearSide ? t0 : t1;
 
-    o.Color = float4(lerp(cB, cC, tEnd), 1.0);
-    o.TotalDistance = lerp(dB.x, dC.x, tEnd);
+    const bool patterned = style.Spacing > 0.0;
+
     o.ScreenArcBegin = lerp(dB.y, dC.y, t0);
     o.ScreenArcEnd = ScreenDistances[BezierData[curveIndex].LastIndex];
-    o.Spacing = style.Spacing;
     o.DashLength = style.DashLength;
-    o.CapCapJoin = style.CapCapJoin;
+    o.CapCapJoin = style.CapCapJoin | (patterned ? CurvePatternedBit : 0u);
 
-    // --- where this curve's centres live in the flat pattern array ----------------------------
-    // WorldDistances is chain-cumulative, so the centre grid is shared by every curve in the chain and
-    // curve_pattern_ini hands each curve the WINDOW of it that falls inside its own arc span. The
-    // pixel shader inverts a pixel's distance back into a GLOBAL grid index, so it needs the bias
-    // that maps that index onto this curve's slice - patternFirst - patternBase.
+    // --- the pattern coordinate ---------------------------------------------------------------
+    // One chain: bezier_common.cpp sets a single begin bit, at point 0, so the scan never restarts
+    // and WorldDistances is cumulative over the whole scene. A curve's last sample contributes
+    // length 0, so curves are contiguous in arc as well as in slots and PatternPosition is one
+    // sorted, dense run. World arc maps to slot by an affine, per-curve-constant rule:
     //
-    // It also needs to be allowed one slot past either end of the slice: a dash whose centre sits
-    // on the next curve can still reach back across the joint, and without the widening it would be
-    // sliced off exactly at the joint - the very seam this is meant to remove. The flat array is an
-    // exclusive scan over the counts in curve order, and the chain runs in curve order too, so
-    // sliceBegin - 1 IS the previous centre along the chain and sliceEnd the next one, empty slices
-    // in between costing nothing. Both are clamped to what pattern_calc actually wrote: 0 at the
-    // bottom, and at the top the grand total.
+    //     slot = floor(arc / spacing) + (sliceBegin - patternBase)
     //
-    // PatternOffsets is an exclusive scan with the total appended one slot past the last curve, so
-    // this curve's slice is the gap between neighbouring offsets and the total is a single load at
-    // [TotalCurveCount]. It used to be a uint2 per curve plus a second read of the LAST curve's pair
-    // to reassemble that total; the appended slot is the same number, already summed.
-    const uint sliceBegin = PatternOffsets[curveIndex];
-    const uint sliceEnd = PatternOffsets[curveIndex + 1u];
-    const int patternTotal = (TotalCurveCount > 0u) ? int(PatternOffsets[TotalCurveCount]) : 0;
+    // Both the divide and the integer bias commute with the lerp below AND with the rasteriser's
+    // linear interpolation, so doing them here hands the pixel shader the finished slot coordinate:
+    // three interpolants and a per-pixel divide gone, two of three PatternOffsets loads gone.
+    //
+    // The bias is identically 0 while every curve shares one spacing - the ini counts telescope, so
+    // sliceBegin == patternBase. Kept because mixed spacing (a solid curve between two dashed ones)
+    // breaks the telescoping and the bias is what absorbs it.
+    float patternCoord = 0.0;
+    if (patterned) {
+        const float curveArcBegin = WorldDistances[BezierData[curveIndex].FirstIndex];
+        const float patternBase = (curveArcBegin > 0.0)
+            ? floor(curveArcBegin / style.Spacing) + 1.0
+            : 0.0;
+        patternCoord = lerp(dB.x, dC.x, tEnd) / style.Spacing
+                     + (float(PatternOffsets[curveIndex]) - patternBase);
+    }
 
-    const float curveArcBegin = WorldDistances[BezierData[curveIndex].FirstIndex];
-    const int patternBase = (curveArcBegin > 0.0 && style.Spacing > 0.0)
-        ? (int) floor(curveArcBegin / style.Spacing) + 1
-        : 0;
-
-    // An EMPTY slice needs no special case: its offset sits exactly where its centres would have
-    // been, so lo/hi collapse onto the two centres bracketing the curve - the whole reason a curve
-    // that owns nothing can still show the tail of its neighbour's dash. The one real special case
-    // is a chain with no centres at all, where there is nothing to read and hi < lo says so.
-    o.PatternSlot = int3(
-        int(sliceBegin) - patternBase,
-        (patternTotal > 0) ? max(int(sliceBegin) - 1, 0) : 0,
-        (patternTotal > 0) ? min(int(sliceEnd), patternTotal - 1) : -1);
+    o.ColorPattern = float4(lerp(cB, cC, tEnd), patternCoord);
 
     const float3 ndcB = B4.xyz / B4.w;
     const float3 ndcC = C4.xyz / C4.w;

@@ -19,7 +19,19 @@
 #define CURVE_PATTERN_BISECTOR 1
 #endif
 
+cbuffer CameraData : register(b1) {
+    float4x4 VP;
+    float2   WH;
+    uint     TotalPointCount;
+    uint     TotalCurveCount;
+};
+
 StructuredBuffer<float> PatternPosition : register(t1);
+
+// Exactly one slot of this is read - [TotalCurveCount], the chain's centre total, which is the
+// whole clamp bound now that the pattern window is chain-global. Wave-uniform, so it scalarises
+// into one cached load instead of an interpolant written five times per segment.
+StructuredBuffer<uint>  PatternOffsets  : register(t2);
 
 static const float CurveInvSqrt2 = 0.70710678118;
 static const float CurveSdfInside = -1e30;
@@ -146,17 +158,17 @@ float CurvePatternArc(
 #endif
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
-// slot0/slot1 are absolute slots in the flat pattern array, and loSlot is the lowest one this curve
-// may read - so at the start of a curve the span is measured against the PREVIOUS curve's last
-// centre rather than being given up on, which is what keeps the first dash of a curve the same size
-// as the last dash of the one before it.
-float CurvePatternCentreSpan(int slot0, int slot1, int loSlot, float c0, float c1)
+// slot0/slot1 are absolute slots in the flat pattern array. The look-back is refused only at the
+// very first centre in the SCENE now, not at the start of each curve's slice - everywhere else the
+// span is measured against the previous centre along the chain, whichever curve owns it. Same
+// result the one-slot slice widening used to buy, without the widening.
+float CurvePatternCentreSpan(int slot0, int slot1, float c0, float c1)
 {
     if (slot1 != slot0)
     {
         return abs(c1 - c0);
     }
-    if (slot0 > loSlot)
+    if (slot0 > 0)
     {
         return abs(c0 - PatternPosition[uint(slot0 - 1)]);
     }
@@ -181,9 +193,7 @@ float CurvePatternArcScale(float centreSpan, float elementLength)
 float CurvePatternSDF(
     float  lateral,
     float  patternArc,
-    float  totalDistance,
-    float  spacing,
-    int3   patternSlot,
+    float  patternCoord,
     float  dashLength,
     float  halfWidth,
     uint   capCapJoin)
@@ -192,27 +202,39 @@ float CurvePatternSDF(
     // centres", which meant the same thing only while every curve started its own pattern at its
     // own arc 0 and therefore always owned at least one. On the chain-global grid a curve shorter
     // than the gap between two grid points legitimately owns NONE - at spacing 2.0 most curves in
-    // a scene do - and reading that as solid turns those curves into full-width strokes. Written
-    // !(spacing > 0) so a NaN spacing is solid rather than patterned.
-    if (!(spacing > 0.0))
+    // a scene do - and reading that as solid turns those curves into full-width strokes. Spacing no
+    // longer reaches the pixel shader, so the test is a flag the vertex shader sets from
+    // Spacing > 0.0 - a NaN spacing therefore still reads as solid.
+    if (!IsPatterned(capCapJoin))
     {
         return CurveSdfInside;
     }
 
-    // Patterned, but the chain has no centre this curve can reach - it is all gap.
-    if (patternSlot.z < patternSlot.y)
+    // --- the window is the whole chain ---------------------------------------------------------
+    // One chain (see curve_vs.hlsl) means PatternPosition is one dense, sorted run covering every
+    // curve, so the only slots that do not exist are off its two ends and [0, lastSlot] is the
+    // complete bound. The per-curve window - a slice plus one slot of widening at each end so a
+    // dash could reach across a joint - is a subset of what this clamp already allows, so it and
+    // its two interpolants go together.
+    //
+    // Given up: an out-of-range coordinate used to clamp to this curve's own edge, one centre away,
+    // so a bad coordinate drew a slightly misplaced dash. It now clamps to the end of the scene,
+    // where nothing is near patternArc, so a GROSS error drops the dash instead. Small errors still
+    // land on a neighbouring centre, the array being dense and sorted. Measured: with the arc
+    // correct the old clamp never fired at all; it only ever damped the noperspective world-arc
+    // error, which is better fixed than damped.
+    const int lastSlot = int(PatternOffsets[TotalCurveCount]) - 1;
+
+    // Patterned, but the chain holds no centre at all - it is all gap, NOT solid.
+    if (lastSlot < 0)
     {
         return CurveSdfOutside;
     }
 
-    // floor(distance / spacing) is an index into the CHAIN-global centre grid, because
-    // totalDistance is the chain-cumulative world arc. PatternSlot.x maps that onto this curve's
-    // slice of the flat array and the clamp keeps the pair inside the slots it may read - see
-    // curve_common.hlsli. The bias is what makes the dash sequence continue across a joint instead
-    // of restarting at each curve's own centre 0.
-    const int globalIndex = int(floor(totalDistance / max(spacing, 1e-6)));
-    const int slot0 = clamp(globalIndex + patternSlot.x, patternSlot.y, patternSlot.z);
-    const int slot1 = min(slot0 + 1, patternSlot.z);
+    // patternCoord already IS the slot coordinate - the vertex shader folded the divide by spacing
+    // and the grid-index-to-slot bias into it.
+    const int slot0 = clamp(int(floor(patternCoord)), 0, lastSlot);
+    const int slot1 = min(slot0 + 1, lastSlot);
 
     const float c0 = PatternPosition[uint(slot0)];
     const float c1 = PatternPosition[uint(slot1)];
@@ -220,11 +242,17 @@ float CurvePatternSDF(
     const float a0 = patternArc - c0;
     const float a1 = patternArc - c1;
     float arcDist = (abs(a0) <= abs(a1)) ? a0 : a1;
-    uint cap = totalDistance > arcDist ? FrontCap(capCapJoin) : BackCap(capCapJoin);
-    
+    // BEHAVIOUR CHANGE, the only one here. This read `totalDistance > arcDist`, comparing a WORLD
+    // arc length against a SCREEN-pixel offset from a centre - the unit mismatch in
+    // curve_renderer.md. The world arc is gone and the slot coordinate replacing it is no more
+    // comparable to a pixel offset, so this is written the way dot_ps.hlsl already writes it:
+    // arcDist is signed from the dash's centre, so its sign picks the end. Only visible where
+    // cap_front != cap_back.
+    uint cap = (arcDist < 0.0) ? FrontCap(capCapJoin) : BackCap(capCapJoin);
+
 #if CURVE_PATTERN_SHRINK_TO_FIT
     arcDist *= CurvePatternArcScale(
-        CurvePatternCentreSpan(slot0, slot1, patternSlot.y, c0, c1),
+        CurvePatternCentreSpan(slot0, slot1, c0, c1),
         CurvePatternElementLength(dashLength, halfWidth, cap));
 #endif
     return CurveCapSDF(float2(abs(lateral), arcDist + dashLength * 0.5), dashLength, halfWidth, cap);
@@ -266,13 +294,11 @@ float4 main(CurveVSOutput input) : SV_Target
     sdf = max(sdf, CurvePatternSDF(
         lateral,
         patternArc,
-        input.TotalDistance,
-        input.Spacing,
-        input.PatternSlot,
+        input.ColorPattern.w,
         input.DashLength,
         halfWidth,
         input.CapCapJoin));
 
     if (sdf > 0.5) discard;
-    return float4(input.Color.rgb, saturate(0.5 - sdf));
+    return float4(input.ColorPattern.rgb, saturate(0.5 - sdf));
 }

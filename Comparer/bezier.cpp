@@ -51,8 +51,8 @@ void BezierRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t
 	// One element longer than the curve count on purpose: the scan parks the grand total in the slot
 	// just past the last curve, and a structured-buffer UAV drops an out-of-range store without
 	// complaining, so a buffer sized exactly to curves_required would lose the total silently rather
-	// than fault. curve_pattern_calc and curve_vs both read [i + 1], so that slot is live geometry,
-	// not slack.
+	// than fault. curve_pattern_calc reads [i + 1] for its count and curve_ps reads that appended
+	// total as its clamp bound, so the slot is live geometry, not slack.
 	pattern_offsets.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(curves_required + 1u)));
 }
 
@@ -226,11 +226,16 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	world_distances->BindOrdered(ShaderStage::Vertex, 2, context);     // t2: cumulative world arc length
 	bezier_data->Bind(ShaderStage::Vertex, 3, context);                // t3: curve definitions
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: point -> curve index
-	pattern_offsets->BindOrdered(ShaderStage::Vertex, 5, context);     // t5: pattern base per curve, total appended
+	pattern_offsets->BindOrdered(ShaderStage::Vertex, 5, context);     // t5: pattern base per curve
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width / cap / join / spacing / dash length
 	screen_distances->BindOrdered(ShaderStage::Vertex, 7, context);    // t7: cumulative screen arc length, px
 
 	if (patterns) patterns->BindOrdered(ShaderStage::Pixel, 1, context); // t1: screen arc length per pattern center
+	// t2: the pixel shader reads one slot of this - [TotalCurveCount], the chain's centre total,
+	// which is the whole of its clamp bound now that the pattern window is chain-global rather than
+	// per curve. Cheaper there than as an interpolant: it is wave-uniform, so it scalarises, where
+	// an interpolant would be written once per vertex, five times per segment.
+	pattern_offsets->BindOrdered(ShaderStage::Pixel, 2, context);
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context); // b1
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);  // b1

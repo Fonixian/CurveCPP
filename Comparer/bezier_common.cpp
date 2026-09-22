@@ -140,10 +140,14 @@ void ClearComputeBindings(GraphicsDeviceContext* context) {
 }
 
 constexpr uint32_t vertexSrvSlots = 8u;
+// t1 pattern positions, t2 pattern offsets. Slot 0 is never bound to the pixel stage by any of the
+// three renderers, so the loop starts at 1.
+constexpr uint32_t pixelSrvSlots = 3u;
 void ClearDrawBindings(GraphicsDeviceContext* context) {
 	for (uint32_t slot = 0; slot < vertexSrvSlots; ++slot)
 		context->BindShaderResourceView(nullptr, ShaderStage::Vertex, slot);
-	context->BindShaderResourceView(nullptr, ShaderStage::Pixel, 1);
+	for (uint32_t slot = 1; slot < pixelSrvSlots; ++slot)
+		context->BindShaderResourceView(nullptr, ShaderStage::Pixel, slot);
 }
 
 
