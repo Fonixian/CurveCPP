@@ -12,8 +12,6 @@ StructuredBuffer<uint>            CurveBegins      : register(t1);
 StructuredBuffer<uint>            BezierIndexMap   : register(t4);
 StructuredBuffer<SolidCurveStyle> CurveStyles      : register(t6);
 
-// i, i+1 and i+2 always fall inside two consecutive 32-bit words, so two loads
-// cover all three begin-bits instead of three separate dependent loads.
 bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
     uint w = ((pointIndex >> 5u) == wordBase) ? words.x : words.y;
     return ((w >> (pointIndex & 31u)) & 1u) != 0u;
@@ -27,9 +25,6 @@ float min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
 float max2(float2 v) { return max(v.x, v.y); }
 float min2(float2 v) { return min(v.x, v.y); }
 
-// Clips B..C against the frustum and reports the clip parameters, so the caller
-// can apply them to whatever it actually needs (colour, neighbour) instead of
-// the shader carrying both endpoints' worth of every attribute through here.
 bool clip(inout float4 B, inout float4 C, out float t0, out float t1) {
     t0 = 0.0;
     t1 = 1.0;
@@ -75,9 +70,6 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     SolidVSOutput o = (SolidVSOutput)0;
     const uint pointCount = TotalPointCount;
 
-    // Vertices 0,1 work the corner at B (neighbour i-1); 2,3,4 work the corner
-    // at C (neighbour i+2). Only one of the two neighbours is ever used, so only
-    // one gets fetched and transformed.
     const bool nearSide = index < 2u;
     const uint ni = nearSide ? (i - 1u) : (i + 2u);
     
@@ -86,9 +78,7 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
     const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
     const bool hasN = nearSide ? hasA : hasD;
-
-    // Every memory request is issued before the first branch so the two-step
-    // BezierIndexMap -> CurveStyles chain overlaps the transform + clip math.
+    
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
     float3 rawN = hasN ? CalculatedPoints[ni].xyz : 0.0/0.0;

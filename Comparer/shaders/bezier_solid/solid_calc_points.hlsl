@@ -12,9 +12,6 @@ StructuredBuffer<uint>            BezierIndexMap : register(t1);
 
 RWStructuredBuffer<float4> CalculatedPoints : register(u0);
 
-// Horner over the monomial coefficients BezierCurveData carries (see solid_common.hlsli): three
-// fused multiply-adds per component, against the Bernstein form's three weight products plus four
-// scale-adds. Deliberately duplicated from curve_calc_points.hlsl, like the rest of this folder.
 float3 EvaluateBezier(float3 k0, float3 k1, float3 k2, float3 k3, float t)
 {
     return mad(mad(mad(k3, t, k2), t, k1), t, k0);

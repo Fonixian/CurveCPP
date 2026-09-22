@@ -14,15 +14,15 @@ StructuredBuffer<BezierCurveData> BezierData : register(t3);
 StructuredBuffer<uint> BezierIndexMap : register(t4);
 StructuredBuffer<uint> PatternOffsets : register(t5);
 StructuredBuffer<CurveStyle> CurveStyles : register(t6);
-// Appended at the end rather than next to WorldDistances so the slot numbers t0..t6 that the solid
-// renderer's vertex shader also uses keep lining up and the two stay easy to diff.
 StructuredBuffer<float> ScreenDistances : register(t7);
 
-// i, i+1, i+2 and i+3 always fall inside two consecutive 32-bit words, so two loads
-// cover every begin-bit this shader needs instead of four separate dependent loads.
 bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
     uint w = ((pointIndex >> 5u) == wordBase) ? words.x : words.y;
     return ((w >> (pointIndex & 31u)) & 1u) != 0u;
+}
+
+uint step_over_duplicate(uint first, uint second, bool hasSecond, float3 anchor) {
+    return (hasSecond && distance(CalculatedPoints[first].xyz, anchor) < 0.00001) ? second : first;
 }
 
 float4 side_dist(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
@@ -33,9 +33,6 @@ float min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
 float max2(float2 v) { return max(v.x, v.y); }
 float min2(float2 v) { return min(v.x, v.y); }
 
-// Clips B..C against the frustum and reports the clip parameters, so the caller can apply them to
-// whatever it actually needs (colour, arc length, neighbour) instead of the shader carrying every
-// endpoint attribute through here.
 bool clip(inout float4 B, inout float4 C, out float t0, out float t1) {
     t0 = 0.0;
     t1 = 1.0;
@@ -68,9 +65,6 @@ bool clip(inout float4 B, inout float4 C, out float t0, out float t1) {
     return true;
 }
 
-// Pulls a neighbour in front of the near plane, towards the endpoint P it shares with this segment.
-// Only reachable when the neighbour is actually behind it, so the divides stay off the fast path.
-// A missing neighbour arrives as NaN, every comparison below is false for it, and it stays NaN.
 void pull_in_front(inout float4 N, float4 P) {
     const float2 hN = N.zw;
     if (min2(hN) < 0.0) {
@@ -81,12 +75,7 @@ void pull_in_front(inout float4 N, float4 P) {
     }
 }
 
-// --- bisector arc frame -------------------------------------------------------------
-// 1 + cos(theta) below this means the joint is folded back on itself. It is also what a MISSING
-// neighbour looks like: a terminus arrives as NaN, and a clipped end arrives as the segment's own far
-// point, i.e. exactly -segDir. All three want the same answer - no joint.
 static const float CurveBisectorMinCos = 1e-3;
-// Bounds the shear so a near-fold cannot throw a dash across the screen. tan(theta/2) at ~166 deg.
 static const float CurveMaxArcShear = 8.0;
 
 float2 CurveSafeDir(float2 from, float2 to) {
@@ -95,17 +84,6 @@ float2 CurveSafeDir(float2 from, float2 to) {
     return (len > 1e-6) ? (delta / len) : float2(0.0, 0.0);
 }
 
-// Signed tan(half the turn angle) at one end of the segment, in the pixel shader's lateral frame.
-//
-// The pattern wants the arc whose ISO-LINES are the joint's angle bisector, because that is the only
-// line both segments meeting there agree on. Splitting a pixel into (localArc along segDir) +
-// (lateral along lateralDir), that arc is
-//     localArc + lateral * dot(lateralDir, t) / dot(segDir, t),   t = segDir + neighbourDir
-// and dot(lateralDir, segDir) == 0 collapses the ratio to what is below. Both segments produce the
-// same VALUE for a given pixel despite using different frames - that is what kills the seam step.
-//
-// neighbourDir points INTO the joint at B and OUT of it at C, so one function serves both. The test
-// is written !(x > y) so a NaN denominator takes the zero branch.
 float CurveJointShear(float2 lateralDir, float2 segDir, float2 neighbourDir) {
     float denom = 1.0 + dot(neighbourDir, segDir);
     if (!(denom > CurveBisectorMinCos)) return 0.0;
@@ -130,7 +108,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // two clip parameters applies to it.
     const bool nearSide = index < 2u;
 
-    const uint wordBase = i >> 5u;
+    const uint wordBase = (i > 0u ? i - 1u : 0u) >> 5u;
     const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
     const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
     const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
@@ -140,19 +118,22 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // shader this one cannot drop the far neighbour: ArcShear is nointerpolation and has to hold the
     // same pair of shears whichever vertex the rasteriser happens to take it from, so both ends of
     // the joint frame are needed on every vertex.
+    //
+    // A missing neighbour is indexed onto this segment's own far endpoint rather than carried as a
+    // NaN sentinel: every index stays in range (i - 1u wraps to 0xFFFFFFFF at i == 0), and the value
+    // is overwritten by the terminus branch below anyway.
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
-    float3 rawA = hasA ? CalculatedPoints[i - 1u].xyz : 0.0 / 0.0;
-    float3 rawD = hasD ? CalculatedPoints[i + 2u].xyz : 0.0 / 0.0;
 
-    // A neighbour that coincides with the endpoint carries no direction, so step over it.
-    if (hasA && distance(rawA, rawB.xyz) < 0.00001)
-        if (i > 1u)
-            rawA = CalculatedPoints[i - 2u].xyz;
+    const uint iA = hasA ? step_over_duplicate(i - 1u, i - 2u,
+                               i > 1u && !IsCurveBegin(beginWords, wordBase, i - 1u), rawB.xyz)
+                         : (i + 1u);
+    const uint iD = hasD ? step_over_duplicate(i + 2u, i + 3u,
+                               i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u), rawC.xyz)
+                         : i;
 
-    if (hasD && distance(rawD, rawC.xyz) < 0.00001)
-        if (i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u))
-            rawD = CalculatedPoints[i + 3u].xyz;
+    const float3 rawA = CalculatedPoints[iA].xyz;
+    const float3 rawD = CalculatedPoints[iD].xyz;
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
@@ -170,11 +151,12 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         return o;
     }
 
-    // A clipped end is no longer a real joint: the neighbour is replaced by this segment's own far
-    // point, which reads as a fold everywhere below and ends the segment flat instead of on a
-    // bisector.
-    if (t0 > 0.0) A4 = C4;
-    if (t1 < 1.0) D4 = B4;
+    // A clipped end is no longer a real joint, and neither is a terminus: the neighbour is replaced
+    // by this segment's own far point, which reads as a fold everywhere below and ends the segment
+    // flat instead of on a bisector. C4/B4 are post-clip, so this has to win over whatever iA/iD
+    // indexed.
+    if (!hasA || t0 > 0.0) A4 = C4;
+    if (!hasD || t1 < 1.0) D4 = B4;
 
     pull_in_front(A4, B4);
     pull_in_front(D4, C4);
@@ -259,8 +241,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // P is the endpoint this vertex sits on, Q the far one, N the neighbour beyond P.
     const float2 B = nearSide ? scrB : scrC;
     const float2 C = nearSide ? scrC : scrB;
-    const float2 N = nearSide ? scrA : scrD;
-    const float2 A = ((nearSide ? hasA : hasD) && !isnan(N.x)) ? N : C;
+    const float2 A = nearSide ? scrA : scrD;
 
     const float l_AB = distance(A, B);
     const float l_CB = distance(B, C);
