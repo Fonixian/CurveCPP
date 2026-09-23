@@ -12,7 +12,9 @@ struct BezierCurveData {
     uint   ColorEnd;
     float  MinHeight;
     float  MaxHeight;
-    float2 Padding;
+    // First / last sample of the whole merged chain (== FirstIndex / LastIndex when unmerged).
+    int    ChainFirstIndex;
+    int    ChainLastIndex;
 };
 
 struct SolidCurveStyle {
@@ -57,4 +59,4 @@ uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
 uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
 uint Join(uint capcapjoin) { return capcapjoin & 0xFF; }
 
-#endif
+#endif

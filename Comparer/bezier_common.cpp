@@ -262,6 +262,14 @@ void BezierCurve::Remove() {
 	renderer = nullptr;
 }
 
+// Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scene
+// scale; only used by the merge assert in UploadCurveData.
+[[maybe_unused]] static bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
+	const XMVECTOR va = XMLoadFloat3(&a), vb = XMLoadFloat3(&b);
+	const float scale = std::max(1.0f, XMVectorGetX(XMVectorMax(XMVector3Length(va), XMVector3Length(vb))));
+	return XMVectorGetX(XMVector3Length(va - vb)) <= 1e-4f * scale;
+}
+
 bool BezierRendererBase::IsChainStart(size_t index) const {
 	return index == 0 || !curves[index].merge_with_previous;
 }
@@ -271,8 +279,11 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	// must happen before anything below reads `curves`.
 	CompactRemoved();
 
+	// A merged curve shares its first sample with the previous curve's last one (see
+	// merge_with_previous), so it adds one sample fewer than its resolution.
 	total_points = 0;
-	for (const auto& bez : curves) total_points += bez.resolution;
+	for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex)
+		total_points += curves[curveIndex].resolution - (IsChainStart(curveIndex) ? 0u : 1u);
 
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 	if (total_points < 2u || curve_count == 0u) {
@@ -315,14 +326,26 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 
 		// One begin bit per CHAIN, not per curve: the scan restarts only where a new stroke starts, so
 		// a merged curve's arc lengths carry on from the curve before it. See IsChainStart().
-		if (IsChainStart(curveIndex))
+		if (IsChainStart(curveIndex)) {
 			curve_begin_bits[current / 32u] |= (1u << (current % 32u));
-
-		for (unsigned i = 0; i < bez.resolution; ++i)
-			index_map.push_back(curveIndex);
-
-		current += bez.resolution;
+			for (unsigned i = 0; i < bez.resolution; ++i)
+				index_map.push_back(curveIndex);
+			current += bez.resolution;
+		}
+		else {
+			// The joint sample is the previous curve's last one. It is handed to THIS curve, because a
+			// sample's owner is the curve whose interval starts there: the point pass evaluates it as
+			// this curve's t = 0 (the same point, by the shared-endpoint assumption) and measures the
+			// chord to this curve's next sample, and the vertex shaders style the segment leaving it
+			// with this curve's width and caps. The previous curve still ENDS on it - its LastIndex
+			// is unchanged - it just no longer evaluates it.
+			index_map.back() = curveIndex;
+			for (unsigned i = 1; i < bez.resolution; ++i)
+				index_map.push_back(curveIndex);
+			current += bez.resolution - 1u;
+		}
 	}
+	assert(current == total_points);
 
 	bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
 	curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
@@ -353,10 +376,12 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 	uint64_t bound = 0;
 
 	int32_t current = 0;
+	[[maybe_unused]] XMFLOAT3 previous_end = {}; // P3 of the curve before, for the shared-endpoint check
 	for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
 		const BezierData& bez = curves[curveIndex];
+		const bool chain_start = IsChainStart(curveIndex);
 
-		if (IsChainStart(curveIndex)) {
+		if (chain_start) {
 			close_chain(curveIndex);
 			chain_first_curve = curveIndex;
 			chain_first_sample = current;
@@ -364,6 +389,13 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 
 		XMFLOAT3 p0, p1, p2, p3;
 		ToCubic(bez, p0, p1, p2, p3);
+
+		// Merging assumes the two curves meet: only this curve's P0 is ever evaluated at the joint,
+		// so a gap would be closed silently by dropping the previous curve's real endpoint. The
+		// tolerance is relative, so it holds at any scene scale.
+		assert((chain_start || EndpointsMeet(previous_end, p0)) &&
+			"merge_with_previous on a curve that does not start where the previous one ends");
+		previous_end = p3;
 
 		// The control polygon bounds the arc length, which bounds the chord sum the point pass
 		// measures, so this can only ever over-count. See PatternBound() in bezier_common.h - this
@@ -378,8 +410,9 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 			bound += static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
 		}
 
-		const int32_t first = current;
-		const int32_t last = current + static_cast<int32_t>(bez.resolution) - 1;
+		// A merged curve starts ON the previous curve's last sample - see AllocateBuffers.
+		const int32_t first = chain_start ? current : current - 1;
+		const int32_t last = first + static_cast<int32_t>(bez.resolution) - 1;
 
 		// Converted AFTER the bound above, which needs the control polygon itself. The shaders get the
 		// monomial coefficients - see UploadBezierData in bezier_common.h.
@@ -395,7 +428,7 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 			chain_first_sample, last // chain_last_index is patched by close_chain()
 		});
 
-		current += static_cast<int32_t>(bez.resolution);
+		current = last + 1;
 	}
 	close_chain(curves.size());
 

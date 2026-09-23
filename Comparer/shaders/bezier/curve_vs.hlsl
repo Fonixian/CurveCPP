@@ -21,10 +21,6 @@ bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
     return ((w >> (pointIndex & 31u)) & 1u) != 0u;
 }
 
-uint step_over_duplicate(uint first, uint second, bool hasSecond, float3 anchor) {
-    return (hasSecond && distance(CalculatedPoints[first].xyz, anchor) < 0.00001) ? second : first;
-}
-
 float4 side_dist(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
 float2 depth_dist(float4 p) { return float2(p.z, p.w - p.z); }
 
@@ -112,12 +108,11 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
 
-    const uint indexA = hasA ? step_over_duplicate(i - 1u, i - 2u,
-                               i > 1u && !IsCurveBegin(beginWords, wordBase, i - 1u), rawB.xyz)
-                         : (i + 1u);
-    const uint indexD = hasD ? step_over_duplicate(i + 2u, i + 3u,
-                               i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u), rawC.xyz)
-                         : i;
+    // The neighbours are simply the adjacent samples. A merged chain shares ONE sample at each joint
+    // (bezier_common.cpp lays it out that way), so there is no duplicated point to step over and no
+    // zero-length bridge segment between two links - the begin bits alone say where a stroke ends.
+    const uint indexA = hasA ? (i - 1u) : (i + 1u);
+    const uint indexD = hasD ? (i + 2u) : i;
 
     const float3 rawA = CalculatedPoints[indexA].xyz;
     const float3 rawD = CalculatedPoints[indexD].xyz;
@@ -161,15 +156,18 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const bool patterned = style.Spacing > 0.0;
 
     o.ScreenArcBegin = lerp(dB.y, dC.y, t0);
-    o.ScreenArcEnd = ScreenDistances[BezierData[curveIndex].LastIndex];
+    // The CHAIN's end, not this curve's: ScreenArcBegin keeps counting across merged joints (the scan
+    // only restarts at a chain start), so testing against the curve's own LastIndex would put a back
+    // cap on every interior joint. The front needs nothing - arc < 0 only happens at a chain start.
+    o.ScreenArcEnd = ScreenDistances[BezierData[curveIndex].ChainLastIndex];
     o.DashLength = style.DashLength;
     o.CapCapJoin = style.CapCapJoin | (patterned ? CurvePatternedBit : 0u);
 
     // --- the pattern coordinate ---------------------------------------------------------------
-    // One chain: bezier_common.cpp sets a single begin bit, at point 0, so the scan never restarts
-    // and WorldDistances is cumulative over the whole scene. A curve's last sample contributes
-    // length 0, so curves are contiguous in arc as well as in slots and PatternPosition is one
-    // sorted, dense run. World arc maps to slot by an affine, per-curve-constant rule:
+    // bezier_common.cpp sets one begin bit per CHAIN, so WorldDistances is cumulative along a whole
+    // merged chain and restarts at 0 at the next one. Merged curves share their joint sample, so the
+    // curves of a chain are contiguous in arc as well as in slots and PatternPosition is one sorted,
+    // dense run per chain. World arc maps to slot by an affine, per-curve-constant rule:
     //
     //     slot = floor(arc / spacing) + (sliceBegin - patternBase)
     //

@@ -16,7 +16,9 @@ struct BezierCurveData {
     uint   ColorEnd;
     float  MinHeight;
     float  MaxHeight;
-    float2 Padding;
+    // First / last sample of the whole merged chain (== FirstIndex / LastIndex when unmerged).
+    int    ChainFirstIndex;
+    int    ChainLastIndex;
 };
 
 struct DotStyle {

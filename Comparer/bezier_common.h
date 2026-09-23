@@ -47,8 +47,14 @@ struct BezierData {
 	// between begin bits, so only the previous index can ever be merged into. Ignored on curve 0.
 	//
 	// Every curve in a chain keeps its own width, colour, join and spacing. The front cap only ever
-	// fires on the chain's first curve and the back cap on its last one (once the shaders test the
-	// terminus against the chain range - see UploadBezierData).
+	// fires on the chain's first curve and the back cap on its last one - the shaders test the
+	// terminus against the chain range, see UploadBezierData.
+	//
+	// ASSUMES the curve starts exactly where the previous one ends (its P0 == the previous P3; a debug
+	// build asserts it). The two share ONE sample at the joint: it is the previous curve's last sample
+	// and this curve's first, and only this curve evaluates it. So a merged curve adds resolution - 1
+	// samples, not resolution, and a chain is one polyline with no duplicate point and no zero-length
+	// segment at any joint - the vertex shaders need no merge-specific neighbour lookup.
 	bool merge_with_previous = false;
 
 	bool empty() const;
@@ -81,11 +87,14 @@ struct CameraDataBuffer {
 // GPU, hull rendering) has to convert back or carry them separately - the conversion is not
 // invertible in-place without the Bernstein matrix.
 //
-// chain_first_index / chain_last_index are the first and last SAMPLE indices of the whole chain this
-// curve belongs to (see BezierData::merge_with_previous). For an unmerged curve they equal
-// first_index / last_index. They sit in what used to be the trailing float2 padding, so the struct is
-// still 80 bytes and a shader that still declares `float2 Padding` there reads them as garbage it
-// ignores. To use them, declare `int ChainFirstIndex; int ChainLastIndex;` in place of that padding.
+// first_index / last_index are the curve's first and last SAMPLE indices. Inside a chain they overlap
+// by one: a merged curve's first_index is the previous curve's last_index (the shared joint sample,
+// see BezierData::merge_with_previous), so every consumer that maps a sample to t as
+// (i - first) / (last - first) still gets t = 0 and t = 1 at the curve's two ends.
+//
+// chain_first_index / chain_last_index are the first and last sample indices of the whole chain this
+// curve belongs to. For an unmerged curve they equal first_index / last_index. curve_vs.hlsl reads
+// ChainLastIndex for the back-terminus test, so interior joints of a chain get no caps.
 struct UploadBezierData {
 	DirectX::XMFLOAT3 K0;
 	int32_t  first_index;

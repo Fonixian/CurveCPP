@@ -81,19 +81,10 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
-    float3 rawN = hasN ? CalculatedPoints[ni].xyz : 0.0/0.0;
-    if (nearSide)
-    {
-        if (hasN && distance(rawN, rawB.xyz) < 0.00001)
-            if (i > 1u)
-                rawN = CalculatedPoints[i - 2u].xyz;
-    }
-    else
-    {
-        if (hasN && distance(rawN, rawC.xyz) < 0.00001)
-            if (i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u))
-                rawN = CalculatedPoints[i + 3u].xyz;
-    }
+    // The neighbour is simply the adjacent sample. A merged chain shares ONE sample at each joint
+    // (bezier_common.cpp lays it out that way), so there is no duplicated point to step over - the
+    // begin bits alone say where a stroke ends.
+    const float3 rawN = hasN ? CalculatedPoints[ni].xyz : 0.0/0.0;
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
