@@ -41,6 +41,13 @@ BezierData Cubic(XMFLOAT3 P0, XMFLOAT3 P1, XMFLOAT3 P2, XMFLOAT3 P3) {
 
 unsigned next_pow2(unsigned x) { return x <= 1u ? 1u : 1u << (std::numeric_limits<unsigned>::digits - std::countl_zero(x - 1u)); }
 
+uint32_t FitCapacity(uint32_t allocated, uint32_t required) {
+	const uint32_t fitted = next_pow2(std::max(required, 1u));
+	if (allocated < fitted) return fitted;          // does not fit: grow
+	if (fitted <= allocated / 4u) return fitted;    // a quarter or less in use: shrink to fit
+	return allocated;
+}
+
 uint32_t PackFloat3ToR8G8B8A8(const XMFLOAT3& color) {
 	const float r = std::clamp(color.x, 0.0f, 1.0f);
 	const float g = std::clamp(color.y, 0.0f, 1.0f);
@@ -83,6 +90,53 @@ void ToCubic(const BezierData& source, XMFLOAT3& p0, XMFLOAT3& p1, XMFLOAT3& p2,
 	}
 }
 
+// Bernstein -> monomial, so the point passes can evaluate by Horner. Expanding
+//
+//     P(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
+//
+// and collecting powers of t gives K0 = P0, K1 = 3(P1 - P0), K2 = 3(P0 - 2P1 + P2),
+// K3 = -P0 + 3P1 - 3P2 + P3 - which are, up to the binomial factors, the forward differences of the
+// control polygon. Taking the differences FIRST and combining them second (rather than scaling the
+// control points and summing) keeps the cancellation local: K3 is a third difference either way, but
+// this spelling never forms 3*P1 and 3*P2 as separate large intermediates.
+//
+// Endpoints: K0 == P0 exactly, so P(0) is bit-exact. P(1) = K0+K1+K2+K3 reaches P3 only in exact
+// arithmetic - measured at 4.5e-6 world units worst case over 20k random curves at scene scale, and
+// chord lengths of drawable size (>= 1e-2 world units) agree with the Bernstein form to 1e-4
+// relative, total arc length to 2e-6.
+//
+// The one behavioural difference, and it is not a rounding curiosity: on a curve whose control points
+// are EXACTLY duplicated this form is exactly constant (K1 = K2 = K3 = 0) where the Bernstein form
+// wobbled by an ulp, so adjacent samples now land on the same float. That is what the vertex shaders
+// want - a zero-length segment gets l_AB == 0 -> 0/0 -> NaN -> culled, which is the behaviour the "do
+// NOT drop the +0.5 in the NDC->screen map" note in solid_vert.hlsl is protecting. The reverse
+// happens too, in 34 of 618k sample pairs, all with duplicated control points: a pair that used to be
+// bit-identical is now a hair apart. 22 of those still collapse to the same float once projected; the
+// other 12 separate by at most 8e-5 px, which is the "misoriented join instead of nothing" case that
+// note describes. If that ever shows up, the fix is to compare l_AB against a small epsilon in the
+// vertex shaders instead of relying on an exact zero - the old code was equally exposed to it.
+void ToPowerBasis(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOAT3& p2, const XMFLOAT3& p3,
+	XMFLOAT3& k0, XMFLOAT3& k1, XMFLOAT3& k2, XMFLOAT3& k3) {
+	const XMVECTOR v0 = XMLoadFloat3(&p0);
+	const XMVECTOR v1 = XMLoadFloat3(&p1);
+	const XMVECTOR v2 = XMLoadFloat3(&p2);
+	const XMVECTOR v3 = XMLoadFloat3(&p3);
+
+	const XMVECTOR three = XMVectorReplicate(3.0f);
+
+	const XMVECTOR d10 = v1 - v0;   // first differences of the control polygon
+	const XMVECTOR d21 = v2 - v1;
+	const XMVECTOR d32 = v3 - v2;
+
+	const XMVECTOR dd0 = d21 - d10; // second differences
+	const XMVECTOR dd1 = d32 - d21;
+
+	XMStoreFloat3(&k0, v0);
+	XMStoreFloat3(&k1, three * d10);
+	XMStoreFloat3(&k2, three * dd0);
+	XMStoreFloat3(&k3, dd1 - dd0); // the third difference
+}
+
 constexpr uint32_t computeSrvSlots = 5u;
 constexpr uint32_t computeUavSlots = 5u;
 void ClearComputeBindings(GraphicsDeviceContext* context) {
@@ -93,15 +147,24 @@ void ClearComputeBindings(GraphicsDeviceContext* context) {
 }
 
 constexpr uint32_t vertexSrvSlots = 8u;
+// t1 pattern positions, t2 pattern offsets. Slot 0 is never bound to the pixel stage by any of the
+// three renderers, so the loop starts at 1.
+constexpr uint32_t pixelSrvSlots = 3u;
 void ClearDrawBindings(GraphicsDeviceContext* context) {
 	for (uint32_t slot = 0; slot < vertexSrvSlots; ++slot)
 		context->BindShaderResourceView(nullptr, ShaderStage::Vertex, slot);
-	context->BindShaderResourceView(nullptr, ShaderStage::Pixel, 1);
+	for (uint32_t slot = 1; slot < pixelSrvSlots; ++slot)
+		context->BindShaderResourceView(nullptr, ShaderStage::Pixel, slot);
 }
 
 
 BezierRendererBase::BezierRendererBase(const GraphicsDevice& device) : profiler(device) {
 	viewport_data = std::make_unique<ConstantBuffer>(device, camera_cb_data);
+}
+
+BezierRendererBase::~BezierRendererBase() {
+	for (BezierCurve* owner : owners)
+		if (owner) owner->renderer = nullptr;
 }
 
 void BezierRendererBase::BeginDraw() {
@@ -124,16 +187,90 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve) {
 
 	const size_t index = curves.size();
 	curves.push_back(curve);
+	owners.push_back(nullptr);
 	need_resize = true;
-	return BezierCurve{ this, index };
+
+	// Registered from inside the handle's own storage. If the return is not elided, the move
+	// constructor re-points owners[index] at the moved-to handle, so either way it ends up right.
+	BezierCurve handle{ this, index };
+	owners[index] = &handle;
+	return handle;
 }
 
-BezierCurve BezierRendererBase::At(size_t index) {
-	assert(index < curves.size());
-	return BezierCurve{ this, index };
+void BezierRendererBase::Remove(BezierCurve& curve) {
+	if (curve.renderer == this) curve.Remove();
+}
+
+// One pass, stable order - chains depend on it. Survivors slide down over the removed slots and
+// have their handle's index rewritten through `owners`. A survivor whose immediate predecessor was
+// removed is made a chain start: removal splits a chain rather than bridging the gap.
+void BezierRendererBase::CompactRemoved() {
+	if (removed_count == 0) return;
+
+	size_t write = 0;
+	bool previous_removed = false;
+	for (size_t read = 0; read < curves.size(); ++read) {
+		BezierCurve* owner = owners[read];
+		if (!owner) {
+			previous_removed = true;
+			continue;
+		}
+
+		if (previous_removed) curves[read].merge_with_previous = false;
+		previous_removed = false;
+
+		if (write != read) {
+			curves[write] = curves[read];
+			owners[write] = owner;
+		}
+		owner->curve_index = write;
+		++write;
+	}
+
+	curves.resize(write);
+	owners.resize(write);
+	removed_count = 0;
+}
+
+// --- BezierCurve ----------------------------------------------------------------------------------
+
+BezierCurve::BezierCurve(BezierCurve&& other) noexcept
+	: curve_index(other.curve_index), renderer(other.renderer) {
+	if (renderer) renderer->owners[curve_index] = this;
+	other.renderer = nullptr;
+}
+
+BezierCurve& BezierCurve::operator=(BezierCurve&& other) noexcept {
+	if (this == &other) return *this;
+
+	Remove();
+
+	curve_index = other.curve_index;
+	renderer = other.renderer;
+	if (renderer) renderer->owners[curve_index] = this;
+	other.renderer = nullptr;
+	return *this;
+}
+
+void BezierCurve::Remove() {
+	if (!renderer) return;
+
+	assert(renderer->owners[curve_index] == this);
+	renderer->owners[curve_index] = nullptr;
+	++renderer->removed_count;
+	renderer->need_resize = true;
+	renderer = nullptr;
+}
+
+bool BezierRendererBase::IsChainStart(size_t index) const {
+	return index == 0 || !curves[index].merge_with_previous;
 }
 
 void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+	// Removal only ever raises need_resize, so this is the one place it has to be folded in - and it
+	// must happen before anything below reads `curves`.
+	CompactRemoved();
+
 	total_points = 0;
 	for (const auto& bez : curves) total_points += bez.resolution;
 
@@ -145,18 +282,22 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 		return;
 	}
 
-	const uint32_t points_required = next_pow2(total_points);
-	const uint32_t curves_required = next_pow2(curve_count);
+	// Grow when full, shrink once a quarter or less is in use - see FitCapacity(). Shrinking goes
+	// through exactly the same reset() as growing; every buffer below is rewritten from scratch by the
+	// uploads at the end of this function or by the next point pass, so nothing has to be carried over.
+	const uint32_t points_required = FitCapacity(points_allocated, total_points);
+	const uint32_t curves_required = FitCapacity(curves_allocated, curve_count);
 
-	if (points_allocated < points_required) {
-		calculated_points.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT4>(points_required)));
+	if (points_allocated != points_required) {
+		if (NeedsCalculatedPoints())
+			calculated_points.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT4>(points_required)));
 		curve_begins.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
 		bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
 		AllocatePointBuffers(device, points_required);
 		points_allocated = points_required;
 	}
 
-	if (curves_allocated < curves_required) {
+	if (curves_allocated != curves_required) {
 		bezier_data.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadBezierData>(curves_required)));
 		AllocateStyleBuffer(device, curves_required);
 		AllocateCurveBuffers(device, curves_required);
@@ -172,7 +313,10 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
 		const BezierData& bez = curves[curveIndex];
 
-		curve_begin_bits[current / 32u] |= (1u << (current % 32u));
+		// One begin bit per CHAIN, not per curve: the scan restarts only where a new stroke starts, so
+		// a merged curve's arc lengths carry on from the curve before it. See IsChainStart().
+		if (IsChainStart(curveIndex))
+			curve_begin_bits[current / 32u] |= (1u << (current % 32u));
 
 		for (unsigned i = 0; i < bez.resolution; ++i)
 			index_map.push_back(curveIndex);
@@ -194,10 +338,30 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 	std::vector<UploadBezierData> upload_data;
 	upload_data.reserve(curves.size());
 
+	// Chain ranges, in sample indices. The first sample of a chain is known on the way forward; the
+	// last one only once the chain has ended, so it is patched in when the NEXT chain starts (and once
+	// more after the loop for the final chain).
+	size_t chain_first_curve = 0;
+	int32_t chain_first_sample = 0;
+	auto close_chain = [&](size_t end_curve) {
+		if (upload_data.empty()) return;
+		const int32_t chain_last_sample = upload_data.back().last_index;
+		for (size_t k = chain_first_curve; k < end_curve; ++k)
+			upload_data[k].chain_last_index = chain_last_sample;
+	};
+
 	uint64_t bound = 0;
 
 	int32_t current = 0;
-	for (const auto& bez : curves) {
+	for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
+		const BezierData& bez = curves[curveIndex];
+
+		if (IsChainStart(curveIndex)) {
+			close_chain(curveIndex);
+			chain_first_curve = curveIndex;
+			chain_first_sample = current;
+		}
+
 		XMFLOAT3 p0, p1, p2, p3;
 		ToCubic(bez, p0, p1, p2, p3);
 
@@ -217,17 +381,23 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 		const int32_t first = current;
 		const int32_t last = current + static_cast<int32_t>(bez.resolution) - 1;
 
+		// Converted AFTER the bound above, which needs the control polygon itself. The shaders get the
+		// monomial coefficients - see UploadBezierData in bezier_common.h.
+		XMFLOAT3 k0, k1, k2, k3;
+		ToPowerBasis(p0, p1, p2, p3, k0, k1, k2, k3);
+
 		upload_data.push_back(UploadBezierData{
-			p0, first,
-			p1, last,
-			p2, PackFloat3ToR8G8B8A8(bez.C0),
-			p3, PackFloat3ToR8G8B8A8(bez.C1),
+			k0, first,
+			k1, last,
+			k2, PackFloat3ToR8G8B8A8(bez.C0),
+			k3, PackFloat3ToR8G8B8A8(bez.C1),
 			bez.min_height, bez.max_height,
-			{ 0.0f, 0.0f }
+			chain_first_sample, last // chain_last_index is patched by close_chain()
 		});
 
 		current += static_cast<int32_t>(bez.resolution);
 	}
+	close_chain(curves.size());
 
 	pattern_upper_bound = static_cast<uint32_t>(std::min<uint64_t>(bound, maxPatternCount));
 

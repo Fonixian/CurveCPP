@@ -59,12 +59,16 @@ private:
 		unsigned resolution = 120u;
 	};
 
-	// One renderer's worth of scene. The four example groups are added once in BuildScene() and never
-	// removed (none of the three renderers has a Clear()), so animation reposes them in place through
-	// these handles every frame instead. x_offset slides the whole copy sideways so the copies can be
-	// compared; BezierCurve itself is renderer-agnostic, so the same Scene type serves all three.
+	// One renderer's worth of scene. The four example groups are added once in BuildScene() and kept
+	// for the lifetime of the app, so animation reposes them in place through these handles every
+	// frame instead. x_offset slides the whole copy sideways so the copies can be compared;
+	// BezierCurve itself is renderer-agnostic, so the same Scene type serves all three.
 	//
-	// test_curves grows from the Test screen and, for the same reason, never shrinks.
+	// Every BezierCurve here OWNS its curve (see bezier_common.h): destroying the handle removes the
+	// curve from its renderer. That is how the Test screen removes curves - it simply erases entries
+	// from test_curves - and why a Scene is move-only.
+	//
+	// test_curves grows from the Test screen's Add buttons and shrinks from its Remove buttons.
 	struct Scene
 	{
 		float x_offset = 0.0f;
@@ -131,6 +135,11 @@ private:
 	float style_min_height = 0.0f;  // colour-by-height band; min >= max blends by curve t instead
 	float style_max_height = 0.0f;
 
+	// Merged curves (BezierData::merge_with_previous). The ribbon is the only group built as a chain:
+	// on, its links 1.. continue link 0 and the six cubics are drawn as one stroke; off, each link is
+	// its own stroke with its own caps and its own pattern start. Everything else is always separate.
+	bool ribbon_merged = true;
+
 	bool animate_colors = true;
 	DirectX::XMFLOAT3 wave_color0 = { 1.0f, 0.5f, 1.0f };
 	DirectX::XMFLOAT3 wave_color1 = { 0.2f, 1.0f, 0.5f };
@@ -159,6 +168,9 @@ private:
 	// only way to give one renderer a heavier load than the others and watch the Timings table split.
 	// `force_spacing` matches ApplyStyle()'s parameter - see there.
 	void AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing);
+	// Drops the `count` most recently added test curves of one scene (all of them if it holds fewer).
+	// Erasing the handles is the removal - each one takes its curve out of the renderer as it goes.
+	void RemoveTestCurves(Scene& scene, size_t count);
 	// Re-poses and re-colours one copy for the current animation_time and x_offset.
 	void PoseScene(Scene& scene);
 	// Pushes the runtime style controls onto one copy. The gallery keeps its own caps. `force_spacing`

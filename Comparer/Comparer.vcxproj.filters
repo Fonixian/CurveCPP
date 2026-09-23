@@ -19,6 +19,9 @@
     <Filter Include="shaders\segmented scan">
       <UniqueIdentifier>{86e45342-9efc-4240-9907-50870014f7cc}</UniqueIdentifier>
     </Filter>
+    <Filter Include="shaders\paralell scan">
+      <UniqueIdentifier>{3a5d19c7-84f2-4e6b-91d0-6c48b7e35a92}</UniqueIdentifier>
+    </Filter>
     <Filter Include="shaders\bezier">
       <UniqueIdentifier>{0c1f5a94-6b2e-4d33-9f18-2a7c6d5e4b10}</UniqueIdentifier>
     </Filter>
@@ -52,6 +55,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="SegmentedScan.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ParalellScan.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="bezier.cpp">
@@ -89,6 +95,9 @@
     <ClInclude Include="SegmentedScan.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="ParalellScan.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="bezier.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -106,6 +115,9 @@
     <None Include="vcpkg.json" />
     <None Include="shaders\segmented_scan_common.hlsli">
       <Filter>shaders\segmented scan</Filter>
+    </None>
+    <None Include="shaders\paralell_scan_common.hlsli">
+      <Filter>shaders\paralell scan</Filter>
     </None>
     <None Include="shaders\bezier\curve_common.hlsli">
       <Filter>shaders\bezier</Filter>
@@ -135,6 +147,12 @@
     </FxCompile>
     <FxCompile Include="shaders\segmented_scan_local.hlsl">
       <Filter>shaders\segmented scan</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\paralell_scan_local.hlsl">
+      <Filter>shaders\paralell scan</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\paralell_scan_add_offsets.hlsl">
+      <Filter>shaders\paralell scan</Filter>
     </FxCompile>
     <FxCompile Include="shaders\bezier\curve_vs.hlsl">
       <Filter>shaders\bezier</Filter>
@@ -166,5 +184,13 @@
     <FxCompile Include="shaders\bezier_dots\dot_ps.hlsl">
       <Filter>shaders\bezier dots</Filter>
     </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="paralell_scan.cpp">
+      <Filter>Source Files</Filter>
+    </Text>
+    <Text Include="paralell_scan.h">
+      <Filter>Header Files</Filter>
+    </Text>
   </ItemGroup>
 </Project>

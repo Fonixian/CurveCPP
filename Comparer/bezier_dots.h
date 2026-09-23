@@ -2,6 +2,7 @@
 #include "bezier_common.h"
 #include "gpu_buffers.h"
 #include "SegmentedScan.h"
+#include "ParalellScan.h"
 
 // The dot/point renderer. Draws ONLY dot patterns: spacing <= 0 means no dots at all for that curve -
 // there is no "solid" fallback the way spacing <= 0 means solid in BezierRenderer, because this
@@ -9,7 +10,7 @@
 //
 // BezierRenderer places a dash/dot by finding the SCREEN arc length of its centre and letting the
 // pixel shader carve a cap shape out of the line-strip's already-rasterised quad - that is what needs
-// the segmented scan of (world, screen) arc length, the bisector arc shear, and the shrink-to-fit
+// the segmented scan of world AND screen arc length, the bisector arc shear, and the shrink-to-fit
 // sizing documented in pattern_seam.md. This renderer instead finds each dot's WORLD position and
 // tangent DIRECTION directly (still via a segmented scan + binary search over WORLD arc length only -
 // screen arc length is never computed) and draws its own small instanced quad there: screen-aligned,
@@ -28,8 +29,8 @@
 // the instance count of the draw. A count read back late cannot serve that - drawing more instances
 // than the current frame's dot_calc wrote would resurrect dots from the previous scene - so the count
 // never comes back to the CPU at all: dot_args writes it straight into a DrawInstancedIndirect
-// argument buffer on the GPU. The CPU sees the count only through GpuCounter, a few frames late, as a
-// measurement of how far PatternBound() over-estimates.
+// argument buffer on the GPU. Nothing mirrors it back to the CPU either - the exact count is a
+// diagnostic neither this renderer nor the patterned one pays for any more.
 
 class BezierDotRenderer : public BezierRendererBase {
 public:
@@ -37,11 +38,13 @@ public:
 
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
-	uint32_t PatternCount() const override { return dot_counter.value(); }
-	bool PatternCountValid() const override { return dot_counter.valid(); }
 	uint32_t PatternCapacity() const override { return dots_allocated; }
 
 protected:
+	// dot_vert evaluates the two samples bracketing each dot straight from the control points, so
+	// nothing in this renderer reads a stored sample position or colour. See dot_calc_points.hlsl.
+	bool NeedsCalculatedPoints() const override { return false; }
+
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
@@ -60,16 +63,20 @@ private:
 	uint32_t dots_allocated = 0;
 
 	// --- per-frame compute results -------------------------------------------------
-	// (world, 0) arc length, prefix-summed per curve. The second channel is unused - it exists only
-	// because SegmentedScan's element type is fixed at float2 (shared, unmodified, with the patterned
-	// renderer) - screen arc length is never needed here.
+	// World arc length, one float per point, prefix-summed per curve. It used to be a float2 whose
+	// second channel was always 0, because SegmentedScan's element type was fixed at float2 for the
+	// patterned renderer's benefit; that renderer keeps its world and screen channels in separate
+	// buffers now and the scan is scalar, so this renderer stops storing and summing a dead channel.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dot_ranges;  // per curve: uint2(first dot, dot count)
+
+	// Per curve: written as the dot count by dot_ini, then scanned IN PLACE into that curve's base
+	// index within `dots`, with the grand total appended one slot past the last curve. That appended
+	// slot is why there is no second buffer of counts and no resolve pass: curve i's count is the gap
+	// to index i + 1, valid for the last curve too, and dot_args reads the instance count straight
+	// out of [curve count]. Allocated one element longer than the curve count for it.
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dot_indices;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dots;        // per dot: bracketing sample pair + t between them
 
-	// Single uint, atomically summed by dot_ini to hand each curve its base offset; read back without
-	// stalling. dot_args turns it into the instance count without the CPU ever seeing it.
-	GpuCounter dot_counter;
 	IndirectDrawArgs draw_args;
 
 	// dots_allocated, so dot_calc can clamp and dot_args can cap the instance count.
@@ -80,4 +87,6 @@ private:
 	Axodox::Graphics::ComputeShader* dot_calc;
 	Axodox::Graphics::ComputeShader* dot_args;
 	SegmentedScan scan;
+	// Over curve counts, not points - at most one element per curve, so its own buffers are tiny.
+	ParalellScan offset_scan;
 };

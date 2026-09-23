@@ -12,14 +12,9 @@ StructuredBuffer<uint>            BezierIndexMap : register(t1);
 
 RWStructuredBuffer<float4> CalculatedPoints : register(u0);
 
-float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t) {
-    float omt = 1.0 - t;
-    float omt2 = omt * omt;
-    float t2 = t * t;
-    return omt2 * omt * p0
-         + 3.0 * omt2 * t * p1
-         + 3.0 * omt * t2 * p2
-         + t2 * t * p3;
+// Monomial base
+float4 EvaluateBezier(float3 k0, float3 k1, float3 k2, float3 k3, float t) {
+    return float4(mad(mad(mad(k3, t, k2), t, k1), t, k0), 1.0);
 }
 
 [numthreads(256, 1, 1)]
@@ -34,15 +29,15 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     int lastIndex  = bez.LastIndex;
 
     float t = float(pointIndex - firstIndex) / float(lastIndex - firstIndex);
-    float3 position = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, t);
+    float3 p0 = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, t);
 
-    float blend = t;
+    // Color + Positon
     if (bez.MinHeight < bez.MaxHeight)
-        blend = saturate((position.y - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
+        t = saturate((p0.y - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
 
     float4 colorBegin = UnpackColorBits(bez.ColorBegin);
     float4 colorEnd   = UnpackColorBits(bez.ColorEnd);
-    float4 color = lerp(colorBegin, colorEnd, blend);
+    float4 color = lerp(colorBegin, colorEnd, t);
 
-    CalculatedPoints[pointIndex] = float4(position, asfloat(PackColorBits(color)));
+    CalculatedPoints[pointIndex] = float4(p0, asfloat(PackColorBits(color)));
 }

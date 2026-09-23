@@ -6,7 +6,6 @@ using namespace DirectX;
 struct UploadSolidStyle {
 	float    width;
 	uint32_t capcapjoin;
-	float    padding[2];
 };
 
 BezierSolidRenderer::BezierSolidRenderer(const GraphicsDevice& device)
@@ -36,8 +35,7 @@ void BezierSolidRenderer::UploadStyles(GraphicsDeviceContext* context) {
 							  uint32_t(bez.join);
 		style_data.push_back(UploadSolidStyle{
 			bez.width,
-			capcapjoin,
-			{0.0f,0.0f }
+			capcapjoin
 		});
 	}
 

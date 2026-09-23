@@ -4,6 +4,7 @@
 #include <vector>
 #include <memory>
 #include <span>
+#include <cassert>
 #include "pipeline.h"
 #include "profiler.h"
 
@@ -39,6 +40,16 @@ struct BezierData {
 	float spacing = 0.f;
 	unsigned resolution = 64u;
 	int bezier_power = 1;
+	// Merged curves: when true, this curve continues the stroke of the curve Added directly before it
+	// in the same renderer, so the two share one arc length, one pattern grid and one pair of end
+	// caps. A CHAIN is a run of consecutive curves in which every curve after the first has this set.
+	// Chains are contiguous by construction - the segmented scan's segments are runs of points
+	// between begin bits, so only the previous index can ever be merged into. Ignored on curve 0.
+	//
+	// Every curve in a chain keeps its own width, colour, join and spacing. The front cap only ever
+	// fires on the chain's first curve and the back cap on its last one (once the shaders test the
+	// terminus against the chain range - see UploadBezierData).
+	bool merge_with_previous = false;
 
 	bool empty() const;
 	void clear();
@@ -56,19 +67,40 @@ struct CameraDataBuffer {
 	uint32_t TotalCurveCount;
 };
 
+// The four float3 slots hold the curve in the MONOMIAL (power) basis, not its control points:
+//
+//     P(t) = K0 + t * (K1 + t * (K2 + t * K3))
+//
+// Same cubic, same 80 bytes, same slots - only what the numbers mean changed. The GPU never wants
+// the control points themselves, only something it can evaluate, and Horner does that in three
+// fused multiply-adds per component where the Bernstein form needs three weight products and four
+// scale-adds. ToPowerBasis in bezier_common.cpp does the conversion once per upload; the control
+// points stay in BezierData on the CPU side, which is what PatternBound() and ToCubic() read.
+//
+// Whoever adds a GPU pass that genuinely needs P0..P3 (subdivision, a control-polygon bound on the
+// GPU, hull rendering) has to convert back or carry them separately - the conversion is not
+// invertible in-place without the Bernstein matrix.
+//
+// chain_first_index / chain_last_index are the first and last SAMPLE indices of the whole chain this
+// curve belongs to (see BezierData::merge_with_previous). For an unmerged curve they equal
+// first_index / last_index. They sit in what used to be the trailing float2 padding, so the struct is
+// still 80 bytes and a shader that still declares `float2 Padding` there reads them as garbage it
+// ignores. To use them, declare `int ChainFirstIndex; int ChainLastIndex;` in place of that padding.
 struct UploadBezierData {
-	DirectX::XMFLOAT3 P0;
+	DirectX::XMFLOAT3 K0;
 	int32_t  first_index;
-	DirectX::XMFLOAT3 P1;
+	DirectX::XMFLOAT3 K1;
 	int32_t  last_index;
-	DirectX::XMFLOAT3 P2;
+	DirectX::XMFLOAT3 K2;
 	uint32_t color_begin;
-	DirectX::XMFLOAT3 P3;
+	DirectX::XMFLOAT3 K3;
 	uint32_t color_end;
 	float    min_height;
 	float    max_height;
-	float    padding[2];
+	int32_t  chain_first_index;
+	int32_t  chain_last_index;
 };
+static_assert(sizeof(UploadBezierData) == 80, "UploadBezierData must match BezierCurveData in the shaders");
 
 // Compute-stage b1 for the pattern/dot calc passes: how many entries the pattern buffer actually
 // holds, so a shader can clamp instead of writing past the end. See PatternBound() below.
@@ -83,9 +115,22 @@ struct PatternCapacityBuffer {
 constexpr uint32_t maxPatternCount = 4'000'000u;
 
 unsigned next_pow2(unsigned x);
+// Capacity policy shared by every over-allocated GPU buffer (points, curves, pattern / dot slots).
+// Returns the capacity the buffer SHOULD have for `required` live elements, given what it has now:
+//   - grows to next_pow2(required) as soon as it no longer fits,
+//   - shrinks to next_pow2(required) once usage has fallen to a quarter of the allocation or less,
+//   - otherwise keeps `allocated`.
+// The factor-4 gap between the two thresholds is the hysteresis: a count hovering around a power of
+// two (an animated pattern bound, a batch added then removed) cannot make the buffer flip between two
+// sizes every frame. Reallocate exactly when the result differs from `allocated`.
+uint32_t FitCapacity(uint32_t allocated, uint32_t required);
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
 void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3& p3);
+// Cubic control points -> the monomial coefficients UploadBezierData carries. Call it on ToCubic's
+// output, and only after anything that needs the control polygon itself (the pattern bound) is done.
+void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
+	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
 
 void ClearComputeBindings(Axodox::Graphics::GraphicsDeviceContext* context);
 void ClearDrawBindings(Axodox::Graphics::GraphicsDeviceContext* context);
@@ -96,7 +141,9 @@ class BezierRendererBase {
 	friend class BezierCurve;
 public:
 	explicit BezierRendererBase(const Axodox::Graphics::GraphicsDevice& device);
-	virtual ~BezierRendererBase() = default;
+	// Detaches every handle still alive (they become !valid() and their own destructors then do
+	// nothing), so a renderer may be destroyed before or after the handles pointing into it.
+	virtual ~BezierRendererBase();
 
 	BezierRendererBase(const BezierRendererBase&) = delete;
 	BezierRendererBase& operator=(const BezierRendererBase&) = delete;
@@ -114,9 +161,14 @@ public:
 	//   total    gpu   the whole Draw() call
 	Profiler profiler;
 
-	BezierCurve Add(const BezierData& curve);
-	BezierCurve At(size_t index);
-	size_t Count() const { return curves.size(); }
+	// The returned handle OWNS the curve: when it is destroyed (or Remove()d, or move-assigned over)
+	// the curve leaves the renderer. Discarding the return value therefore removes the curve again on
+	// the next UpdateBuffers - hence [[nodiscard]].
+	[[nodiscard]] BezierCurve Add(const BezierData& curve);
+	// Same as curve.Remove(). Does nothing for a handle that is invalid or belongs to another renderer.
+	void Remove(BezierCurve& curve);
+	// Live curves - removed ones are excluded immediately, even before the next compaction.
+	size_t Count() const { return curves.size() - removed_count; }
 
 	void SetViewport(float width, float height);
 
@@ -127,21 +179,33 @@ public:
 	//
 	//     floor(polygon / spacing) + 1  >=  floor(sampled arc / spacing) + 1
 	//
-	// which is exactly what curve_pattern_ini.hlsl / dot_ini.hlsl count. Sizing the pattern buffer
-	// from this is therefore always sufficient, and it is the reason the GPU count no longer has to
-	// come back to the CPU mid-frame. 0 for the solid renderer, which has no pattern buffer.
+	// which is exactly what curve_pattern_ini.hlsl / dot_ini.hlsl USED to count. Both now take a
+	// window of a chain-global centre grid instead - floor(arcEnd / spacing) - floor(arcBegin /
+	// spacing) - so the pattern runs continuously across merged curves. The bound still holds: that
+	// difference is at most floor(own arc / spacing) + 1, which is the same quantity again. Sizing
+	// the pattern buffer from this is therefore always sufficient, and it is the reason the GPU
+	// count no longer has to come back to the CPU mid-frame. 0 for the solid renderer, which has no
+	// pattern buffer.
 	uint32_t PatternBound() const { return pattern_upper_bound; }
 
-	// The EXACT count the GPU arrived at, mirrored back a few frames late, purely so the bound above
-	// can be checked against reality. Never size anything from it. 0 where a renderer has no count.
-	virtual uint32_t PatternCount() const { return 0u; }
-	virtual bool PatternCountValid() const { return false; }
+	// How much was actually allocated from the bound above. 0 where a renderer has no pattern buffer
+	// at all. There is deliberately no PatternCount(): the GPU's exact total now lives in the slot
+	// ParalellScan appends past the last curve and is read there by the shaders that need it, so
+	// mirroring it back to the CPU would mean adding a dispatch purely to feed a diagnostic.
 	virtual uint32_t PatternCapacity() const { return 0u; }
 
 	virtual void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) = 0;
 
 protected:
+	// Dense and in Add order, which is also the chain order (see merge_with_previous). Removal is
+	// lazy: Remove() only nulls the curve's `owners` slot and raises need_resize, and the next
+	// UpdateBuffers compacts both vectors in one pass (CompactRemoved), rewriting the index held by
+	// every surviving handle. Bulk removal is therefore O(n) once, not O(n) per curve, and a handle's
+	// index stays valid right up to that compaction. Everything that runs after UpdateBuffers - every
+	// Draw pass - sees a fully compacted `curves`, so curves.size() is the live count there.
 	std::vector<BezierData> curves;
+	std::vector<BezierCurve*> owners;  // owners[i] is the handle owning curves[i]; nullptr = removed
+	uint32_t removed_count = 0;
 
 	// Recomputed alongside every curve upload; see PatternBound().
 	uint32_t pattern_upper_bound = 0;
@@ -167,6 +231,10 @@ protected:
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> viewport_data; // Camera / viewport / counts
 	Pipeline curve_draw;
 
+	// Whether curve `index` starts a new stroke: curve 0 always does, any other curve unless it is
+	// merged into the one before it. The single place that turns merge_with_previous into chains.
+	bool IsChainStart(size_t index) const;
+
 	bool UpdateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
 	void UploadCameraData(const DirectX::XMMATRIX& view_proj, Axodox::Graphics::GraphicsDeviceContext* context);
 
@@ -175,16 +243,32 @@ protected:
 	void BeginDraw();
 	void EndDraw();
 
+	// Whether this renderer wants `calculated_points` - one float4 per sample point, world position
+	// plus packed colour. The strip-based renderers do: their vertex shaders walk every sample. The
+	// dot renderer does not: it touches only the two samples bracketing each dot, and dot_vert
+	// evaluates those itself, so allocating the buffer would cost 16 bytes per sample point that
+	// nothing ever reads.
+	virtual bool NeedsCalculatedPoints() const { return true; }
+
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 	virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
 	virtual void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) = 0;
 	virtual void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) = 0;
 
 private:
+	void CompactRemoved();
 	void AllocateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
 	void UploadCurveData(Axodox::Graphics::GraphicsDeviceContext* context);
 };
 
+// An OWNING handle to one curve in one renderer - move-only, like a unique_ptr. The curve is removed
+// from its renderer when the handle is destroyed, when Remove() is called, or when another handle is
+// move-assigned into it. A default-constructed or moved-from handle owns nothing (!valid()), and
+// every accessor below asserts valid().
+//
+// The renderer keeps a pointer back to the handle (BezierRendererBase::owners) so it can rewrite
+// curve_index when removals compact the curve array; the move operations keep that pointer current,
+// so handles may live anywhere - members, arrays, std::vector (reallocation moves them).
 class BezierCurve {
 	friend class BezierRendererBase;
 protected:
@@ -193,14 +277,28 @@ protected:
 
 	BezierCurve(BezierRendererBase* owner, size_t index) : curve_index(index), renderer(owner) {}
 
-	BezierData& data() { return renderer->curves[curve_index]; }
-	const BezierData& data() const { return renderer->curves[curve_index]; }
+	BezierData& data() { assert(valid()); return renderer->curves[curve_index]; }
+	const BezierData& data() const { assert(valid()); return renderer->curves[curve_index]; }
 
 	inline void touch() { renderer->need_upload = true; }
 	inline void touch_layout() { renderer->need_resize = true; }
 
 public:
 	BezierCurve() = default;
+	~BezierCurve() { Remove(); }
+
+	BezierCurve(const BezierCurve&) = delete;
+	BezierCurve& operator=(const BezierCurve&) = delete;
+
+	BezierCurve(BezierCurve&& other) noexcept;
+	// Removes the curve this handle owned (if any), then takes over `other`'s.
+	BezierCurve& operator=(BezierCurve&& other) noexcept;
+
+	// Removes the curve from its renderer; the handle is invalid afterwards. Safe on an invalid handle.
+	// If the curve was part of a merged chain, the chain is SPLIT there: the curve that followed it
+	// starts a new stroke (its Merged() reads false from the next UpdateBuffers on). Keeping it merged
+	// would bridge the gap with a straight segment in the renderers that follow curve_begins.
+	void Remove();
 
 	inline bool valid() const { return renderer != nullptr; }
 	const BezierData& Data() const { return data(); }
@@ -242,4 +340,10 @@ public:
 
 	inline unsigned Resolution() const { return data().resolution; }
 	inline void Resolution(unsigned value) { data().resolution = value; touch_layout(); }
+
+	// See BezierData::merge_with_previous. A layout change, not a plain upload: the chain boundaries
+	// live in the curve_begins bits, which are rebuilt only when the buffers are laid out. Setting the
+	// value it already has does nothing, so this is safe to call every frame.
+	inline bool Merged() const { return data().merge_with_previous; }
+	inline void Merged(bool value) { if (data().merge_with_previous != value) { data().merge_with_previous = value; touch_layout(); } }
 };

@@ -19,9 +19,12 @@ cbuffer DotCapacity : register(b1)
 };
 
 StructuredBuffer<BezierCurveData> BezierData  : register(t0);
-StructuredBuffer<float2>          Distances   : register(t1);
+StructuredBuffer<float>           Distances   : register(t1);
 StructuredBuffer<DotStyle>        DotStyles   : register(t3);
-StructuredBuffer<uint2>           DotRanges   : register(t4);
+// Exclusive scan of dot_ini's per-curve counts, with the grand total appended one slot past the
+// last curve. DotOffsets[i] is curve i's base index into Dots and the gap to DotOffsets[i + 1] is
+// its count - the last curve included, which is what the appended total buys.
+StructuredBuffer<uint>            DotOffsets  : register(t4);
 
 RWStructuredBuffer<DotSample> Dots : register(u0);
 
@@ -33,23 +36,28 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (curveIndex >= TotalCurveCount) return;
 
-    uint2 range    = DotRanges[curveIndex];
-    uint  dotFirst = range.x;
-    uint  dotCount = range.y;
+    uint dotFirst = DotOffsets[curveIndex];
+    uint dotCount = DotOffsets[curveIndex + 1u] - dotFirst;
 
     if (dotCount == 0) return;
 
     BezierCurveData bez            = BezierData[curveIndex];
     uint            sampleStartIdx = (uint)bez.FirstIndex;
     uint            sampleEndIdx   = (uint)bez.LastIndex;
-    float           worldSpacing   = DotStyles[curveIndex].Spacing;
+    float           worldSpacing   = DotStyles[curveIndex].spacing;
+    
+    float prevArcLength = Distances[BezierData[curveIndex].FirstIndex];
+
+    uint base_index = (prevArcLength > 0.0 && worldSpacing > 0.0)
+        ? (uint) floor(prevArcLength / worldSpacing) + 1u
+        : 0u;
 
     for (uint localIdx = threadLaneIdx; localIdx < dotCount; localIdx += 8)
     {
         uint  globalIdx       = dotFirst + localIdx;
         if (globalIdx >= Capacity) continue;
 
-        float targetWorldDist = (float)localIdx * worldSpacing;
+        float targetWorldDist = (float) localIdx * worldSpacing + worldSpacing * (float)base_index;
 
         uint low     = sampleStartIdx;
         uint high    = sampleEndIdx;
@@ -57,7 +65,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         while (low <= high) {
             uint mid = (low + high) / 2;
-            if (Distances[mid].x <= targetWorldDist) {
+            if (Distances[mid] <= targetWorldDist) {
                 sampleA = mid;
                 low     = mid + 1;
             } else {
@@ -68,8 +76,8 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         uint sampleB = min(sampleA + 1, sampleEndIdx);
 
-        float distA = Distances[sampleA].x;
-        float distB = Distances[sampleB].x;
+        float distA = Distances[sampleA];
+        float distB = Distances[sampleB];
         float segmentLength = distB - distA;
 
         float segmentT = (segmentLength > 0.00001f)
@@ -77,10 +85,9 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
             : 0.0f;
 
         DotSample dot;
-        dot.SampleA = sampleA;
-        dot.SampleB = sampleB;
+        dot.Sample = sampleA;
         dot.SegmentT = saturate(segmentT);
-        dot.Padding = 0.0;
+        dot.CurveIndex = curveIndex;
         Dots[globalIdx] = dot;
     }
 }

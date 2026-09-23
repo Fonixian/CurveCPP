@@ -104,28 +104,50 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const uint pointCount = TotalPointCount;
     
     const bool nearSide = index < 2u;
-    const uint wordBase = (i > 0u ? i - 1u : 0u) >> 5u;
-    const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
-    const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
-    const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
+
+    // Curve membership comes from the index map, NOT from CurveBegins: that buffer now carries a
+    // single bit (the scan runs over one chain), so it can no longer say where a curve ends.
+    const uint curveIndex = BezierIndexMap[i];
+    const uint firstIndex = (uint)BezierData[curveIndex].FirstIndex;
+    const uint lastIndex  = (uint)BezierData[curveIndex].LastIndex;
+
+    // i == lastIndex is the bridge from this curve's last sample to the next curve's first. On a
+    // continuous chain it is zero-length up to float noise, and when the noise survives projection
+    // it gets drawn with a random direction and a random bisector shear.
+    if (i >= lastIndex) {
+        o.Position = 0.0 / 0.0;
+        return o;
+    }
 
     const float4 rawB = CalculatedPoints[i];
     const float4 rawC = CalculatedPoints[i + 1u];
 
-    const uint indexA = hasA ? step_over_duplicate(i - 1u, i - 2u,
-                               i > 1u && !IsCurveBegin(beginWords, wordBase, i - 1u), rawB.xyz)
-                         : (i + 1u);
-    const uint indexD = hasD ? step_over_duplicate(i + 2u, i + 3u,
-                               i + 3u < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u), rawC.xyz)
-                         : i;
+    // Inside the curve: the previous / next sample, stepping over a duplicate as before. Across a
+    // curve boundary: only when the two curves actually touch, and then the sample one past the
+    // shared endpoint (the other curve's copy of it is the duplicate). Curves are >= 2 samples,
+    // so i - 2 and i + 3 stay inside the neighbouring curve.
+    bool hasA = false;
+    uint indexA = i + 1u;
+    if (i > firstIndex) {
+        hasA = true;
+        indexA = step_over_duplicate(i - 1u, i - 2u, i - 1u > firstIndex, rawB.xyz);
+    } else if (i > 0u && distance(CalculatedPoints[i - 1u].xyz, rawB.xyz) < 0.00001) {
+        hasA = true;
+        indexA = i - 2u;
+    }
+
+    bool hasD = false;
+    uint indexD = i;
+    if (i + 1u < lastIndex) {
+        hasD = true;
+        indexD = step_over_duplicate(i + 2u, i + 3u, i + 2u < lastIndex, rawC.xyz);
+    } else if (i + 2u < pointCount && distance(CalculatedPoints[i + 2u].xyz, rawC.xyz) < 0.00001) {
+        hasD = true;
+        indexD = i + 3u;
+    }
 
     const float3 rawA = CalculatedPoints[indexA].xyz;
     const float3 rawD = CalculatedPoints[indexD].xyz;
-
-    if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
-        o.Position = 0.0 / 0.0;
-        return o;
-    }
 
     float4 A4 = mul(float4(rawA, 1.0), VP);
     float4 B4 = mul(float4(rawB.xyz, 1.0), VP);
@@ -148,7 +170,6 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     pull_in_front(A4, B4);
     pull_in_front(D4, C4);
 
-    const uint curveIndex = BezierIndexMap[i];
     const CurveStyle style = CurveStyles[curveIndex];
     const float width_pixel = style.Width;
 
@@ -161,7 +182,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const bool patterned = style.Spacing > 0.0;
 
     o.ScreenArcBegin = lerp(dB.y, dC.y, t0);
-    o.ScreenArcEnd = ScreenDistances[BezierData[curveIndex].LastIndex];
+    o.ScreenArcEnd = ScreenDistances[lastIndex];
     o.DashLength = style.DashLength;
     o.CapCapJoin = style.CapCapJoin | (patterned ? CurvePatternedBit : 0u);
 
@@ -182,7 +203,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // breaks the telescoping and the bias is what absorbs it.
     float patternCoord = 0.0;
     if (patterned) {
-        const float curveArcBegin = WorldDistances[BezierData[curveIndex].FirstIndex];
+        const float curveArcBegin = WorldDistances[firstIndex];
         const float patternBase = (curveArcBegin > 0.0)
             ? floor(curveArcBegin / style.Spacing) + 1.0
             : 0.0;

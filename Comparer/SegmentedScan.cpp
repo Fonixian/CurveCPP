@@ -25,7 +25,9 @@ SegmentedScan::SegmentedScan(const GraphicsDevice& device, uint32_t maxElementCo
         level.capacity = levelCapacity;
     
         auto blockCount = DivRoundUp(levelCapacity, GroupSize);
-        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<DirectX::XMFLOAT2>(blockCount));
+        // One float per block, matching Values' element type - see the note in
+        // segmented_scan_common.hlsli on why this is no longer a float2.
+        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<float>(blockCount));
         level.blockFlags = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
         level.needsCarry = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(levelCapacity));
         level.constants = std::make_unique<ConstantBuffer>(device, ScanConstants{});

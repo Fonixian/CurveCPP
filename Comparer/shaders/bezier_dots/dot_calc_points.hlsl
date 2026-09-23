@@ -1,5 +1,17 @@
 #include "dot_common.hlsli"
 
+// Chord lengths only. This pass used to also store every sample's world position and packed colour
+// into CalculatedPoints, the way the patterned and solid renderers do, because their vertex shaders
+// build a strip out of those samples and genuinely need them all. A dot renderer does not: it only
+// ever touches the two samples bracketing each dot, and dot_vert can evaluate those two itself from
+// the same control points for a handful of ALU. So the positions are computed here, measured, and
+// dropped - CalculatedPoints is not allocated for this renderer at all, which takes 16 bytes per
+// sample point of storage and a float4 store per point out of the frame.
+//
+// What survives is Distances: one chord length per point, which the segmented scan turns into
+// cumulative arc length. That cannot be recomputed on demand - arc length is a prefix sum over every
+// preceding sample, not a function of one t - so it stays.
+
 cbuffer CameraData : register(b0) {
     float4x4 VP;
     float2   WH;
@@ -10,18 +22,7 @@ cbuffer CameraData : register(b0) {
 StructuredBuffer<BezierCurveData> BezierData     : register(t0);
 StructuredBuffer<uint>            BezierIndexMap : register(t1);
 
-RWStructuredBuffer<float4> CalculatedPoints : register(u0);
-RWStructuredBuffer<float2> Distances        : register(u1);
-
-float3 EvaluateBezier(float3 p0, float3 p1, float3 p2, float3 p3, float t) {
-    float omt = 1.0 - t;
-    float omt2 = omt * omt;
-    float t2 = t * t;
-    return omt2 * omt * p0
-         + 3.0 * omt2 * t * p1
-         + 3.0 * omt * t2 * p2
-         + t2 * t * p3;
-}
+RWStructuredBuffer<float> Distances : register(u0);
 
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchId : SV_DispatchThreadID) {
@@ -35,24 +36,18 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     uint lastIndex  = (uint)bez.LastIndex;
     uint resolution = lastIndex - firstIndex; // resolution - 1
 
-    float t = float(pointIndex - firstIndex) / float(resolution);
-    float3 position = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, t);
-
+    // One float per point. This used to be a float2 with .y pinned at 0, because SegmentedScan's
+    // element type was fixed at float2 for the patterned renderer's sake; that renderer splits its
+    // two channels into separate buffers now and the scan is scalar, so the dead channel is gone.
     float dist = 0.0;
     if (pointIndex < lastIndex) {
+        float t     = float(pointIndex - firstIndex) / float(resolution);
         float tNext = float(pointIndex - firstIndex + 1) / float(resolution);
-        float3 nextPosition = EvaluateBezier(bez.P0, bez.P1, bez.P2, bez.P3, tNext);
+
+        float3 position     = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, t);
+        float3 nextPosition = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tNext);
         dist = distance(position, nextPosition);
     }
-    Distances[pointIndex] = float2(dist, 0.0);
 
-    float blend = t;
-    if (bez.MinHeight < bez.MaxHeight)
-        blend = saturate((position.y - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
-
-    float4 colorBegin = UnpackColorBits(bez.ColorBegin);
-    float4 colorEnd   = UnpackColorBits(bez.ColorEnd);
-    float4 color = lerp(colorBegin, colorEnd, blend);
-
-    CalculatedPoints[pointIndex] = float4(position, asfloat(PackColorBits(color)));
+    Distances[pointIndex] = dist;
 }

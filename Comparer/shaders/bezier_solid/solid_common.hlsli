@@ -2,13 +2,13 @@
 #define SOLID_COMMON_HLSLI
 
 struct BezierCurveData {
-    float3 P0;
+    float3 K0;
     int    FirstIndex;
-    float3 P1;
+    float3 K1;
     int    LastIndex;
-    float3 P2;
+    float3 K2;
     uint   ColorBegin;
-    float3 P3;
+    float3 K3;
     uint   ColorEnd;
     float  MinHeight;
     float  MaxHeight;
@@ -18,7 +18,6 @@ struct BezierCurveData {
 struct SolidCurveStyle {
     float Width;
     uint CapCapJoin;
-    float Padding[2];
 };
 
 static const uint CurveCapButt        = 0u;
