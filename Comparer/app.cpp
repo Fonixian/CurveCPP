@@ -5,6 +5,7 @@
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_dx11.h"
 #include "Include/Axodox.Storage.h"
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <random>
@@ -92,16 +93,16 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 
 	// Initial poses barely matter - PoseScene() overwrites every control point and colour on the
 	// very first frame. They only have to be valid enough for Add()'s asserts.
-	/*BezierData wave = Cubic(
+	BezierData wave = Cubic(
 		{ -3.0f, WaveY - 0.5f, 0.0f },
 		{ -1.5f, WaveY + 0.7f, 0.0f },
 		{  1.5f, WaveY + 0.7f, 0.0f },
 		{  3.0f, WaveY - 0.5f, 0.0f });
 	wave.C0 = wave_color0;
 	wave.C1 = wave_color1;
-	scene.wave = renderer.Add(wave);*/
+	scene.wave = renderer.Add(wave);
 
-	/*for (int i = 0; i < PetalCount; ++i)
+	for (int i = 0; i < PetalCount; ++i)
 	{
 		BezierData petal = Quadratic(
 			{ PetalRadius, PetalCenterY, 0.0f },
@@ -110,7 +111,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		petal.C0 = petal_color;
 		petal.C1 = petal_color;
 		scene.petals[i] = renderer.Add(petal);
-	}*/
+	}
 
 	for (int i = 0; i < RibbonLinks; ++i)
 	{
@@ -121,13 +122,16 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 			{ 0.0f, RibbonY, 0.0f });
 		link.C0 = ribbon_color0;
 		link.C1 = ribbon_color1;
+		// Links 1.. continue link 0's stroke when the ribbon is merged. Every other group in the
+		// scene (wave, petals, gallery, test curves) is Added unmerged, i.e. one stroke per curve.
+		link.merge_with_previous = ribbon_merged && i > 0;
 		scene.ribbon[i] = renderer.Add(link);
 	}
 
 	// The cap gallery is the one group whose caps are NOT driven by the style panel: each stroke
 	// keeps the pair it was built with, so all five caps stay on screen at once while you change
 	// everything else around them.
-	/*for (int i = 0; i < GalleryCount; ++i)
+	for (int i = 0; i < GalleryCount; ++i)
 	{
 		BezierData stroke = Linear(
 			{ 0.0f, GalleryBottom, 0.0f },
@@ -138,7 +142,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		stroke.C0 = { 1.0f, 1.0f, 1.0f };
 		stroke.C1 = gallery_color;
 		scene.gallery[i] = renderer.Add(stroke);
-	}*/
+	}
 }
 
 void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing)
@@ -200,7 +204,8 @@ void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_s
 		data.C1 = HueColor(float(scene.test_curves.size()) * 0.137f + 0.5f);
 
 		test.handle = renderer.Add(data);
-		scene.test_curves.push_back(test);
+		// Moved, not copied: the handle owns the curve and is move-only.
+		scene.test_curves.push_back(std::move(test));
 	}
 
 	// The new handles still have to be picked up by both per-frame passes: PoseScene() so they track
@@ -209,13 +214,23 @@ void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_s
 	style_dirty = true;
 }
 
+void App::RemoveTestCurves(Scene& scene, size_t count)
+{
+	const size_t keep = scene.test_curves.size() - std::min(count, scene.test_curves.size());
+	// Each erased TestCurve destroys its handle, which removes the curve from the renderer. The
+	// renderer only marks it and compacts on its next UpdateBuffers, so erasing a whole batch costs
+	// one pass there, not one per curve. The survivors need no re-pose or re-style: their data is
+	// untouched, only their index shifts, and the handles are told about that by the renderer.
+	scene.test_curves.erase(scene.test_curves.begin() + std::ptrdiff_t(keep), scene.test_curves.end());
+}
+
 void App::PoseScene(Scene& scene)
 {
 	const float dx = scene.x_offset;
 	const float t = animation_time;
 
 	// --- wave: one cubic swinging its two inner control points sideways -------------------------
-	/*{
+	{
 		const float swing = sinf(t * 2.0f);
 
 		XMFLOAT3 c0 = wave_color0;
@@ -232,10 +247,10 @@ void App::PoseScene(Scene& scene)
 			{ dx + 1.5f + swing, WaveY + 0.7f, 0.0f },
 			{ dx + 3.0f,         WaveY - 0.5f, 0.0f });
 		scene.wave.colors(c0, c1);
-	}*/
+	}
 
 	// --- petals: quadratic arcs spaced around a rotating ring, with gaps between them ------------
-	/*for (int i = 0; i < PetalCount; ++i)
+	for (int i = 0; i < PetalCount; ++i)
 	{
 		const float angle = t + (Tau * i / PetalCount);
 		const float nextAngle = angle + (Tau / (2.0f * PetalCount));
@@ -250,13 +265,14 @@ void App::PoseScene(Scene& scene)
 
 		scene.petals[i].control_points(P0, P1, P2);
 		scene.petals[i].colors(color, color);
-	}*/
+	}
 
 	// --- ribbon: a C1-continuous chain of cubics along a 3D path ---------------------------------
-	// Each link is its own curve, so the chain also shows what caps do at an interior joint: with
-	// Butt the links meet seamlessly, with Round they bulge a little, and with Triangle out you get
-	// a visible spike at every link boundary. That is correct - the renderer has no idea two curves
-	// were meant to be one stroke.
+	// Each link is its own curve. With "Merge ribbon links" on (the default) links 1.. are merged
+	// into link 0, so the six are ONE stroke: one arc length, one pattern grid, caps only at the two
+	// far ends. With it off every link is its own stroke, which shows what caps do at an interior
+	// joint: with Butt the links meet seamlessly, with Round they bulge a little, and with Triangle
+	// out you get a visible spike at every link boundary.
 	{
 		const float step = 1.0f / RibbonLinks;
 
@@ -301,7 +317,7 @@ void App::PoseScene(Scene& scene)
 	// --- cap gallery: five straight strokes, one per cap pair ------------------------------------
 	// Static apart from following x_offset. The front (P0) end is white so it is obvious which cap
 	// is which way round.
-	/*for (int i = 0; i < GalleryCount; ++i)
+	for (int i = 0; i < GalleryCount; ++i)
 	{
 		const float x = dx + (i - (GalleryCount - 1) * 0.5f) * GalleryStride;
 
@@ -311,7 +327,7 @@ void App::PoseScene(Scene& scene)
 
 		const XMFLOAT3 back = animate_colors ? HueColor(float(i) / GalleryCount + t * 0.1f) : gallery_color;
 		scene.gallery[i].colors({ 1.0f, 1.0f, 1.0f }, back);
-	}*/
+	}
 
 	// --- test curves: static geometry, slid into this copy's column ------------------------------
 	// They do not animate; the only thing this loop does is re-apply x_offset, so that a test batch
@@ -339,7 +355,8 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 
 	// `target`, not `curve` - a local called `curve` would shadow nothing here today, but it does
 	// in any translation unit that also names the enums through a namespace, so keep the habit.
-	auto apply = [&](BezierCurve target, bool keep_own_caps, unsigned resolution)
+	// By reference: handles own their curve, so a by-value copy is not just wasteful - it does not exist.
+	auto apply = [&](BezierCurve& target, bool keep_own_caps, unsigned resolution)
 	{
 		target.Width(style_width);
 		if (!keep_own_caps)
@@ -361,16 +378,20 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 
 	const auto resolution = static_cast<unsigned>(style_resolution);
 
-	/*apply(scene.wave, false, resolution);
+	apply(scene.wave, false, resolution);
 	for (auto& petal : scene.petals)
-		apply(petal, false, resolution);*/
+		apply(petal, false, resolution);
 	for (auto& link : scene.ribbon)
 		apply(link, false, resolution);
+	// Link 0 always starts the stroke; the rest follow the checkbox. Merged() only raises the layout
+	// flag when the value actually changes, so pushing it on every style pass costs nothing.
+	for (int i = 1; i < RibbonLinks; ++i)
+		scene.ribbon[i].Merged(ribbon_merged);
 
 	// The gallery keeps the cap pair it was built with - that is the whole point of it - and stays
 	// at two points, because a straight line gains nothing from subdivision.
-	/*for (auto& stroke : scene.gallery)
-		apply(stroke, true, GalleryResolution);*/
+	for (auto& stroke : scene.gallery)
+		apply(stroke, true, GalleryResolution);
 
 	// Test curves follow every style control EXCEPT resolution: each keeps the one it was added with,
 	// so a scene can mix a batch at 8 points with a batch at 400 and the Timings table shows what that
@@ -575,6 +596,13 @@ void App::ExampleGui()
 
 	StyleGui();
 
+	// Merged curves: the ribbon is the one group built as a chain. Unticked, its six links go back to
+	// six separate strokes - the comparison that used to need commenting code in and out.
+	ImGui::SeparatorText("Merged curves");
+	if (ImGui::Checkbox("Merge ribbon links", &ribbon_merged))
+		style_dirty = true;
+	ImGui::TextDisabled("Wave, petals, gallery and test curves are always separate strokes.");
+
 	// Colours belong to this screen: they drive the four hand-built groups only. Test curves get a
 	// fixed hue at Add time and are never repainted.
 	ImGui::SeparatorText("Colour");
@@ -642,6 +670,41 @@ void App::TestGui()
 		AddTestCurves(*dot_renderer, dot_scene, true);
 	}
 
+	// Removal goes through the handles: erasing a TestCurve destroys its BezierCurve, which takes the
+	// curve out of that renderer. The buffers follow on the next Draw - they shrink once what is left
+	// fits in a quarter of them, which the Timings window's pattern bound / allocated columns show.
+	ImGui::SeparatorText("Remove");
+	ImGui::TextDisabled("\"Last batch\" = the last `count` test curves of that renderer.");
+	const size_t batch = size_t(test_count);
+	ImGui::BeginDisabled(patterned_scene.test_curves.empty());
+	if (ImGui::Button("Last batch: Patterned"))
+		RemoveTestCurves(patterned_scene, batch);
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(solid_scene.test_curves.empty());
+	if (ImGui::Button("Last batch: Solid"))
+		RemoveTestCurves(solid_scene, batch);
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(dot_scene.test_curves.empty());
+	if (ImGui::Button("Last batch: Dots"))
+		RemoveTestCurves(dot_scene, batch);
+	ImGui::EndDisabled();
+
+	if (ImGui::Button("Last batch from all three"))
+	{
+		RemoveTestCurves(patterned_scene, batch);
+		RemoveTestCurves(solid_scene, batch);
+		RemoveTestCurves(dot_scene, batch);
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Remove all test curves"))
+	{
+		RemoveTestCurves(patterned_scene, patterned_scene.test_curves.size());
+		RemoveTestCurves(solid_scene, solid_scene.test_curves.size());
+		RemoveTestCurves(dot_scene, dot_scene.test_curves.size());
+	}
+
 	ImGui::SeparatorText("In the scene");
 
 	// Sample points, not curves, is what the point pass and the buffers are actually sized by, so it
@@ -686,7 +749,6 @@ void App::TestGui()
 		ImGui::EndTable();
 	}
 
-	ImGui::TextDisabled("No renderer has a Clear() - restart to reset.");
 
 	StyleGui();
 }

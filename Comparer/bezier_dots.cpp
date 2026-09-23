@@ -99,10 +99,12 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context) {
 }
 
 // Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
-// Grow-only; see BezierRenderer::AllocatePatternBuffer for the same reasoning.
+// Grow / shrink-at-a-quarter; see BezierRenderer::AllocatePatternBuffer for the same reasoning.
 void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device, GraphicsDeviceContext* context) {
-	const uint32_t required = next_pow2(std::max(pattern_upper_bound, 1u));
-	if (dots && dots_allocated >= required) return;
+	// Grow when the bound no longer fits, shrink once it has fallen to a quarter of the allocation
+	// (removed curves, a larger spacing) - see FitCapacity() in bezier_common.
+	const uint32_t required = FitCapacity(dots_allocated, pattern_upper_bound);
+	if (dots && dots_allocated == required) return;
 
 	dots.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<DotSample>(required)));
 	dots_allocated = required;

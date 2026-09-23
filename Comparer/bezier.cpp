@@ -110,11 +110,13 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 }
 
 // Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
-// Grow-only, and rounded up by next_pow2 on top of a bound that already over-counts, so a scene edit
-// usually costs no reallocation at all.
+// Rounded up by next_pow2 on top of a bound that already over-counts, and shrunk only at a quarter,
+// so a scene edit usually costs no reallocation at all.
 void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device, GraphicsDeviceContext* context) {
-	const uint32_t required = next_pow2(std::max(pattern_upper_bound, 1u));
-	if (patterns && patterns_allocated >= required) return;
+	// Grow when the bound no longer fits, shrink once it has fallen to a quarter of the allocation
+	// (removed curves, a larger spacing) - see FitCapacity() in bezier_common.
+	const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
+	if (patterns && patterns_allocated == required) return;
 
 	patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(required)));
 	patterns_allocated = required;
