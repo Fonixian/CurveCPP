@@ -156,6 +156,7 @@
     <ClCompile Include="bezier_dots.cpp" />
     <ClCompile Include="bezier_solid.cpp" />
     <ClCompile Include="camera.cpp" />
+    <ClCompile Include="catmull_rom.cpp" />
     <ClCompile Include="gpu_buffers.cpp" />
     <ClCompile Include="CurveApp.cpp" />
     <ClCompile Include="orbital_camera.cpp" />
@@ -177,6 +178,7 @@
     <ClInclude Include="bezier_dots.h" />
     <ClInclude Include="bezier_solid.h" />
     <ClInclude Include="camera.h" />
+    <ClInclude Include="catmull_rom.h" />
     <ClInclude Include="gpu_buffers.h" />
     <ClInclude Include="orbital_camera.h" />
     <Text Include="paralell_scan.h" />
@@ -294,4 +296,4 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
-</Project>
+</Project>

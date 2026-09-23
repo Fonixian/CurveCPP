@@ -45,12 +45,6 @@ namespace
 	CurveCap GalleryBackCap(int i) { return static_cast<CurveCap>((i + 2) % CapCount); }
 
 	XMFLOAT3 Add3(const XMFLOAT3& a, const XMFLOAT3& b) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }
-	XMFLOAT3 Sub3(const XMFLOAT3& a, const XMFLOAT3& b) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
-	XMFLOAT3 Scale3(const XMFLOAT3& a, float s) { return { a.x * s, a.y * s, a.z * s }; }
-	XMFLOAT3 Lerp3(const XMFLOAT3& a, const XMFLOAT3& b, float t)
-	{
-		return { a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t };
-	}
 
 	// Hue sweep used for the animated colouring, kept in one place so every group agrees.
 	XMFLOAT3 HueColor(float hue)
@@ -113,19 +107,20 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		scene.petals[i] = renderer.Add(petal);
 	}
 
-	for (int i = 0; i < RibbonLinks; ++i)
+	// The ribbon's links continue each other's stroke when it is merged. Every other group in the
+	// scene (wave, petals, gallery, test curves) is Added unmerged, i.e. one stroke per curve.
+	// Phantom ends because PoseScene() samples the ribbon's path one step past either end anyway.
 	{
-		BezierData link = Cubic(
-			{ 0.0f, RibbonY, 0.0f },
-			{ 0.0f, RibbonY, 0.0f },
-			{ 0.0f, RibbonY, 0.0f },
-			{ 0.0f, RibbonY, 0.0f });
-		link.C0 = ribbon_color0;
-		link.C1 = ribbon_color1;
-		// Links 1.. continue link 0's stroke when the ribbon is merged. Every other group in the
-		// scene (wave, petals, gallery, test curves) is Added unmerged, i.e. one stroke per curve.
-		link.merge_with_previous = ribbon_merged && i > 0;
-		scene.ribbon[i] = renderer.Add(link);
+		BezierData style;
+		style.C0 = ribbon_color0;
+		style.C1 = ribbon_color1;
+
+		CatmullRomOptions options;
+		options.ends = SplineEnds::Phantom;
+		options.merged = ribbon_merged;
+
+		const XMFLOAT3 knots[RibbonLinks + 3] = {}; // all at the origin; only the count matters here
+		scene.ribbon.Build(renderer, knots, style, options);
 	}
 
 	// The cap gallery is the one group whose caps are NOT driven by the style panel: each stroke
@@ -267,17 +262,17 @@ void App::PoseScene(Scene& scene)
 		scene.petals[i].colors(color, color);
 	}
 
-	// --- ribbon: a C1-continuous chain of cubics along a 3D path ---------------------------------
-	// Each link is its own curve. With "Merge ribbon links" on (the default) links 1.. are merged
-	// into link 0, so the six are ONE stroke: one arc length, one pattern grid, caps only at the two
-	// far ends. With it off every link is its own stroke, which shows what caps do at an interior
-	// joint: with Butt the links meet seamlessly, with Round they bulge a little, and with Triangle
-	// out you get a visible spike at every link boundary.
+	// --- ribbon: a Catmull-Rom spline along a 3D path --------------------------------------------
+	// Six cubic links through seven knots. With "Merge ribbon links" on (the default) they are ONE
+	// stroke: one arc length, one pattern grid, caps only at the two far ends. With it off every link
+	// is its own stroke, which shows what caps do at an interior joint: with Butt the links meet
+	// seamlessly, with Round they bulge a little, and with Triangle out you get a visible spike at
+	// every link boundary.
 	{
 		const float step = 1.0f / RibbonLinks;
 
-		// Sampled anywhere, including outside [0, 1], so the Catmull-Rom tangents at the ends need
-		// no phantom knots.
+		// Defined outside [0, 1] too, which is what lets the ends use phantom knots taken from the
+		// path itself rather than mirrored ones.
 		auto ribbon_point = [&](float s)
 		{
 			return XMFLOAT3{
@@ -287,30 +282,22 @@ void App::PoseScene(Scene& scene)
 			};
 		};
 
-		for (int i = 0; i < RibbonLinks; ++i)
+		// Knot k sits at s = (k - 1) * step: knots 0 and RibbonLinks + 2 are the phantoms.
+		XMFLOAT3 knots[RibbonLinks + 3];
+		for (int k = 0; k < RibbonLinks + 3; ++k)
+			knots[k] = ribbon_point(float(k - 1) * step);
+		scene.ribbon.SetKnots(knots);
+
+		if (animate_colors)
 		{
-			const float s0 = i * step;
-			const float s1 = (i + 1) * step;
-
-			const XMFLOAT3 previous = ribbon_point(s0 - step);
-			const XMFLOAT3 begin = ribbon_point(s0);
-			const XMFLOAT3 end = ribbon_point(s1);
-			const XMFLOAT3 next = ribbon_point(s1 + step);
-
-			// Catmull-Rom knots -> cubic Bezier control points.
-			const XMFLOAT3 P1 = Add3(begin, Scale3(Sub3(end, previous), 1.0f / 6.0f));
-			const XMFLOAT3 P2 = Sub3(end, Scale3(Sub3(next, begin), 1.0f / 6.0f));
-
-			XMFLOAT3 c0 = Lerp3(ribbon_color0, ribbon_color1, s0);
-			XMFLOAT3 c1 = Lerp3(ribbon_color0, ribbon_color1, s1);
-			if (animate_colors)
-			{
-				c0 = HueColor(s0 + t * 0.15f);
-				c1 = HueColor(s1 + t * 0.15f);
-			}
-
-			scene.ribbon[i].control_points(begin, P1, P2, end);
-			scene.ribbon[i].colors(c0, c1);
+			XMFLOAT3 colors[RibbonLinks + 1];
+			for (int k = 0; k <= RibbonLinks; ++k)
+				colors[k] = HueColor(float(k) * step + t * 0.15f);
+			scene.ribbon.KnotColors(colors);
+		}
+		else
+		{
+			scene.ribbon.Colors(ribbon_color0, ribbon_color1);
 		}
 	}
 
@@ -356,7 +343,8 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 	// `target`, not `curve` - a local called `curve` would shadow nothing here today, but it does
 	// in any translation unit that also names the enums through a namespace, so keep the habit.
 	// By reference: handles own their curve, so a by-value copy is not just wasteful - it does not exist.
-	auto apply = [&](BezierCurve& target, bool keep_own_caps, unsigned resolution)
+	// Generic so it takes a CatmullRomSpline as well, whose setters mirror BezierCurve's.
+	auto apply = [&](auto& target, bool keep_own_caps, unsigned resolution)
 	{
 		target.Width(style_width);
 		if (!keep_own_caps)
@@ -381,12 +369,10 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 	apply(scene.wave, false, resolution);
 	for (auto& petal : scene.petals)
 		apply(petal, false, resolution);
-	for (auto& link : scene.ribbon)
-		apply(link, false, resolution);
-	// Link 0 always starts the stroke; the rest follow the checkbox. Merged() only raises the layout
-	// flag when the value actually changes, so pushing it on every style pass costs nothing.
-	for (int i = 1; i < RibbonLinks; ++i)
-		scene.ribbon[i].Merged(ribbon_merged);
+	apply(scene.ribbon, false, resolution);
+	// Only raises the layout flag when the value actually changes, so pushing it on every style pass
+	// costs nothing.
+	scene.ribbon.Merged(ribbon_merged);
 
 	// The gallery keeps the cap pair it was built with - that is the whole point of it - and stays
 	// at two points, because a straight line gains nothing from subdivision.

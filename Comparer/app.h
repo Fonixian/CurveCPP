@@ -5,6 +5,7 @@
 #include "bezier.h"
 #include "bezier_solid.h"
 #include "bezier_dots.h"
+#include "catmull_rom.h"
 #include <vector>
 
 class App
@@ -39,7 +40,7 @@ private:
 	bool paused = false;
 
 	static constexpr int PetalCount = 5;    // arcs chasing each other around a rotating ring
-	static constexpr int RibbonLinks = 6;   // C1-continuous chain of cubics, waving through Z
+	static constexpr int RibbonLinks = 6;   // Catmull-Rom spline of cubics, waving through Z
 	static constexpr int GalleryCount = 5;  // one straight stroke per CurveCap value
 
 	// A straight line needs no subdivision, and one segment per gallery stroke means it has exactly
@@ -74,7 +75,8 @@ private:
 		float x_offset = 0.0f;
 		BezierCurve wave;
 		BezierCurve petals[PetalCount];
-		BezierCurve ribbon[RibbonLinks];
+		// RibbonLinks cubics through RibbonLinks + 1 knots, plus a phantom knot at each end.
+		CatmullRomSpline ribbon;
 		BezierCurve gallery[GalleryCount];
 		std::vector<TestCurve> test_curves;
 	};
@@ -135,9 +137,10 @@ private:
 	float style_min_height = 0.0f;  // colour-by-height band; min >= max blends by curve t instead
 	float style_max_height = 0.0f;
 
-	// Merged curves (BezierData::merge_with_previous). The ribbon is the only group built as a chain:
-	// on, its links 1.. continue link 0 and the six cubics are drawn as one stroke; off, each link is
-	// its own stroke with its own caps and its own pattern start. Everything else is always separate.
+	// Merged curves (BezierData::merge_with_previous). The ribbon is the only group built as a chain
+	// (CatmullRomSpline::Merged): on, its links 1.. continue link 0 and the six cubics are drawn as one
+	// stroke; off, each link is its own stroke with its own caps and its own pattern start. Everything
+	// else is always separate.
 	bool ribbon_merged = true;
 
 	bool animate_colors = true;

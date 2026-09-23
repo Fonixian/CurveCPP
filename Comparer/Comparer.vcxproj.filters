@@ -72,6 +72,9 @@
     <ClCompile Include="bezier_dots.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="catmull_rom.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="app.h">
@@ -108,6 +111,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="bezier_dots.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="catmull_rom.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -193,4 +199,4 @@
       <Filter>Header Files</Filter>
     </Text>
   </ItemGroup>
-</Project>
+</Project>
