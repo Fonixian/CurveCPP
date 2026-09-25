@@ -123,29 +123,39 @@ void Profiler::end_cpu(MetricId metric) {
 bool Profiler::collect(FrameSlot& slot) {
 	auto context = device.ImmediateContext()->get();
 
-	D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
-	if (context->GetData(slot.disjoint.get(), &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
-		return false;
+	struct Sample { uint64_t start = 0, stop = 0; bool valid = false; };
+	std::vector<Sample> samples(slot.timers.size());
 
-	slot.pending = false;
-
-	if (disjoint.Disjoint || disjoint.Frequency == 0) {
-		for (auto& slot_timer : slot.timers) slot_timer.recorded = false;
-		return true;
-	}
-
-	for (size_t i = 0; i < slot.timers.size() && i < metric_list.size(); i++) {
+	for (size_t i = 0; i < slot.timers.size(); i++) {
 		auto& slot_timer = slot.timers[i];
 		if (!slot_timer.recorded) continue;
-		slot_timer.recorded = false;
 
-		uint64_t start = 0, stop = 0;
-		if (context->GetData(slot_timer.start.get(), &start, sizeof(start), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
-		if (context->GetData(slot_timer.stop.get(), &stop, sizeof(stop), D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
-		if (stop < start) continue;
+		auto& sample = samples[i];
+		HRESULT hr_start = context->GetData(slot_timer.start.get(), &sample.start, sizeof(sample.start), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+		if (hr_start == S_FALSE) return false;
+		HRESULT hr_stop = context->GetData(slot_timer.stop.get(), &sample.stop, sizeof(sample.stop), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+		if (hr_stop == S_FALSE) return false;
 
-		auto& entry = metric_list[i];
-		accumulate(entry.gpu, entry.gpu_seeded, static_cast<double>(stop - start) * 1000.0 / static_cast<double>(disjoint.Frequency));
+		sample.valid = hr_start == S_OK && hr_stop == S_OK;
+	}
+
+	D3D11_QUERY_DATA_TIMESTAMP_DISJOINT disjoint{};
+	HRESULT hr_disjoint = context->GetData(slot.disjoint.get(), &disjoint, sizeof(disjoint), D3D11_ASYNC_GETDATA_DONOTFLUSH);
+	if (hr_disjoint == S_FALSE) return false;
+
+	slot.pending = false;
+	for (auto& slot_timer : slot.timers) slot_timer.recorded = false;
+
+	if (hr_disjoint != S_OK || disjoint.Disjoint || disjoint.Frequency == 0) return true;
+
+	for (size_t i = 0; i < samples.size() && i < metric_list.size(); i++) {
+		const auto& sample = samples[i];
+		if (!sample.valid) continue;
+
+		if (sample.stop < sample.start) continue;
+
+		const double ms = static_cast<double>(sample.stop - sample.start) * 1000.0 / static_cast<double>(disjoint.Frequency);
+		accumulate(metric_list[i].gpu, metric_list[i].gpu_seeded, ms);
 	}
 
 	return true;

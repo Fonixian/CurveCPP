@@ -1,10 +1,8 @@
 #include "solid_common.hlsli"
 
-float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap)
-{
+float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap) {
     float d;
-    switch (cap)
-    {
+    switch (cap) {
         case CurveCapButt:
             d = overshoot;
             break;
@@ -21,8 +19,7 @@ float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap)
     return d;
 }
 
-float4 main(SolidVSOutput input) : SV_Target
-{
+float4 main(SolidVSOutput input) : SV_Target {
     const float lateral = input.SDF.x;
     const float localArc = input.SDF.y;
     const float halfWidth = input.SDF.z;
@@ -30,19 +27,17 @@ float4 main(SolidVSOutput input) : SV_Target
 
     const float2 coord = float2(abs(lateral), localArc);
     
-    const bool pastBegin = localArc < 0.0;
-    const bool pastEnd = localArc > segmentLength;
-    const bool atEndcap = (pastBegin && input.Neighbors.x == 0u)
-                         || (pastEnd && input.Neighbors.y == 0u);
     
-    const uint endcap = pastBegin ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
+    const bool2 past_end = bool2(localArc < 0.0, localArc > segmentLength);
+    const bool atEndcap = any((input.Neighbors.xy == 0U) && past_end);
+    
+    const uint endcap = past_end.x ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
 
     float sdf = coord.x - halfWidth;
     const float overshoot = max(-coord.y, coord.y - segmentLength);
     
     if ((atEndcap && endcap == CurveCapRound) || (!atEndcap && Join(input.CapCapJoin) == CurveJoinRound))
-        sdf = (overshoot > 0.0) ? length(float2(coord.x, overshoot)) - halfWidth : sdf;
-    else if (atEndcap)
+        sdf = (overshoot > 0.0) ? length(float2(coord.x, overshoot)) - halfWidth : sdf; else if (atEndcap)
         sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endcap));
     
     if (sdf > 0.5)
