@@ -161,7 +161,7 @@ public:
 	// can be compared row by row, a renderer simply has no entry for a stage it does not have:
 	//
 	//   update   cpu   buffer resize + curve/style upload (UpdateBuffers)
-	//   calc     gpu   the point pass compute shader
+	//   calc     gpu   the point pass compute shader    (not in the solid renderer)
 	//   scan     gpu   the segmented prefix sum          (not in the solid renderer)
 	//   pattern  gpu   pattern/dot ini + calc            (not in the solid renderer)
 	//                 no longer includes a CPU readback, so it stays flat across a scene change
@@ -253,10 +253,10 @@ protected:
 	void EndDraw();
 
 	// Whether this renderer wants `calculated_points` - one float4 per sample point, world position
-	// plus packed colour. The strip-based renderers do: their vertex shaders walk every sample. The
-	// dot renderer does not: it touches only the two samples bracketing each dot, and dot_vert
-	// evaluates those itself, so allocating the buffer would cost 16 bytes per sample point that
-	// nothing ever reads.
+	// plus packed colour. Only the patterned renderer does now. The dot renderer touches only the two
+	// samples bracketing each dot and dot_vert evaluates those itself; the solid renderer has no
+	// compute pass at all and solid_vert evaluates B, C and the neighbour per vertex. For either,
+	// allocating the buffer would cost 16 bytes per sample point that nothing ever reads.
 	virtual bool NeedsCalculatedPoints() const { return true; }
 
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}

@@ -10,7 +10,6 @@ struct UploadSolidStyle {
 
 BezierSolidRenderer::BezierSolidRenderer(const GraphicsDevice& device)
 	: BezierRendererBase(device) {
-	calc_points = Pipeline::getCS(device, "solid_calc_points.cso");
 	curve_draw.vs = Pipeline::getVS(device, "solid_vert.cso");
 	curve_draw.ps = Pipeline::getPS(device, "solid_ps.cso");
 	curve_draw.states = std::make_shared<PipelineState>(PipelineState{
@@ -42,43 +41,28 @@ void BezierSolidRenderer::UploadStyles(GraphicsDeviceContext* context) {
 	curve_styles->Upload(std::span<const UploadSolidStyle>{ style_data }, context);
 }
 
-void BezierSolidRenderer::RunPointPass(GraphicsDeviceContext* context) {
-	ClearComputeBindings(context);
-
-	viewport_data->Bind(ShaderStage::Compute, 0, context);
-	bezier_data->Bind(ShaderStage::Compute, 0, context);
-	bezier_data_map->Bind(ShaderStage::Compute, 1, context);
-	calculated_points->BindUnordered(0, context);
-
-	profiler.begin_gpu("calc");
-	calc_points->Run({ (total_points + 256u - 1u) / 256u, 1u, 1u }, context);
-	profiler.end_gpu("calc");
-
-	ClearComputeBindings(context);
-}
-
 void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
 	auto* context = device.ImmediateContext();
 	BeginDraw();
 
 	UpdateBuffers(device, context);
 
-	if (total_points < 2 || !calculated_points) {
+	if (total_points < 2 || !bezier_data) {
 		EndDraw();
 		return;
 	}
 
 	UploadCameraData(view_proj, context);
 
-	RunPointPass(context); // Doesnt need to run every frame
-
-	// No "scan" or "pattern" metric here - this renderer has neither pass, so those rows stay empty
-	// in the profiler window. That gap IS the cost of the pattern pipeline.
+	// No compute work at all: no "calc", "scan" or "pattern" metric, so those rows stay empty in the
+	// profiler window. solid_vert evaluates the curve per vertex instead of reading a point pass's
+	// output, so what the calc pass used to cost is now folded into "draw".
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	calculated_points->BindOrdered(ShaderStage::Vertex, 0, context);
+	// t0 (calculated points) is gone; t2 and t5 were never used here. Same slot numbers as curve_vs.
 	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);
+	bezier_data->Bind(ShaderStage::Vertex, 3, context);      // t3: curve definitions, evaluated per vertex
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);
 

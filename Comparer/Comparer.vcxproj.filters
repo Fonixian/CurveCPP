@@ -163,9 +163,6 @@
     <FxCompile Include="shaders\bezier\curve_vs.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_solid\solid_calc_points.hlsl">
-      <Filter>shaders\bezier solid</Filter>
-    </FxCompile>
     <FxCompile Include="shaders\bezier_solid\solid_vert.hlsl">
       <Filter>shaders\bezier solid</Filter>
     </FxCompile>

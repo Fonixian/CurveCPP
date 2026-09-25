@@ -220,12 +220,6 @@
     </FxCompile>
     <!-- FxCompile writes to $(OutDir)%(Filename).cso, which is flat: these names must not collide
          with anything under shaders\bezier\. -->
-    <FxCompile Include="shaders\bezier_solid\solid_calc_points.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
-    </FxCompile>
     <FxCompile Include="shaders\bezier_solid\solid_vert.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>

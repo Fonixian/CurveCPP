@@ -83,4 +83,4 @@ uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
 uint Join(uint capcapjoin) { return capcapjoin & 0xFF; }
 bool IsPatterned(uint capcapjoin) { return (capcapjoin & CurvePatternedBit) != 0u; }
 
-#endif
+#endif

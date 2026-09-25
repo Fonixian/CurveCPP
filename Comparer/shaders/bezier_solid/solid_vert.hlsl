@@ -7,10 +7,33 @@ cbuffer CameraData : register(b1) {
     uint TotalCurveCount;
 };
 
-StructuredBuffer<float4>          CalculatedPoints : register(t0);
+// t0 used to be CalculatedPoints, written by a solid_calc_points compute pass. That pass is gone: this
+// shader evaluates the three samples it needs (B, C and the neighbour) straight from the curve
+// definitions at t3, the same slot the patterned and dot vertex shaders read them from.
 StructuredBuffer<uint>            CurveBegins      : register(t1);
+StructuredBuffer<BezierCurveData> BezierData       : register(t3);
 StructuredBuffer<uint>            BezierIndexMap   : register(t4);
 StructuredBuffer<SolidCurveStyle> CurveStyles      : register(t6);
+
+// Monomial basis, see UploadBezierData: P(t) = K0 + t * (K1 + t * (K2 + t * K3)).
+float3 EvaluateBezier(BezierCurveData bez, float t) {
+    return mad(mad(mad(bez.K3, t, bez.K2), t, bez.K1), t, bez.K0);
+}
+
+// Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. Same expression
+// the point pass used, so positions come out bit-identical to the buffer it wrote.
+float SampleT(BezierCurveData bez, uint sampleIndex) {
+    return float(sampleIndex - (uint)bez.FirstIndex) / float((uint)bez.LastIndex - (uint)bez.FirstIndex);
+}
+
+// Colour of one sample: world Y clamped to the height band when one is set, otherwise t.
+// Not packed to 8 bits any more - the point pass had to, to fit colour into the position's .w.
+float3 SampleColor(BezierCurveData bez, float height, float t) {
+    float blend = t;
+    if (bez.MinHeight < bez.MaxHeight)
+        blend = saturate((height - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
+    return lerp(UnpackColorBits(bez.ColorBegin).rgb, UnpackColorBits(bez.ColorEnd).rgb, blend);
+}
 
 bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
     uint w = ((pointIndex >> 5u) == wordBase) ? words.x : words.y;
@@ -79,20 +102,42 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
     const bool hasN = nearSide ? hasA : hasD;
     
-    const float4 rawB = CalculatedPoints[i];
-    const float4 rawC = CalculatedPoints[i + 1u];
+    // Every sample is evaluated by the curve that OWNS it in BezierIndexMap, exactly as the point pass
+    // did. That matters at a merged joint: the shared sample belongs to the LATER curve, so both
+    // segments meeting there evaluate it with the same coefficients and the same t (0) and get the
+    // same bits - evaluating C with segment i's curve at t = 1 instead would be the same point only
+    // up to rounding, and the chain could crack by a hair.
+    //
     // The neighbour is simply the adjacent sample. A merged chain shares ONE sample at each joint
     // (bezier_common.cpp lays it out that way), so there is no duplicated point to step over - the
-    // begin bits alone say where a stroke ends.
-    const float3 rawN = hasN ? CalculatedPoints[ni].xyz : 0.0/0.0;
+    // begin bits alone say where a stroke ends. When !hasN, ni may be out of range (i - 1 wraps at
+    // i == 0); D3D11 returns 0 for out-of-bounds structured reads and the result is discarded below.
+    //
+    // B, C and the neighbour almost always belong to the same curve - they differ only across a
+    // merged joint (and at a chain end, where the neighbour is unused) - so the other two curves are
+    // fetched only when their owner actually differs from B's.
+    const uint curveB = BezierIndexMap[i];
+    const uint curveC = BezierIndexMap[i + 1u];
+    const uint curveN = BezierIndexMap[ni];
+    const BezierCurveData bezB = BezierData[curveB];
+    BezierCurveData bezC = bezB;
+    BezierCurveData bezN = bezB;
+    [branch] if (curveC != curveB) bezC = BezierData[curveC];
+    [branch] if (hasN && curveN != curveB) bezN = BezierData[curveN];
+
+    const float tB = SampleT(bezB, i);
+    const float tC = SampleT(bezC, i + 1u);
+    const float3 rawB = EvaluateBezier(bezB, tB);
+    const float3 rawC = EvaluateBezier(bezC, tC);
+    const float3 rawN = hasN ? EvaluateBezier(bezN, SampleT(bezN, ni)) : 0.0/0.0;
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
-    float4 B4 = mul(float4(rawB.xyz, 1.0), VP);
-    float4 C4 = mul(float4(rawC.xyz, 1.0), VP);
+    float4 B4 = mul(float4(rawB, 1.0), VP);
+    float4 C4 = mul(float4(rawC, 1.0), VP);
     float4 N4 = mul(float4(rawN, 1.0), VP);
 
     float t0, t1;
@@ -117,11 +162,11 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         if (uN > 0.0) N4 = lerp(N4, P, uN);
     }
 
-    const SolidCurveStyle style = CurveStyles[BezierIndexMap[i]];
+    const SolidCurveStyle style = CurveStyles[curveB];
     const float width_pixel = style.Width;
 
-    const float3 cB = UnpackColorBits(asuint(rawB.w)).xyz;
-    const float3 cC = UnpackColorBits(asuint(rawC.w)).xyz;
+    const float3 cB = SampleColor(bezB, rawB.y, tB);
+    const float3 cC = SampleColor(bezC, rawC.y, tC);
     o.Color = float4(lerp(cB, cC, nearSide ? t0 : t1), 1.0);
     o.CapCapJoin = style.CapCapJoin;
     o.Neighbors = uint2(hasA ? 1u : 0u, hasD ? 1u : 0u);
