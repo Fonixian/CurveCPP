@@ -262,9 +262,7 @@ void BezierCurve::Remove() {
 	renderer = nullptr;
 }
 
-// Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scene
-// scale; only used by the merge assert in UploadCurveData.
-[[maybe_unused]] static bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
+bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
 	const XMVECTOR va = XMLoadFloat3(&a), vb = XMLoadFloat3(&b);
 	const float scale = std::max(1.0f, XMVectorGetX(XMVectorMax(XMVector3Length(va), XMVector3Length(vb))));
 	return XMVectorGetX(XMVector3Length(va - vb)) <= 1e-4f * scale;
@@ -309,7 +307,7 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	}
 
 	if (curves_allocated != curves_required) {
-		bezier_data.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadBezierData>(curves_required)));
+		AllocateCurveData(device, curves_required);
 		AllocateStyleBuffer(device, curves_required);
 		AllocateCurveBuffers(device, curves_required);
 		curves_allocated = curves_required;
@@ -351,6 +349,10 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
 
 	UploadCurveData(context);
+}
+
+void BezierRendererBase::AllocateCurveData(const GraphicsDevice& device, uint32_t curves_required) {
+	bezier_data.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadBezierData>(curves_required)));
 }
 
 void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {

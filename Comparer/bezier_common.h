@@ -141,6 +141,10 @@ void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3&
 void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
 	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
 
+// Whether two curve ends coincide closely enough to be merged (relative tolerance, so it holds at any
+// scene scale). Only used by the merge asserts in the UploadCurveData implementations.
+bool EndpointsMeet(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b);
+
 void ClearComputeBindings(Axodox::Graphics::GraphicsDeviceContext* context);
 void ClearDrawBindings(Axodox::Graphics::GraphicsDeviceContext* context);
 
@@ -227,7 +231,7 @@ protected:
 	uint32_t points_allocated = 0;
 	uint32_t curves_allocated = 0;
 
-	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data;     // Curve definitions, cubic
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data;     // Curve definitions, see AllocateCurveData
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data_map; // One uint32 curve index per point
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_styles;
 
@@ -261,13 +265,21 @@ protected:
 
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 	virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
-	virtual void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) = 0;
-	virtual void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) = 0;
+	// A renderer that folds its style into its own curve record (the solid one) has no style buffer
+	// and leaves these two empty.
+	virtual void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
+	virtual void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) {}
+
+	// The curve-definition buffer (`bezier_data`) and what goes into it. The defaults are the cubic
+	// monomial UploadBezierData the patterned and dot renderers read. The solid renderer overrides
+	// both: it uploads the control points as given (2, 3 or 4 of them) plus a smaller per-curve
+	// record, see bezier_solid.h. An override of UploadCurveData must set pattern_upper_bound itself.
+	virtual void AllocateCurveData(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required);
+	virtual void UploadCurveData(Axodox::Graphics::GraphicsDeviceContext* context);
 
 private:
 	void CompactRemoved();
 	void AllocateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
-	void UploadCurveData(Axodox::Graphics::GraphicsDeviceContext* context);
 };
 
 // An OWNING handle to one curve in one renderer - move-only, like a unique_ptr. The curve is removed

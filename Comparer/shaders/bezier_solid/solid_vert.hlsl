@@ -8,30 +8,52 @@ cbuffer CameraData : register(b1) {
 };
 
 // t0 used to be CalculatedPoints, written by a solid_calc_points compute pass. That pass is gone: this
-// shader evaluates the three samples it needs (B, C and the neighbour) straight from the curve
-// definitions at t3, the same slot the patterned and dot vertex shaders read them from.
-StructuredBuffer<uint>            CurveBegins      : register(t1);
-StructuredBuffer<BezierCurveData> BezierData       : register(t3);
-StructuredBuffer<uint>            BezierIndexMap   : register(t4);
-StructuredBuffer<SolidCurveStyle> CurveStyles      : register(t6);
+// shader evaluates the three samples it needs (B, C and the neighbour) straight from the curve's own
+// control points. Same slot numbers as curve_vs.hlsl wherever the meaning is shared; t2, t5 and t6 are
+// unused here (the style is part of BezierCurveData).
+StructuredBuffer<float3>          ControlPoints  : register(t0);
+StructuredBuffer<uint>            CurveBegins    : register(t1);
+StructuredBuffer<BezierCurveData> BezierData     : register(t3);
+StructuredBuffer<uint>            BezierIndexMap : register(t4);
 
-// Monomial basis, see UploadBezierData: P(t) = K0 + t * (K1 + t * (K2 + t * K3)).
-float3 EvaluateBezier(BezierCurveData bez, float t) {
-    return mad(mad(mad(bez.K3, t, bez.K2), t, bez.K1), t, bez.K0);
+// Bezier of whatever degree the curve was given (1, 2 or 3 - never raised to cubic), in the Bernstein
+// form, evaluated Horner-style:
+//
+//     after step k:  value = sum_{j <= k} C(n, j) t^j (1-t)^(k-j) P_j
+//
+// so after step n it is the full Bernstein sum. The binomial is carried as an integer and each step's
+// division is exact (C(n, k) = C(n, k-1) * (n-k+1) / k), so the weights are exact too.
+// Both endpoints come out bit-exact: t = 0 leaves P0 untouched (every added term is scaled by t^k = 0),
+// and t = 1 zeroes the running sum and adds 1 * 1 * Pn. That is what keeps a merged joint closed: the
+// shared sample is evaluated only by the later curve at t = 0, and it lands exactly on its P0.
+float3 EvaluateBezier(float t, uint2 range) {
+    const uint n = range.y - range.x - 1u; // degree
+    const float s = 1.0 - t;
+    float3 value = ControlPoints[range.x];
+    float tk = 1.0;
+    uint binom = 1u;
+    [loop] for (uint k = 1u; k <= n; ++k) {
+        tk *= t;
+        binom = binom * (n - k + 1u) / k;
+        value = mad(value, s, (float(binom) * tk) * ControlPoints[range.x + k]);
+    }
+    return value;
 }
 
 // Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. Same expression
-// the point pass used, so positions come out bit-identical to the buffer it wrote.
+// the point pass used: (i - first) / (last - first).
 float SampleT(BezierCurveData bez, uint sampleIndex) {
-    return float(sampleIndex - (uint)bez.FirstIndex) / float((uint)bez.LastIndex - (uint)bez.FirstIndex);
+    return float(sampleIndex - bez.FirstIndex) / float(bez.Resolution - 1u);
 }
 
 // Colour of one sample: world Y clamped to the height band when one is set, otherwise t.
 // Not packed to 8 bits any more - the point pass had to, to fit colour into the position's .w.
 float3 SampleColor(BezierCurveData bez, float height, float t) {
     float blend = t;
-    if (bez.MinHeight < bez.MaxHeight)
-        blend = saturate((height - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
+    const float minHeight = MinHeight(bez);
+    const float maxHeight = MaxHeight(bez);
+    if (minHeight < maxHeight)
+        blend = saturate((height - minHeight) / (maxHeight - minHeight));
     return lerp(UnpackColorBits(bez.ColorBegin).rgb, UnpackColorBits(bez.ColorEnd).rgb, blend);
 }
 
@@ -127,9 +149,9 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     const float tB = SampleT(bezB, i);
     const float tC = SampleT(bezC, i + 1u);
-    const float3 rawB = EvaluateBezier(bezB, tB);
-    const float3 rawC = EvaluateBezier(bezC, tC);
-    const float3 rawN = hasN ? EvaluateBezier(bezN, SampleT(bezN, ni)) : 0.0/0.0;
+    const float3 rawB = EvaluateBezier(tB, ControlRange(bezB));
+    const float3 rawC = EvaluateBezier(tC, ControlRange(bezC));
+    const float3 rawN = hasN ? EvaluateBezier(SampleT(bezN, ni), ControlRange(bezN)) : 0.0 / 0.0;
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
@@ -162,13 +184,13 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         if (uN > 0.0) N4 = lerp(N4, P, uN);
     }
 
-    const SolidCurveStyle style = CurveStyles[curveB];
-    const float width_pixel = style.Width;
+    const float width_pixel = bezB.Width;
 
     const float3 cB = SampleColor(bezB, rawB.y, tB);
     const float3 cC = SampleColor(bezC, rawC.y, tC);
     o.Color = float4(lerp(cB, cC, nearSide ? t0 : t1), 1.0);
-    o.CapCapJoin = style.CapCapJoin;
+    // The control point count in the top byte rides along; FrontCap / BackCap / Join mask it off.
+    o.CapCapJoin = bezB.CountCapCapJoin;
     o.Neighbors = uint2(hasA ? 1u : 0u, hasD ? 1u : 0u);
 
     const float3 ndcB = B4.xyz / B4.w;

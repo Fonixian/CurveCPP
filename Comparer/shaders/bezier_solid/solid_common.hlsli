@@ -1,26 +1,26 @@
 #ifndef SOLID_COMMON_HLSLI
 #define SOLID_COMMON_HLSLI
 
+// One per curve, 32 bytes - UploadSolidCurveData in bezier_solid.h, which documents every field.
+// The curve's control points are NOT in here: they sit in their own float3 buffer (ControlPoints in
+// solid_vert.hlsl), 2, 3 or 4 of them as given, starting at ControlFirst.
 struct BezierCurveData {
-    float3 K0;
-    int    FirstIndex;
-    float3 K1;
-    int    LastIndex;
-    float3 K2;
-    uint   ColorBegin;
-    float3 K3;
-    uint   ColorEnd;
-    float  MinHeight;
-    float  MaxHeight;
-    // First / last sample of the whole merged chain (== FirstIndex / LastIndex when unmerged).
-    int    ChainFirstIndex;
-    int    ChainLastIndex;
+    uint  ControlFirst;   // first control point in ControlPoints
+    uint  FirstIndex;     // first sample index of this curve
+    uint  Resolution;     // sample count, both ends included
+    uint  CountCapCapJoin; // control point count << 24 | front cap << 16 | back cap << 8 | join
+    uint  ColorBegin;     // R8G8B8A8
+    uint  ColorEnd;       // R8G8B8A8
+    uint  HeightRange;    // two halves: min height low 16 bits, max height high 16 bits
+    float Width;          // px
 };
 
-struct SolidCurveStyle {
-    float Width;
-    uint CapCapJoin;
-};
+// [first, one past last) control point of a curve - 2, 3 or 4 points, degree 1, 2 or 3.
+uint2 ControlRange(BezierCurveData bez) {
+    return uint2(bez.ControlFirst, bez.ControlFirst + (bez.CountCapCapJoin >> 24));
+}
+float MinHeight(BezierCurveData bez) { return f16tof32(bez.HeightRange); }
+float MaxHeight(BezierCurveData bez) { return f16tof32(bez.HeightRange >> 16); }
 
 static const uint CurveCapButt        = 0u;
 static const uint CurveCapSquare      = 1u;
