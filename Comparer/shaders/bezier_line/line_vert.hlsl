@@ -8,24 +8,31 @@ cbuffer CameraData : register(b1) {
 };
 
 StructuredBuffer<uint>      CurveBegins    : register(t1);
-StructuredBuffer<float3>    control_points : register(t3); // native degree, packed: see Indices
+StructuredBuffer<float3>    control_points : register(t3); // K0,K1,K2,K3; K0,K1,K2,K3; ...
 StructuredBuffer<uint>      BezierIndexMap : register(t4);
 StructuredBuffer<ColorData> colors         : register(t5);
 StructuredBuffer<Indices>   indices        : register(t6);
 
-// Bernstein form evaluated Horner-style, straight from the control points in [range.x, range.y):
-// x0 carries C(n, k) * t^k from one term to the next and every step multiplies what came before by
-// (1 - t), so after the last point value = sum C(n, k) (1-t)^(n-k) t^k P_k. Exact at both ends:
-// t = 0 leaves P0, and t = 1 zeroes every term but the last, whose weight is exactly 1.
-float3 Eval(float t, uint2 range) {
-    float3 value = control_points[range.x];
-    float x0 = 1.0;
-    const uint count = range.y - range.x; // degree + 1
-    for (uint k = 1u; k < count; ++k) {
-        x0 *= t * float(count - k) / float(k);
-        value = value * (1.0 - t) + x0 * control_points[range.x + k];
-    }
-    return value;
+// The cubic's monomial coefficients K0..K3 sit at a fixed stride of four, so where to read them follows
+// from the curve index alone - no lookup into `indices` has to come back first. All four loads are
+// independent and go out together.
+struct Cubic {
+    float3 k0, k1, k2, k3;
+};
+
+Cubic LoadCubic(uint curveIndex) {
+    const uint k = curveIndex << 2u;
+    Cubic c;
+    c.k0 = control_points[k];
+    c.k1 = control_points[k + 1u];
+    c.k2 = control_points[k + 2u];
+    c.k3 = control_points[k + 3u];
+    return c;
+}
+
+// Horner: P(t) = K0 + t * (K1 + t * (K2 + t * K3)) - three fused multiply-adds per component.
+float3 EvaluateBezier(Cubic c, float t) {
+    return mad(mad(mad(c.k3, t, c.k2), t, c.k1), t, c.k0);
 }
 
 float3 SampleColor(uint4 color, float height, float t) {
@@ -58,9 +65,9 @@ LineVSOutput main(uint vertexId : SV_VertexID) {
 
     const uint sampleIndex = segment + (vertexId & 1u);
     const uint curveIndex = BezierIndexMap[sampleIndex];
-    const uint4 range = indices[curveIndex].first_last_first_bez_last_bez;
+    const uint2 range = indices[curveIndex].first_last;
     const float t = float(sampleIndex - range.x) / float(range.y - range.x);
-    const float3 p = Eval(t, range.zw);
+    const float3 p = EvaluateBezier(LoadCubic(curveIndex), t);
 
     o.Position = mul(float4(p, 1.0), VP);
     o.Color = SampleColor(colors[curveIndex].c0_c1_height0_height1, p.y, t);

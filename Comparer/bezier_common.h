@@ -388,3 +388,60 @@ public:
 	inline bool Merged() const { return data().merge_with_previous; }
 	inline void Merged(bool value) { if (data().merge_with_previous != value) { data().merge_with_previous = value; touch_layout(); } }
 };
+
+// The per-curve upload shared by the line and solid renderers. Instead of one 80-byte UploadBezierData
+// re-sent on any change, the curve data is split by how often it changes into three buffers, each
+// re-uploaded only when its part is dirty (see CurveDirtyBits):
+//
+//   curve_control_points   4 x float3 per curve, the cubic in MONOMIAL form K0..K3 - the same
+//                          coefficients as UploadBezierData, at curveIndex * 4   (48 B)  when re-posed
+//   curve_colors           SplitColorData                 (16 B)  when colours / height band change
+//   curve_indices          SplitIndices                   ( 8 B)  only when the layout changes
+//
+// plus the renderer's own style buffer, which is re-sent through UploadStyles() only when a style
+// setter fired. The control points sit at a fixed stride, so a shader finds them from the curve index
+// alone and never waits on curve_indices to know where to read. The HLSL side of the structs is
+// duplicated in line_common.hlsli and solid_common.hlsli - keep all three in step.
+class BezierSplitRendererBase : public BezierRendererBase {
+public:
+	using BezierRendererBase::BezierRendererBase;
+
+protected:
+	// Matches ColorData: uint4 c0_c1_height0_height1, the heights as raw float bits.
+	struct SplitColorData {
+		uint32_t color_begin;
+		uint32_t color_end;
+		float    min_height;
+		float    max_height;
+	};
+	static_assert(sizeof(SplitColorData) == 16, "SplitColorData must match ColorData in the shaders");
+
+	// Matches Indices: uint2 first_last - the curve's first and last SAMPLE index, both inclusive.
+	struct SplitIndices {
+		uint32_t first_index;
+		uint32_t last_index;
+	};
+	static_assert(sizeof(SplitIndices) == 8, "SplitIndices must match Indices in the shaders");
+
+	// Neither renderer has a point pass, and neither reads bezier_data.
+	bool NeedsCalculatedPoints() const override { return false; }
+	bool NeedsBezierData() const override { return false; }
+
+	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
+	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
+
+	// Whether the three buffers exist yet - the Draw() early-out test in place of `!bezier_data`.
+	bool HasCurveData() const { return curve_control_points != nullptr; }
+	void BindCurveData(Axodox::Graphics::GraphicsDeviceContext* context,
+		uint32_t control_point_slot, uint32_t color_slot, uint32_t index_slot);
+
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_control_points;
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_colors;
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_indices;
+
+private:
+	// Staging vectors, kept between uploads so a per-frame re-pose does not allocate.
+	std::vector<DirectX::XMFLOAT3> control_point_scratch;
+	std::vector<SplitColorData>    color_scratch;
+	std::vector<SplitIndices>      index_scratch;
+};

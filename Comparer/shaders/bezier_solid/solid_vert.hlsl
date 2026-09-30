@@ -8,31 +8,51 @@ cbuffer CameraData : register(b1) {
 };
 
 // t0 used to be CalculatedPoints, written by a solid_calc_points compute pass. That pass is gone: this
-// shader evaluates the three samples it needs (B, C and the neighbour) straight from the curve
-// definitions at t3, the same slot the patterned and dot vertex shaders read them from.
+// shader evaluates the three samples it needs (B, C and the neighbour) straight from the control points
+// at t3, the same slot the patterned and dot vertex shaders read their curve definitions from.
 StructuredBuffer<uint>            CurveBegins      : register(t1);
-StructuredBuffer<BezierCurveData> BezierData       : register(t3);
+StructuredBuffer<float3>          control_points   : register(t3); // K0,K1,K2,K3 per curve, see LoadCubic
 StructuredBuffer<uint>            BezierIndexMap   : register(t4);
+StructuredBuffer<ColorData>       colors           : register(t5);
 StructuredBuffer<SolidCurveStyle> CurveStyles      : register(t6);
+StructuredBuffer<Indices>         indices          : register(t7);
 
-// Monomial basis, see UploadBezierData: P(t) = K0 + t * (K1 + t * (K2 + t * K3)).
-float3 EvaluateBezier(BezierCurveData bez, float t) {
-    return mad(mad(mad(bez.K3, t, bez.K2), t, bez.K1), t, bez.K0);
+// The cubic's monomial coefficients K0..K3 sit at a fixed stride of four, so where to read them follows
+// from the curve index alone - no lookup into `indices` has to come back first. All four loads are
+// independent and go out together.
+struct Cubic {
+    float3 k0, k1, k2, k3;
+};
+
+Cubic LoadCubic(uint curveIndex) {
+    const uint k = curveIndex << 2u;
+    Cubic c;
+    c.k0 = control_points[k];
+    c.k1 = control_points[k + 1u];
+    c.k2 = control_points[k + 2u];
+    c.k3 = control_points[k + 3u];
+    return c;
 }
 
-// Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. Same expression
-// the point pass used, so positions come out bit-identical to the buffer it wrote.
-float SampleT(BezierCurveData bez, uint sampleIndex) {
-    return float(sampleIndex - (uint)bez.FirstIndex) / float((uint)bez.LastIndex - (uint)bez.FirstIndex);
+// Horner: P(t) = K0 + t * (K1 + t * (K2 + t * K3)) - three fused multiply-adds per component.
+float3 EvaluateBezier(Cubic c, float t) {
+    return mad(mad(mad(c.k3, t, c.k2), t, c.k1), t, c.k0);
+}
+
+// Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. `range` is the
+// curve's inclusive sample range, Indices.xy.
+float SampleT(uint2 range, uint sampleIndex) {
+    return float(sampleIndex - range.x) / float(range.y - range.x);
 }
 
 // Colour of one sample: world Y clamped to the height band when one is set, otherwise t.
-// Not packed to 8 bits any more - the point pass had to, to fit colour into the position's .w.
-float3 SampleColor(BezierCurveData bez, float height, float t) {
+float3 SampleColor(uint4 color, float height, float t) {
+    const float minHeight = asfloat(color.z);
+    const float maxHeight = asfloat(color.w);
     float blend = t;
-    if (bez.MinHeight < bez.MaxHeight)
-        blend = saturate((height - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
-    return lerp(UnpackColorBits(bez.ColorBegin).rgb, UnpackColorBits(bez.ColorEnd).rgb, blend);
+    if (minHeight < maxHeight)
+        blend = saturate((height - minHeight) / (maxHeight - minHeight));
+    return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
 }
 
 bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
@@ -114,22 +134,24 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // i == 0); D3D11 returns 0 for out-of-bounds structured reads and the result is discarded below.
     //
     // B, C and the neighbour almost always belong to the same curve - they differ only across a
-    // merged joint (and at a chain end, where the neighbour is unused) - so the other two curves are
-    // fetched only when their owner actually differs from B's.
+    // merged joint (and at a chain end, where the neighbour is unused) - so the other two curves'
+    // coefficients and sample ranges are fetched only when their owner actually differs from B's.
+    // The neighbour needs no colour, so only B's and C's colours are read.
     const uint curveB = BezierIndexMap[i];
     const uint curveC = BezierIndexMap[i + 1u];
     const uint curveN = BezierIndexMap[ni];
-    const BezierCurveData bezB = BezierData[curveB];
-    BezierCurveData bezC = bezB;
-    BezierCurveData bezN = bezB;
-    [branch] if (curveC != curveB) bezC = BezierData[curveC];
-    [branch] if (hasN && curveN != curveB) bezN = BezierData[curveN];
+    const Cubic cubicB = LoadCubic(curveB);
+    const uint2 rangeB = indices[curveB].first_last;
+    Cubic cubicC = cubicB, cubicN = cubicB;
+    uint2 rangeC = rangeB, rangeN = rangeB;
+    [branch] if (curveC != curveB) { cubicC = LoadCubic(curveC); rangeC = indices[curveC].first_last; }
+    [branch] if (hasN && curveN != curveB) { cubicN = LoadCubic(curveN); rangeN = indices[curveN].first_last; }
 
-    const float tB = SampleT(bezB, i);
-    const float tC = SampleT(bezC, i + 1u);
-    const float3 rawB = EvaluateBezier(bezB, tB);
-    const float3 rawC = EvaluateBezier(bezC, tC);
-    const float3 rawN = hasN ? EvaluateBezier(bezN, SampleT(bezN, ni)) : 0.0/0.0;
+    const float tB = SampleT(rangeB, i);
+    const float tC = SampleT(rangeC, i + 1u);
+    const float3 rawB = EvaluateBezier(cubicB, tB);
+    const float3 rawC = EvaluateBezier(cubicC, tC);
+    const float3 rawN = hasN ? EvaluateBezier(cubicN, SampleT(rangeN, ni)) : 0.0/0.0;
 
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
@@ -162,13 +184,16 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         if (uN > 0.0) N4 = lerp(N4, P, uN);
     }
 
-    const SolidCurveStyle style = CurveStyles[curveB];
-    const float width_pixel = style.Width;
+    const uint style = CurveStyles[curveB].width_capcapjoin;
+    const float width_pixel = StyleWidth(style);
 
-    const float3 cB = SampleColor(bezB, rawB.y, tB);
-    const float3 cC = SampleColor(bezC, rawC.y, tC);
+    const uint4 colorB = colors[curveB].c0_c1_height0_height1;
+    uint4 colorC = colorB;
+    [branch] if (curveC != curveB) colorC = colors[curveC].c0_c1_height0_height1;
+    const float3 cB = SampleColor(colorB, rawB.y, tB);
+    const float3 cC = SampleColor(colorC, rawC.y, tC);
     o.Color = float4(lerp(cB, cC, nearSide ? t0 : t1), 1.0);
-    o.CapCapJoin = style.CapCapJoin;
+    o.CapCapJoin = style; // the width byte on top is ignored by FrontCap/BackCap/Join
     o.Neighbors = uint2(hasA ? 1u : 0u, hasD ? 1u : 0u);
 
     const float3 ndcB = B4.xyz / B4.w;

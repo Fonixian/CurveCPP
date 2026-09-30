@@ -1,39 +1,25 @@
 #ifndef SOLID_COMMON_HLSLI
 #define SOLID_COMMON_HLSLI
 
-struct BezierCurveData {
-    float3 K0; //
-    int    FirstIndex;
-    float3 K1; //
-    int    LastIndex;
-    float3 K2; //
-    uint ColorBegin; //
-    float3 K3; //
-    uint ColorEnd; //
-    float MinHeight; //
-    float MaxHeight;//
-    // First / last sample of the whole merged chain (== FirstIndex / LastIndex when unmerged).
-    int    ChainFirstIndex;
-    int    ChainLastIndex;
+// Per-curve data, split by how often it changes - see BezierSplitRendererBase in bezier_common.h.
+// The control points are a plain StructuredBuffer<float3>, four per curve at curveIndex * 4: the cubic
+// in monomial form K0..K3, P(t) = K0 + t(K1 + t(K2 + tK3)) - the same coefficients UploadBezierData
+// carries. Same layout as line_common.hlsli, duplicated on purpose.
+struct ColorData {
+    uint4 c0_c1_height0_height1; // ColorBegin, ColorEnd, asuint(MinHeight), asuint(MaxHeight)
 };
 
-//struct BezierData {
-//    uint4 c0_c1_heights_width;
-//};
-//StructuredBuffer<float3> control_points;
-//struct ColorData {
-//    uint4 c0_c1_height0_height1;
-//};
-//struct Indices {
-//    uint2 first_last;
-//};
-
-
+struct Indices {
+    uint2 first_last; // FirstIndex, LastIndex: the curve's sample range, both inclusive
+};
 
 struct SolidCurveStyle {
-    float Width;
-    uint CapCapJoin;
+    // width << 24 | CapCapJoin: width in whole pixels [0, 255] in the top byte, then the usual
+    // front << 16 | back << 8 | join - so FrontCap/BackCap/Join below read it as-is.
+    uint width_capcapjoin;
 };
+
+float StyleWidth(uint width_capcapjoin) { return float(width_capcapjoin >> 24); }
 
 static const uint CurveCapButt        = 0u;
 static const uint CurveCapSquare      = 1u;
@@ -53,19 +39,10 @@ struct SolidVSOutput {
 };
 
 float4 UnpackColorBits(uint packed) {
-    return float4(
-        float( packed        & 0xFF) / 255.0,
-        float((packed >>  8) & 0xFF) / 255.0,
-        float((packed >> 16) & 0xFF) / 255.0,
-        float((packed >> 24) & 0xFF) / 255.0);
-}
-
-uint PackColorBits(float4 color) {
-    uint r = uint(saturate(color.r) * 255.0 + 0.5);
-    uint g = uint(saturate(color.g) * 255.0 + 0.5);
-    uint b = uint(saturate(color.b) * 255.0 + 0.5);
-    uint a = uint(saturate(color.a) * 255.0 + 0.5);
-    return (a << 24) | (b << 16) | (g << 8) | r;
+    uint4 unpacked_u = uint4(packed, packed, packed, packed);
+    unpacked_u >>= uint4(0, 8, 16, 24);
+    unpacked_u &= 0xFF;
+    return float4(unpacked_u) / 255.0;
 }
 
 uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
