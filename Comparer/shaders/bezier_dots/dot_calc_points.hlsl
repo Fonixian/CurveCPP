@@ -19,8 +19,12 @@ cbuffer CameraData : register(b0) {
     uint     TotalCurveCount;
 };
 
-StructuredBuffer<BezierCurveData> BezierData     : register(t0);
-StructuredBuffer<uint>            BezierIndexMap : register(t1);
+// The index map is the one per-sample buffer this renderer still reads, and only here: at a merged
+// joint it hands the shared sample to the LATER curve, so that sample's chord is measured along the
+// curve that leaves it. Nothing after this pass needs it - dot_calc and dot_vert stay inside one curve.
+StructuredBuffer<float3>  ControlPoints  : register(t0); // K0..K3 per curve at curveIndex * 4
+StructuredBuffer<uint>    BezierIndexMap : register(t1);
+StructuredBuffer<Indices> CurveIndices   : register(t2);
 
 RWStructuredBuffer<float> Distances : register(u0);
 
@@ -30,10 +34,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (pointIndex >= TotalPointCount) return;
 
     uint curveIndex = BezierIndexMap[pointIndex];
-    BezierCurveData bez = BezierData[curveIndex];
+    uint2 range = CurveIndices[curveIndex].first_last;
 
-    uint firstIndex = (uint)bez.FirstIndex;
-    uint lastIndex  = (uint)bez.LastIndex;
+    uint firstIndex = range.x;
+    uint lastIndex  = range.y;
     uint resolution = lastIndex - firstIndex; // resolution - 1
 
     // One float per point. This used to be a float2 with .y pinned at 0, because SegmentedScan's
@@ -41,11 +45,18 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     // two channels into separate buffers now and the scan is scalar, so the dead channel is gone.
     float dist = 0.0;
     if (pointIndex < lastIndex) {
+        const uint k = curveIndex << 2u;
+        Cubic cubic;
+        cubic.k0 = ControlPoints[k];
+        cubic.k1 = ControlPoints[k + 1u];
+        cubic.k2 = ControlPoints[k + 2u];
+        cubic.k3 = ControlPoints[k + 3u];
+
         float t     = float(pointIndex - firstIndex) / float(resolution);
         float tNext = float(pointIndex - firstIndex + 1) / float(resolution);
 
-        float3 position     = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, t);
-        float3 nextPosition = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tNext);
+        float3 position     = EvaluateBezier(cubic, t);
+        float3 nextPosition = EvaluateBezier(cubic, tNext);
         dist = distance(position, nextPosition);
     }
 

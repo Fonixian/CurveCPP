@@ -22,9 +22,25 @@ cbuffer CameraData : register(b1) {
     uint     TotalCurveCount;
 };
 
-StructuredBuffer<BezierCurveData> BezierData : register(t3);
-StructuredBuffer<DotStyle>        DotStyles  : register(t6);
-StructuredBuffer<DotSample>       Dots       : register(t7);
+// Same slots as solid_vert for the per-curve buffers (t3 control points, t5 colours, t6 styles, t7
+// indices). The dots take t4, which is the index map there: in both it is the "which curve am I"
+// lookup. Nothing per sample point is bound - no CurveBegins, no index map - because a dot's two
+// bracketing samples always belong to its own curve, so there is no joint to look across.
+StructuredBuffer<float3>    ControlPoints : register(t3); // K0..K3 per curve at curveIndex * 4
+StructuredBuffer<DotSample> Dots          : register(t4);
+StructuredBuffer<ColorData> Colors        : register(t5);
+StructuredBuffer<DotStyle>  DotStyles     : register(t6);
+StructuredBuffer<Indices>   CurveIndices  : register(t7);
+
+Cubic LoadCubic(uint curveIndex) {
+    const uint k = curveIndex << 2u;
+    Cubic c;
+    c.k0 = ControlPoints[k];
+    c.k1 = ControlPoints[k + 1u];
+    c.k2 = ControlPoints[k + 2u];
+    c.k3 = ControlPoints[k + 3u];
+    return c;
+}
 
 struct DotVSOutput {
     float4 Position : SV_Position;
@@ -45,15 +61,16 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     DotSample s = Dots[dotId];
     uint curveIndex = s.CurveIndex;
 
-    BezierCurveData bez = BezierData[curveIndex];
-    DotStyle style = DotStyles[curveIndex];
-    const float halfWidth = Width(style.cap_cap_width);
+    const Cubic cubic = LoadCubic(curveIndex);
+    const uint2 range = CurveIndices[curveIndex].first_last;
+    const uint  style = DotStyles[curveIndex].width_capcap;
+    const float halfWidth = DotRadius(style);
 
-    float tA = SampleT(bez, s.Sample);
-    float tB = SampleT(bez, s.Sample + 1u);
+    float tA = SampleT(range, s.Sample);
+    float tB = SampleT(range, s.Sample + 1u);
 
-    float3 posA = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tA);
-    float3 posB = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, tB);
+    float3 posA = EvaluateBezier(cubic, tA);
+    float3 posB = EvaluateBezier(cubic, tB);
 
     float4 clipA = mul(float4(posA, 1.0), VP);
     float4 clipB = mul(float4(posB, 1.0), VP);
@@ -76,7 +93,7 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     // SampleA > 0 always holds, because Add() asserts resolution >= 2.
     if (tangentLen < 1e-5) {
         uint prevIndex = s.Sample > 0 ? s.Sample - 1 : s.Sample;
-        float3 posPrev = EvaluateBezier(bez.K0, bez.K1, bez.K2, bez.K3, SampleT(bez, prevIndex));
+        float3 posPrev = EvaluateBezier(cubic, SampleT(range, prevIndex));
         float4 clipPrev = mul(float4(posPrev, 1.0), VP);
         if (clipPrev.w > 1e-5) {
             float2 screenPrev = ProjectToScreen(clipPrev);
@@ -106,18 +123,19 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
     // packed to 8 bits each. Blending the two RAMP POSITIONS and unpacking once is the same value
     // algebraically - lerp(lerp(C0,C1,a), lerp(C0,C1,b), s) == lerp(C0,C1,lerp(a,b,s)) - and skips
     // the round trip through 8-bit, so the only difference is that it no longer quantises twice.
-    float blendA = ColorBlend(bez, posA, tA);
-    float blendB = ColorBlend(bez, posB, tB);
+    const uint4 colorData = Colors[curveIndex].c0_c1_height0_height1;
+    float blendA = ColorBlend(colorData, posA, tA);
+    float blendB = ColorBlend(colorData, posB, tB);
 
-    float4 colorBegin = UnpackColorBits(bez.ColorBegin);
-    float4 colorEnd   = UnpackColorBits(bez.ColorEnd);
+    float4 colorBegin = UnpackColorBits(colorData.x);
+    float4 colorEnd   = UnpackColorBits(colorData.y);
     float3 color = lerp(colorBegin, colorEnd, lerp(blendA, blendB, s.SegmentT)).rgb;
 
     o.Position = float4(ndcOut, depth, 1.0);
     o.Color = float4(color, 1.0);
     o.Local = cornerSign * extent;
     o.HalfWidth = halfWidth;
-    o.CapCapJoin = style.cap_cap_width;
+    o.CapCapJoin = style; // the width byte on top is ignored by FrontCap/BackCap
 
     return o;
 }

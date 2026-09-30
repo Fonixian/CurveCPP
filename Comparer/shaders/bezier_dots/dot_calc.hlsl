@@ -18,7 +18,7 @@ cbuffer DotCapacity : register(b1)
     uint3 CapacityPadding;
 };
 
-StructuredBuffer<BezierCurveData> BezierData  : register(t0);
+StructuredBuffer<Indices>         CurveIndices : register(t0);
 StructuredBuffer<float>           Distances   : register(t1);
 StructuredBuffer<DotStyle>        DotStyles   : register(t3);
 // Exclusive scan of dot_ini's per-curve counts, with the grand total appended one slot past the
@@ -41,12 +41,14 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (dotCount == 0) return;
 
-    BezierCurveData bez            = BezierData[curveIndex];
-    uint            sampleStartIdx = (uint)bez.FirstIndex;
-    uint            sampleEndIdx   = (uint)bez.LastIndex;
-    float           worldSpacing   = DotStyles[curveIndex].spacing;
-    
-    float prevArcLength = Distances[BezierData[curveIndex].FirstIndex];
+    uint2 range          = CurveIndices[curveIndex].first_last;
+    uint  sampleStartIdx = range.x;
+    uint  sampleEndIdx   = range.y;
+    float worldSpacing   = DotStyles[curveIndex].spacing;
+
+    // Chain-global arc length at this curve's first sample - the scan only restarts at a chain start,
+    // so dots continue their grid across merged curves. See dot_ini.
+    float prevArcLength = Distances[sampleStartIdx];
 
     uint base_index = (prevArcLength > 0.0 && worldSpacing > 0.0)
         ? (uint) floor(prevArcLength / worldSpacing) + 1u

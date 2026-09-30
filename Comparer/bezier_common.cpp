@@ -262,6 +262,18 @@ void BezierCurve::Remove() {
 	renderer = nullptr;
 }
 
+uint64_t PatternCenterBound(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOAT3& p2, const XMFLOAT3& p3, float spacing) {
+	if (!(spacing > 0.f)) return 0;
+
+	const float polygon =
+		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p1) - XMLoadFloat3(&p0))) +
+		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p2) - XMLoadFloat3(&p1))) +
+		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p3) - XMLoadFloat3(&p2)));
+
+	const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(spacing)) + 1.0;
+	return static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
+}
+
 bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
 	const XMVECTOR va = XMLoadFloat3(&a), vb = XMLoadFloat3(&b);
 	const float scale = std::max(1.0f, XMVectorGetX(XMVectorMax(XMVector3Length(va), XMVector3Length(vb))));
@@ -404,15 +416,7 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 		// The control polygon bounds the arc length, which bounds the chord sum the point pass
 		// measures, so this can only ever over-count. See PatternBound() in bezier_common.h - this
 		// loop already has the cubic form in hand, which is why the bound is computed here.
-		if (bez.spacing > 0.f) {
-			const float polygon =
-				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p1) - XMLoadFloat3(&p0))) +
-				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p2) - XMLoadFloat3(&p1))) +
-				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p3) - XMLoadFloat3(&p2)));
-
-			const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(bez.spacing)) + 1.0;
-			bound += static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
-		}
+		bound += PatternCenterBound(p0, p1, p2, p3, bez.spacing);
 
 		// A merged curve starts ON the previous curve's last sample - see AllocateBuffers.
 		const int32_t first = chain_start ? current : current - 1;

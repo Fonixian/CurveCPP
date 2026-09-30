@@ -31,8 +31,15 @@
 // never comes back to the CPU at all: dot_args writes it straight into a DrawInstancedIndirect
 // argument buffer on the GPU. Nothing mirrors it back to the CPU either - the exact count is a
 // diagnostic neither this renderer nor the patterned one pays for any more.
+//
+// Curve data is BezierSplitRendererBase's split upload, like the line and solid renderers: control
+// points (K0..K3), colours and sample ranges in three buffers, each re-sent only when its part
+// changes, plus one DotStyle (width_capcap + spacing) per curve re-sent only when a style setter
+// fired. None of the solid renderer's merged-joint handling is needed here: a dot's two bracketing
+// samples always belong to one curve, so the draw binds no curve_begins and no index map. The point
+// pass still reads the index map, which is what hands a joint sample to the curve leaving it.
 
-class BezierDotRenderer : public BezierRendererBase {
+class BezierDotRenderer : public BezierSplitRendererBase {
 public:
 	explicit BezierDotRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
@@ -41,14 +48,18 @@ public:
 	uint32_t PatternCapacity() const override { return dots_allocated; }
 
 protected:
-	// dot_vert evaluates the two samples bracketing each dot straight from the control points, so
-	// nothing in this renderer reads a stored sample position or colour. See dot_calc_points.hlsl.
-	bool NeedsCalculatedPoints() const override { return false; }
+	// NeedsCalculatedPoints / NeedsBezierData are false through BezierSplitRendererBase: dot_vert
+	// evaluates the two samples bracketing each dot straight from the control points, so nothing in
+	// this renderer reads a stored sample position or colour. See dot_calc_points.hlsl.
 
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
+	// The base upload, plus the two things the dot passes need on top of it: the CPU-side
+	// pattern bound (the split base does not compute it) and need_recount - raised only when
+	// something the dot count depends on changed, so a colour-only change no longer recounts.
+	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
 
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
@@ -56,9 +67,24 @@ private:
 	void CountDots(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunDotPlacementPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
-	// Set whenever the curve data changed, so the dot count is recomputed once rather than every
-	// frame - the count depends on world arc length only, which the camera does not move.
+	// Set whenever positions, sample layout or styles changed, so the dot count is recomputed once
+	// rather than every frame - the count depends on world arc length and spacing only, which the
+	// camera does not move. Colours never raise it. See UploadCurves.
 	bool need_recount = false;
+
+	// PatternBound() over the live curves, from the cubic control polygons and spacings.
+	void UpdatePatternBound();
+
+	// Matches DotStyle in dot_common.hlsli: width << 24 | cap_front << 16 | cap_back << 8, then the
+	// spacing. The caps sit where the solid renderer's CapCapJoin keeps them; the width takes the top
+	// byte, so it is rounded to a WHOLE pixel and clamped to [0, 255], like the solid renderer's.
+	struct UploadDotStyle {
+		uint32_t width_capcap;
+		float    spacing;
+	};
+	static_assert(sizeof(UploadDotStyle) == 8, "UploadDotStyle must match DotStyle in the shaders");
+
+	std::vector<UploadDotStyle> style_scratch;
 
 	uint32_t dots_allocated = 0;
 

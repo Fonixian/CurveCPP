@@ -141,6 +141,11 @@ void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3&
 void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
 	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
 
+// One curve's share of PatternBound(): floor(control polygon / spacing) + 1, clamped to
+// maxPatternCount, or 0 when spacing <= 0. Takes the CUBIC control points (ToCubic's output), since
+// the polygon of a raised curve is what bounds the arc length the point pass measures.
+uint64_t PatternCenterBound(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3, float spacing);
+
 // Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scene
 // scale; only used by the merge asserts in the curve uploads.
 bool EndpointsMeet(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b);
@@ -389,7 +394,7 @@ public:
 	inline void Merged(bool value) { if (data().merge_with_previous != value) { data().merge_with_previous = value; touch_layout(); } }
 };
 
-// The per-curve upload shared by the line and solid renderers. Instead of one 80-byte UploadBezierData
+// The per-curve upload shared by the line, solid and dot renderers. Instead of one 80-byte UploadBezierData
 // re-sent on any change, the curve data is split by how often it changes into three buffers, each
 // re-uploaded only when its part is dirty (see CurveDirtyBits):
 //
@@ -423,7 +428,8 @@ protected:
 	};
 	static_assert(sizeof(SplitIndices) == 8, "SplitIndices must match Indices in the shaders");
 
-	// Neither renderer has a point pass, and neither reads bezier_data.
+	// None of them reads bezier_data, and none keeps per-sample positions (the dots' point pass
+	// measures chord lengths and drops the positions).
 	bool NeedsCalculatedPoints() const override { return false; }
 	bool NeedsBezierData() const override { return false; }
 
@@ -431,6 +437,7 @@ protected:
 	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
 
 	// Whether the three buffers exist yet - the Draw() early-out test in place of `!bezier_data`.
+	// A derived renderer that also overrides AllocateCurveBuffers must call this class's version.
 	bool HasCurveData() const { return curve_control_points != nullptr; }
 	void BindCurveData(Axodox::Graphics::GraphicsDeviceContext* context,
 		uint32_t control_point_slot, uint32_t color_slot, uint32_t index_slot);
