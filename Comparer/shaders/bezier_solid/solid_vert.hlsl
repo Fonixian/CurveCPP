@@ -34,6 +34,13 @@ Cubic LoadCubic(uint curveIndex) {
     return c;
 }
 
+// A curve's K0 alone - its exact start point, P(0). At a merged joint this is what BOTH segments meeting
+// there use for the shared sample: P(1) = K0 + K1 + K2 + K3 of the curve that ends there is only equal
+// to it up to a few ulps, and two different spellings of one corner would let the strips crack.
+float3 LoadK0(uint curveIndex) {
+    return control_points[curveIndex << 2u];
+}
+
 // Horner: P(t) = K0 + t * (K1 + t * (K2 + t * K3)) - three fused multiply-adds per component.
 float3 EvaluateBezier(Cubic c, float t) {
     return mad(mad(mad(c.k3, t, c.k2), t, c.k1), t, c.k0);
@@ -114,7 +121,6 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const uint pointCount = TotalPointCount;
 
     const bool nearSide = index < 2u;
-    const uint ni = nearSide ? (i - 1u) : (i + 2u);
     
     const uint wordBase = i >> 5u;
     const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
@@ -122,40 +128,66 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
     const bool hasN = nearSide ? hasA : hasD;
     
-    // Every sample is evaluated by the curve that OWNS it in BezierIndexMap, exactly as the point pass
-    // did. That matters at a merged joint: the shared sample belongs to the LATER curve, so both
-    // segments meeting there evaluate it with the same coefficients and the same t (0) and get the
-    // same bits - evaluating C with segment i's curve at t = 1 instead would be the same point only
-    // up to rounding, and the chain could crack by a hair.
-    //
-    // The neighbour is simply the adjacent sample. A merged chain shares ONE sample at each joint
-    // (bezier_common.cpp lays it out that way), so there is no duplicated point to step over - the
-    // begin bits alone say where a stroke ends. When !hasN, ni may be out of range (i - 1 wraps at
-    // i == 0); D3D11 returns 0 for out-of-bounds structured reads and the result is discarded below.
-    //
-    // B, C and the neighbour almost always belong to the same curve - they differ only across a
-    // merged joint (and at a chain end, where the neighbour is unused) - so the other two curves'
-    // coefficients and sample ranges are fetched only when their owner actually differs from B's.
-    // The neighbour needs no colour, so only B's and C's colours are read.
-    const uint curveB = BezierIndexMap[i];
-    const uint curveC = BezierIndexMap[i + 1u];
-    const uint curveN = BezierIndexMap[ni];
-    const Cubic cubicB = LoadCubic(curveB);
-    const uint2 rangeB = indices[curveB].first_last;
-    Cubic cubicC = cubicB, cubicN = cubicB;
-    uint2 rangeC = rangeB, rangeN = rangeB;
-    [branch] if (curveC != curveB) { cubicC = LoadCubic(curveC); rangeC = indices[curveC].first_last; }
-    [branch] if (hasN && curveN != curveB) { cubicN = LoadCubic(curveN); rangeN = indices[curveN].first_last; }
-
-    const float tB = SampleT(rangeB, i);
-    const float tC = SampleT(rangeC, i + 1u);
-    const float3 rawB = EvaluateBezier(cubicB, tB);
-    const float3 rawC = EvaluateBezier(cubicC, tC);
-    const float3 rawN = hasN ? EvaluateBezier(cubicN, SampleT(rangeN, ni)) : 0.0/0.0;
-
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
         return o;
+    }
+
+    // Segment [i, i + 1] belongs to ONE curve, S = the owner of sample i, and S evaluates B and C over
+    // its own t in [0, 1]. Only one index-map lookup: across a merged joint the other curve is simply
+    // S - 1 or S + 1, because a chain is a run of consecutive curves (see merge_with_previous).
+    //
+    // The joint rule keeps merged chains watertight: a sample that is the LAST of one curve and the
+    // FIRST of the next merged one is always the next curve's K0, never S's P(1) - so the two segments
+    // meeting there, and the neighbours that look across it, all see the same bits. Everything below
+    // gives exactly the values the old "evaluate every sample with its owning curve" code did; only
+    // the lookups changed.
+    //
+    //   atEnd       C is S's last sample
+    //   nextMerged  ... and the chain goes on into S + 1 (i + 2 is in it), so C is S + 1's K0
+    //   atStart     B is S's first sample - with hasA, S - 1 is merged into S and holds the neighbour
+    const uint curveB = BezierIndexMap[i];
+    const Cubic cubicB = LoadCubic(curveB);
+    const uint2 rangeB = indices[curveB].first_last;
+
+    const bool atStart = i == rangeB.x;
+    const bool atEnd = (i + 1u) == rangeB.y;
+    const bool nextMerged = atEnd && hasD;
+
+    const float tB = SampleT(rangeB, i);
+    const float tC = SampleT(rangeB, i + 1u);
+    const float3 rawB = EvaluateBezier(cubicB, tB);
+    //float3 rawC;
+    //[branch] if (nextMerged) rawC = LoadK0(curveB + 1u);
+    //else rawC = EvaluateBezier(cubicB, tC);
+    float3 rawC = EvaluateBezier(cubicB, tC);
+
+    // The neighbour: at most ONE other curve's coefficients, and only on the side that crosses a joint.
+    // Its t is that curve's own SampleT - on the previous curve (n - 1) / n, on the next one 1 / n - so
+    // it lands on the same bits as the segment on the other side of the joint computes for that sample.
+    // When !hasN it is never used (A falls back to C below).
+    float3 rawN = 0.0 / 0.0;
+    [branch] if (hasN) {
+        if (nearSide) {
+            // i - 1: in S, or - when B is S's first sample - the previous curve's second-to-last.
+            [branch] if (atStart) {
+                const uint2 rangeP = indices[curveB - 1u].first_last;
+                rawN = EvaluateBezier(LoadCubic(curveB - 1u), SampleT(rangeP, i - 1u));
+            }
+            else rawN = EvaluateBezier(cubicB, SampleT(rangeB, i - 1u));
+        }
+        else {
+            // i + 2: in S, in S + 1 (when C is S's last), and possibly itself a joint - then it is the
+            // following curve's K0, by the same rule as C. "The chain goes on past i + 2" is its begin bit.
+            const bool pastD = (i + 3u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 3u);
+            [branch] if (nextMerged) {
+                const uint2 rangeNext = indices[curveB + 1u].first_last;
+                [branch] if ((i + 2u) == rangeNext.y && pastD) rawN = LoadK0(curveB + 2u);
+                else rawN = EvaluateBezier(LoadCubic(curveB + 1u), SampleT(rangeNext, i + 2u));
+            }
+            else [branch] if ((i + 2u) == rangeB.y && pastD) rawN = LoadK0(curveB + 1u);
+            else rawN = EvaluateBezier(cubicB, SampleT(rangeB, i + 2u));
+        }
     }
 
     float4 B4 = mul(float4(rawB, 1.0), VP);
@@ -187,11 +219,13 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const uint style = CurveStyles[curveB].width_capcapjoin;
     const float width_pixel = StyleWidth(style);
 
+    // C's colour, like its position, is the next curve's at a merged joint: its colours at t = 0.
     const uint4 colorB = colors[curveB].c0_c1_height0_height1;
     uint4 colorC = colorB;
-    [branch] if (curveC != curveB) colorC = colors[curveC].c0_c1_height0_height1;
+    float tColorC = tC;
+    [branch] if (nextMerged) { colorC = colors[curveB + 1u].c0_c1_height0_height1; tColorC = 0.0; }
     const float3 cB = SampleColor(colorB, rawB.y, tB);
-    const float3 cC = SampleColor(colorC, rawC.y, tC);
+    const float3 cC = SampleColor(colorC, rawC.y, tColorC);
     o.Color = float4(lerp(cB, cC, nearSide ? t0 : t1), 1.0);
     o.CapCapJoin = style; // the width byte on top is ignored by FrontCap/BackCap/Join
     o.Neighbors = uint2(hasA ? 1u : 0u, hasD ? 1u : 0u);
