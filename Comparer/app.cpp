@@ -426,10 +426,12 @@ SDL_AppResult App::Init()
 	patterned_renderer = std::make_unique<BezierRenderer>(*device);
 	solid_renderer = std::make_unique<BezierSolidRenderer>(*device);
 	dot_renderer = std::make_unique<BezierDotRenderer>(*device);
+	line_renderer = std::make_unique<BezierLineRenderer>(*device);
 
 	patterned_renderer->SetViewport(viewport_width, viewport_height);
 	solid_renderer->SetViewport(viewport_width, viewport_height);
 	dot_renderer->SetViewport(viewport_width, viewport_height);
+	line_renderer->SetViewport(viewport_width, viewport_height);
 
 	// Initial offsets here only need to be valid enough for BuildScene()'s local coordinates to stay
 	// inside their box; Update() recomputes the real layout (which depends on which renderers are
@@ -437,13 +439,16 @@ SDL_AppResult App::Init()
 	BuildScene(*patterned_renderer, patterned_scene, -compare_offset);
 	BuildScene(*solid_renderer, solid_scene, 0.0f);
 	BuildScene(*dot_renderer, dot_scene, compare_offset);
+	BuildScene(*line_renderer, line_scene, 2.0f * compare_offset);
 
 	PoseScene(patterned_scene);
 	PoseScene(solid_scene);
 	PoseScene(dot_scene);
+	PoseScene(line_scene);
 	ApplyStyle(patterned_scene);
 	ApplyStyle(solid_scene);
 	ApplyStyle(dot_scene, true);
+	ApplyStyle(line_scene);
 
 	return SDL_APP_CONTINUE;
 }
@@ -465,12 +470,12 @@ void App::Update(float delta)
 	// solid / dots, centred on the origin. A hidden renderer's offset doesn't matter - it is never
 	// drawn - but its scene is still kept current below, same as before.
 	{
-		const bool visible[3] = { draw_patterned, draw_solid, draw_dots };
-		const int visible_count = int(draw_patterned) + int(draw_solid) + int(draw_dots);
+		const bool visible[4] = { draw_patterned, draw_solid, draw_dots, draw_lines };
+		const int visible_count = int(draw_patterned) + int(draw_solid) + int(draw_dots) + int(draw_lines);
 
-		float offsets[3] = { 0.0f, 0.0f, 0.0f };
+		float offsets[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 		int slot = 0;
-		for (int i = 0; i < 3; ++i)
+		for (int i = 0; i < 4; ++i)
 		{
 			if (!visible[i]) continue;
 			offsets[i] = visible_count > 1 ? (float(slot) - (visible_count - 1) * 0.5f) * compare_offset : 0.0f;
@@ -479,8 +484,8 @@ void App::Update(float delta)
 
 		// A moved column has to be re-posed even while paused, otherwise the curves stay behind at the
 		// old offset - so ticking a renderer or dragging the comparison gap counts as a scene change.
-		Scene* scenes[3] = { &patterned_scene, &solid_scene, &dot_scene };
-		for (int i = 0; i < 3; ++i)
+		Scene* scenes[4] = { &patterned_scene, &solid_scene, &dot_scene, &line_scene };
+		for (int i = 0; i < 4; ++i)
 		{
 			if (scenes[i]->x_offset == offsets[i]) continue;
 			scenes[i]->x_offset = offsets[i];
@@ -500,6 +505,7 @@ void App::Update(float delta)
 		PoseScene(patterned_scene);
 		PoseScene(solid_scene);
 		PoseScene(dot_scene);
+		PoseScene(line_scene);
 	}
 
 	if (style_dirty)
@@ -507,6 +513,7 @@ void App::Update(float delta)
 		ApplyStyle(patterned_scene);
 		ApplyStyle(solid_scene);
 		ApplyStyle(dot_scene, true);
+		ApplyStyle(line_scene);
 		style_dirty = false;
 	}
 }
@@ -531,16 +538,19 @@ void App::Gui()
 		ImGui::Checkbox("Solid", &draw_solid);
 		ImGui::SameLine();
 		ImGui::Checkbox("Dots", &draw_dots);
+		ImGui::SameLine();
+		ImGui::Checkbox("Lines", &draw_lines);
 
 		// Not "each" any more - the Test screen adds to one renderer at a time, so the three counts
 		// are allowed to differ and it matters which is which.
-		ImGui::TextDisabled("curves: %u / %u / %u  (%u total)",
+		ImGui::TextDisabled("curves: %u / %u / %u / %u  (%u total)",
 			unsigned(patterned_renderer->Count()),
 			unsigned(solid_renderer->Count()),
 			unsigned(dot_renderer->Count()),
-			unsigned(patterned_renderer->Count() + solid_renderer->Count() + dot_renderer->Count()));
+			unsigned(line_renderer->Count()),
+			unsigned(patterned_renderer->Count() + solid_renderer->Count() + dot_renderer->Count() + line_renderer->Count()));
 
-		const int visible_renderer_count = int(draw_patterned) + int(draw_solid) + int(draw_dots);
+		const int visible_renderer_count = int(draw_patterned) + int(draw_solid) + int(draw_dots) + int(draw_lines);
 		ImGui::BeginDisabled(visible_renderer_count <= 1);
 		ImGui::SliderFloat("Comparison gap", &compare_offset, 0.0f, 14.0f, "%.1f world units");
 		ImGui::EndDisabled();
@@ -573,12 +583,13 @@ void App::Gui()
 void App::ExampleGui()
 {
 	ImGui::TextWrapped(
-		"Left to right (whichever are ticked): Patterned, Solid, Dots. BezierSolidRenderer draws "
+		"Left to right (whichever are ticked): Patterned, Solid, Dots, Lines. BezierSolidRenderer draws "
 		"every curve solid - it has no pattern pipeline at all - so untick \"Patterned\" and those "
 		"two should look identical; any difference in cost between them is the price of the pattern "
 		"pipeline. BezierDotRenderer always draws only dots: it ignores dash length and the "
 		"\"Patterned\" checkbox entirely and places each one from its own position + direction "
-		"rather than a shared line strip - see the Pattern section below.");
+		"rather than a shared line strip - see the Pattern section below. BezierLineRenderer draws a "
+		"plain line strip widened to the stroke width: colour and width only, no caps, joins or pattern.");
 
 	StyleGui();
 
@@ -643,10 +654,13 @@ void App::TestGui()
 	ImGui::SameLine();
 	if (ImGui::Button("Add to Dots"))
 		AddTestCurves(*dot_renderer, dot_scene, true);
+	ImGui::SameLine();
+	if (ImGui::Button("Add to Lines"))
+		AddTestCurves(*line_renderer, line_scene, false);
 
 	// Rewinding the generator between the three calls makes them the SAME curves rather than three
 	// independent batches, which is the only way the three columns stay a like-for-like comparison.
-	if (ImGui::Button("Add to all three (identical curves)"))
+	if (ImGui::Button("Add to all four (identical curves)"))
 	{
 		const std::mt19937 batch_start = test_rng;
 		AddTestCurves(*patterned_renderer, patterned_scene, false);
@@ -654,6 +668,8 @@ void App::TestGui()
 		AddTestCurves(*solid_renderer, solid_scene, false);
 		test_rng = batch_start;
 		AddTestCurves(*dot_renderer, dot_scene, true);
+		test_rng = batch_start;
+		AddTestCurves(*line_renderer, line_scene, false);
 	}
 
 	// Removal goes through the handles: erasing a TestCurve destroys its BezierCurve, which takes the
@@ -676,12 +692,18 @@ void App::TestGui()
 	if (ImGui::Button("Last batch: Dots"))
 		RemoveTestCurves(dot_scene, batch);
 	ImGui::EndDisabled();
+	ImGui::SameLine();
+	ImGui::BeginDisabled(line_scene.test_curves.empty());
+	if (ImGui::Button("Last batch: Lines"))
+		RemoveTestCurves(line_scene, batch);
+	ImGui::EndDisabled();
 
-	if (ImGui::Button("Last batch from all three"))
+	if (ImGui::Button("Last batch from all four"))
 	{
 		RemoveTestCurves(patterned_scene, batch);
 		RemoveTestCurves(solid_scene, batch);
 		RemoveTestCurves(dot_scene, batch);
+		RemoveTestCurves(line_scene, batch);
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Remove all test curves"))
@@ -689,6 +711,7 @@ void App::TestGui()
 		RemoveTestCurves(patterned_scene, patterned_scene.test_curves.size());
 		RemoveTestCurves(solid_scene, solid_scene.test_curves.size());
 		RemoveTestCurves(dot_scene, dot_scene.test_curves.size());
+		RemoveTestCurves(line_scene, line_scene.test_curves.size());
 	}
 
 	ImGui::SeparatorText("In the scene");
@@ -705,19 +728,19 @@ void App::TestGui()
 	constexpr ImGuiTableFlags table_flags =
 		ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 
-	if (ImGui::BeginTable("test_counts", 4, table_flags))
+	if (ImGui::BeginTable("test_counts", 5, table_flags))
 	{
-		const Scene* scenes[3] = { &patterned_scene, &solid_scene, &dot_scene };
-		const char* names[3] = { "Patterned", "Solid", "Dots" };
+		const Scene* scenes[4] = { &patterned_scene, &solid_scene, &dot_scene, &line_scene };
+		const char* names[4] = { "Patterned", "Solid", "Dots", "Lines" };
 
 		ImGui::TableSetupColumn("");
-		for (int i = 0; i < 3; i++) ImGui::TableSetupColumn(names[i]);
+		for (int i = 0; i < 4; i++) ImGui::TableSetupColumn(names[i]);
 		ImGui::TableHeadersRow();
 
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("test curves");
-		for (int i = 0; i < 3; i++)
+		for (int i = 0; i < 4; i++)
 		{
 			ImGui::TableNextColumn();
 			ImGui::Text("%u", unsigned(scenes[i]->test_curves.size()));
@@ -726,7 +749,7 @@ void App::TestGui()
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("their points");
-		for (int i = 0; i < 3; i++)
+		for (int i = 0; i < 4; i++)
 		{
 			ImGui::TableNextColumn();
 			ImGui::Text("%u", unsigned(sample_points(*scenes[i])));
@@ -835,10 +858,10 @@ void App::ProfilerGui()
 		{ "total gpu", "total",   false },
 	};
 
-	BezierRendererBase* renderers[] = { patterned_renderer.get(), solid_renderer.get(), dot_renderer.get() };
-	const char* renderer_names[] = { "Patterned", "Solid", "Dots" };
-	const bool renderer_visible[] = { draw_patterned, draw_solid, draw_dots };
-	constexpr int renderer_count = 3;
+	BezierRendererBase* renderers[] = { patterned_renderer.get(), solid_renderer.get(), dot_renderer.get(), line_renderer.get() };
+	const char* renderer_names[] = { "Patterned", "Solid", "Dots", "Lines" };
+	const bool renderer_visible[] = { draw_patterned, draw_solid, draw_dots, draw_lines };
+	constexpr int renderer_count = 4;
 
 	ImGui::SetNextWindowPos(ImVec2(380, 10), ImGuiCond_FirstUseEver);
 	ImGui::SetNextWindowSize(ImVec2(400, 250), ImGuiCond_FirstUseEver);
@@ -964,6 +987,7 @@ void App::Render()
 	if (draw_patterned) patterned_renderer->Draw(*device, view_proj);
 	if (draw_solid) solid_renderer->Draw(*device, view_proj);
 	if (draw_dots) dot_renderer->Draw(*device, view_proj);
+	if (draw_lines) line_renderer->Draw(*device, view_proj);
 }
 
 SDL_AppResult App::Iterate(float delta)
@@ -1013,6 +1037,7 @@ SDL_AppResult App::Event(const SDL_Event& Event)
 		patterned_renderer->SetViewport(viewport_width, viewport_height);
 		solid_renderer->SetViewport(viewport_width, viewport_height);
 		dot_renderer->SetViewport(viewport_width, viewport_height);
+		line_renderer->SetViewport(viewport_width, viewport_height);
 		swapchain->Resize();
 		depth = std::make_unique<DepthStencil2D>(*device, Texture2DDefinition{
 			uint32_t(viewport_width), uint32_t(viewport_height),
