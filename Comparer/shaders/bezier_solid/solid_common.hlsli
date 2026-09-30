@@ -20,13 +20,13 @@ struct BezierCurveData {
 //struct BezierData {
 //    uint4 c0_c1_heights_width;
 //};
-StructuredBuffer<float3> control_points;
-struct ColorData {
-    uint4 c0_c1_height0_height1;
-};
-struct Indices {
-    uint2 first_last;
-};
+//StructuredBuffer<float3> control_points;
+//struct ColorData {
+//    uint4 c0_c1_height0_height1;
+//};
+//struct Indices {
+//    uint2 first_last;
+//};
 
 
 

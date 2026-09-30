@@ -16,13 +16,9 @@ struct BezierCurveData {
     int    ChainLastIndex;
 };
 
+// Straight from the vertex shader to the rasteriser: there is no geometry stage, so the line is the
+// hardware's own 1px LINELIST primitive and this is also the pixel shader's input.
 struct LineVSOutput {
-    float4 Position : SV_Position;
-    float3 Color : COLOR0;
-    nointerpolation float4 Style : TEXCOORD0;
-};
-
-struct LinePSInput {
     float4 Position : SV_Position;
     float3 Color : COLOR0;
 };

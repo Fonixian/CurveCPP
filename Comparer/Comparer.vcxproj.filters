@@ -184,9 +184,6 @@
     <FxCompile Include="shaders\bezier_line\line_vert.hlsl">
       <Filter>shaders\bezier line</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_line\line_geom.hlsl">
-      <Filter>shaders\bezier line</Filter>
-    </FxCompile>
     <FxCompile Include="shaders\bezier_line\line_ps.hlsl">
       <Filter>shaders\bezier line</Filter>
     </FxCompile>

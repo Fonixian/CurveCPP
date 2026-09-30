@@ -356,7 +356,9 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 	pattern_upper_bound = 0;
 
-	if (curves.empty() || !bezier_data || !curve_styles) return;
+	// Not gated on curve_styles: BezierLineRenderer has none. Every renderer that does have one
+	// allocates it in AllocateStyleBuffer(), right next to bezier_data, so the two exist together.
+	if (curves.empty() || !bezier_data) return;
 
 	std::vector<UploadBezierData> upload_data;
 	upload_data.reserve(curves.size());
