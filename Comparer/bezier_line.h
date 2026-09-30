@@ -6,9 +6,11 @@
 // buffer and no `bezier_data`: the per-curve data is split by how often it changes, into three buffers
 // that are re-uploaded independently (see UploadCurves):
 //
-//   curve_control_points   4 x float3 per curve, K0..K3   (48 B)  when a curve is re-posed
+//   curve_control_points   the control points as given, NOT raised to cubic and NOT in monomial form:
+//                          power + 1 float3 per curve (24 / 36 / 48 B)   when a curve is re-posed
 //   curve_colors           LineColorData                  (16 B)  when colours / height band change
-//   curve_indices          LineIndices                    ( 8 B)  only when the layout changes
+//   curve_indices          LineIndices                    (16 B)  on a layout change, or a re-pose
+//                                                                 that changes some curve's degree
 //
 // against 80 B of UploadBezierData re-sent on ANY change in the other renderers. Style setters
 // (Width, Cap, ...) upload nothing here - the line reads no style.
@@ -38,12 +40,16 @@ private:
 	};
 	static_assert(sizeof(LineColorData) == 16, "LineColorData must match ColorData in line_common.hlsli");
 
-	// Matches Indices in line_common.hlsli: uint2 first_last, the curve's first and last sample index.
+	// Matches Indices in line_common.hlsli: uint4 first_last_first_bez_last_bez - the curve's first and
+	// last SAMPLE index (inclusive), then its control-point range in curve_control_points as
+	// [first_bez, end_bez) - END EXCLUSIVE, so end_bez - first_bez = power + 1.
 	struct LineIndices {
 		uint32_t first_index;
 		uint32_t last_index;
+		uint32_t first_bez;
+		uint32_t end_bez;
 	};
-	static_assert(sizeof(LineIndices) == 8, "LineIndices must match Indices in line_common.hlsli");
+	static_assert(sizeof(LineIndices) == 16, "LineIndices must match Indices in line_common.hlsli");
 
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_control_points; // t3
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_colors;         // t5
@@ -53,4 +59,6 @@ private:
 	std::vector<DirectX::XMFLOAT3> control_point_scratch;
 	std::vector<LineColorData>     color_scratch;
 	std::vector<LineIndices>       index_scratch;
+	// Degree of each curve as last uploaded - a position upload that sees one change re-sends the indices.
+	std::vector<uint8_t>           uploaded_powers;
 };

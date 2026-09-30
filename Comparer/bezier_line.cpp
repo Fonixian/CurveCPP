@@ -15,6 +15,9 @@ BezierLineRenderer::BezierLineRenderer(const GraphicsDevice& device)
 	});
 }
 
+// Control points are stored in their NATIVE degree - 2, 3 or 4 per curve - so the live prefix of
+// curve_control_points is sum(power + 1) entries. It is allocated for the worst case, 4 per curve, so
+// a degree change never has to reallocate (UploadCurves has no device); only the upload shrinks.
 void BezierLineRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
 	curve_control_points.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT3>(curves_required * 4u)));
 	curve_colors.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<LineColorData>(curves_required)));
@@ -28,21 +31,35 @@ void BezierLineRenderer::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 	if (curves.empty() || !curve_control_points) return;
 
 	if (parts & DirtyPositions) {
-		control_point_scratch.resize(curves.size() * 4u);
+		control_point_scratch.clear();
 
-		[[maybe_unused]] XMFLOAT3 previous_end = {}; // P3 of the curve before, for the shared-endpoint check
+		// Where each curve's control points land depends on the degrees of every curve before it, so a
+		// re-pose that changes any degree moves the control-point ranges and the indices must follow.
+		bool degrees_changed = uploaded_powers.size() != curves.size();
+		uploaded_powers.resize(curves.size());
+
+		[[maybe_unused]] XMFLOAT3 previous_end = {}; // last control point of the curve before, for the shared-endpoint check
 		for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
-			XMFLOAT3 p0, p1, p2, p3;
-			ToCubic(curves[curveIndex], p0, p1, p2, p3);
+			const BezierData& bez = curves[curveIndex];
+			const int power = bez.power();
+			assert(power >= 1 && power <= 3);
 
-			assert((IsChainStart(curveIndex) || EndpointsMeet(previous_end, p0)) &&
+			const XMFLOAT3* points[4] = { &bez.P0, &bez.P1, &bez.P2, &bez.P3 };
+			for (int k = 0; k <= power; ++k)
+				control_point_scratch.push_back(*points[k]);
+
+			assert((IsChainStart(curveIndex) || EndpointsMeet(previous_end, bez.P0)) &&
 				"merge_with_previous on a curve that does not start where the previous one ends");
-			previous_end = p3;
+			previous_end = *points[power];
 
-			XMFLOAT3* k = &control_point_scratch[curveIndex * 4u];
-			ToPowerBasis(p0, p1, p2, p3, k[0], k[1], k[2], k[3]);
+			if (uploaded_powers[curveIndex] != power) {
+				uploaded_powers[curveIndex] = static_cast<uint8_t>(power);
+				degrees_changed = true;
+			}
 		}
 		curve_control_points->Upload(std::span<const XMFLOAT3>{ control_point_scratch }, context);
+
+		if (degrees_changed) parts |= DirtyLayout;
 	}
 
 	if (parts & DirtyColors) {
@@ -57,16 +74,23 @@ void BezierLineRenderer::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 		curve_colors->Upload(std::span<const LineColorData>{ color_scratch }, context);
 	}
 
-	// Same sample ranges UploadCurveData writes into first_index / last_index: a merged curve starts ON
-	// the previous curve's last sample (see BezierData::merge_with_previous).
+	// Sample ranges: the same first_index / last_index UploadCurveData writes - a merged curve starts ON
+	// the previous curve's last sample (see BezierData::merge_with_previous). Control-point ranges: the
+	// running offset into curve_control_points, END EXCLUSIVE, so end - begin = power + 1 = the point
+	// count Eval() in line_vert.hlsl loops over. Both are rebuilt together; they only move on a layout
+	// change or a degree change.
 	if (parts & DirtyLayout) {
 		index_scratch.resize(curves.size());
 		uint32_t current = 0;
+		uint32_t control_point = 0;
 		for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
+			const BezierData& bez = curves[curveIndex];
 			const uint32_t first = IsChainStart(curveIndex) ? current : current - 1u;
-			const uint32_t last = first + curves[curveIndex].resolution - 1u;
-			index_scratch[curveIndex] = LineIndices{ first, last };
+			const uint32_t last = first + bez.resolution - 1u;
+			const uint32_t bez_end = control_point + static_cast<uint32_t>(bez.power()) + 1u;
+			index_scratch[curveIndex] = LineIndices{ first, last, control_point, bez_end };
 			current = last + 1u;
+			control_point = bez_end;
 		}
 		assert(current == total_points);
 		curve_indices->Upload(std::span<const LineIndices>{ index_scratch }, context);

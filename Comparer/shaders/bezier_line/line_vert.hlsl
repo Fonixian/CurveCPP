@@ -8,15 +8,24 @@ cbuffer CameraData : register(b1) {
 };
 
 StructuredBuffer<uint>      CurveBegins    : register(t1);
-StructuredBuffer<float3>    control_points : register(t3); // K0,K1,K2,K3; K0,K1,K2,K3; ...
+StructuredBuffer<float3>    control_points : register(t3); // native degree, packed: see Indices
 StructuredBuffer<uint>      BezierIndexMap : register(t4);
 StructuredBuffer<ColorData> colors         : register(t5);
 StructuredBuffer<Indices>   indices        : register(t6);
 
-float3 EvaluateBezier(uint curveIndex, float t) {
-    const uint k = curveIndex << 2u;
-    float3 cp0 = control_points[k], cp1 = control_points[k + 1], cp2 = control_points[k + 2], cp3 = control_points[k + 3];
-    return mad(mad(mad(cp3, t, cp2), t, cp1), t, cp0);
+// Bernstein form evaluated Horner-style, straight from the control points in [range.x, range.y):
+// x0 carries C(n, k) * t^k from one term to the next and every step multiplies what came before by
+// (1 - t), so after the last point value = sum C(n, k) (1-t)^(n-k) t^k P_k. Exact at both ends:
+// t = 0 leaves P0, and t = 1 zeroes every term but the last, whose weight is exactly 1.
+float3 Eval(float t, uint2 range) {
+    float3 value = control_points[range.x];
+    float x0 = 1.0;
+    const uint count = range.y - range.x; // degree + 1
+    for (uint k = 1u; k < count; ++k) {
+        x0 *= t * float(count - k) / float(k);
+        value = value * (1.0 - t) + x0 * control_points[range.x + k];
+    }
+    return value;
 }
 
 float3 SampleColor(uint4 color, float height, float t) {
@@ -49,9 +58,9 @@ LineVSOutput main(uint vertexId : SV_VertexID) {
 
     const uint sampleIndex = segment + (vertexId & 1u);
     const uint curveIndex = BezierIndexMap[sampleIndex];
-    const uint2 range = indices[curveIndex].first_last;
+    const uint4 range = indices[curveIndex].first_last_first_bez_last_bez;
     const float t = float(sampleIndex - range.x) / float(range.y - range.x);
-    const float3 p = EvaluateBezier(curveIndex, t);
+    const float3 p = Eval(t, range.zw);
 
     o.Position = mul(float4(p, 1.0), VP);
     o.Color = SampleColor(colors[curveIndex].c0_c1_height0_height1, p.y, t);
