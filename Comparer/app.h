@@ -5,6 +5,7 @@
 #include "bezier.h"
 #include "bezier_solid.h"
 #include "bezier_dots.h"
+#include "bezier_line.h"
 #include "catmull_rom.h"
 #include <vector>
 
@@ -18,7 +19,7 @@ private:
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> buffer_camera;
 
 	// All three renderers are alive at once and each owns its own copy of the same scene, drawn side
-	// by side: patterned, then solid, then dots. That is the point of this app - with the pattern set
+	// by side: patterned, then solid, then dots, then lines. That is the point of this app - with the pattern set
 	// to Solid the first two halves should be pixel-identical, and any difference in cost between them
 	// is the price of the pattern pipeline; the third is BezierDotRenderer, which draws only dot
 	// patterns via its own instanced-quad technique (see bezier_dots.h) rather than piggybacking dots
@@ -29,6 +30,7 @@ private:
 	std::unique_ptr<BezierRenderer> patterned_renderer;
 	std::unique_ptr<BezierSolidRenderer> solid_renderer;
 	std::unique_ptr<BezierDotRenderer> dot_renderer;
+	std::unique_ptr<BezierLineRenderer> line_renderer;
 
 	Camera camera;
 	OrbitalCamera orbital_manipulator;
@@ -84,6 +86,7 @@ private:
 	Scene patterned_scene;
 	Scene solid_scene;
 	Scene dot_scene;
+	Scene line_scene;
 
 	// --- screens -------------------------------------------------------------------
 	// Two tabs in the control window. Example is the hand-built demo scene; Test spawns random curves
@@ -116,6 +119,7 @@ private:
 	bool draw_patterned = true;
 	bool draw_solid = true;
 	bool draw_dots = true;
+	bool draw_lines = true;
 	// World-space gap between adjacent visible copies, evenly spaced and centred on the origin -
 	// see Update() for how 1, 2 or 3 visible copies are laid out.
 	float compare_offset = 7.0f;

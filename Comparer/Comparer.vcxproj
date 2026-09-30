@@ -155,6 +155,7 @@
     <ClCompile Include="bezier_common.cpp" />
     <ClCompile Include="bezier_dots.cpp" />
     <ClCompile Include="bezier_solid.cpp" />
+    <ClCompile Include="bezier_line.cpp" />
     <ClCompile Include="camera.cpp" />
     <ClCompile Include="catmull_rom.cpp" />
     <ClCompile Include="gpu_buffers.cpp" />
@@ -177,6 +178,7 @@
     <ClInclude Include="bezier_common.h" />
     <ClInclude Include="bezier_dots.h" />
     <ClInclude Include="bezier_solid.h" />
+    <ClInclude Include="bezier_line.h" />
     <ClInclude Include="camera.h" />
     <ClInclude Include="catmull_rom.h" />
     <ClInclude Include="gpu_buffers.h" />
@@ -190,6 +192,7 @@
   <ItemGroup>
     <None Include="shaders\bezier\curve_common.hlsli" />
     <None Include="shaders\bezier_solid\solid_common.hlsli" />
+    <None Include="shaders\bezier_line\line_common.hlsli" />
     <None Include="shaders\bezier_dots\dot_common.hlsli" />
     <None Include="shaders\segmented_scan_common.hlsli" />
     <None Include="shaders\paralell_scan_common.hlsli" />
@@ -227,6 +230,18 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
     </FxCompile>
     <FxCompile Include="shaders\bezier_solid\solid_ps.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_line\line_vert.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_line\line_ps.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>

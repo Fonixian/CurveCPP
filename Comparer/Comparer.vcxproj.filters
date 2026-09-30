@@ -28,6 +28,9 @@
     <Filter Include="shaders\bezier solid">
       <UniqueIdentifier>{2f7b8c31-5d46-4a72-b0e9-73c1a8f26d54}</UniqueIdentifier>
     </Filter>
+    <Filter Include="shaders\bezier line">
+      <UniqueIdentifier>{b4e1d7a2-6c3f-4a58-9e21-5d8f0c7a3e46}</UniqueIdentifier>
+    </Filter>
     <Filter Include="shaders\bezier dots">
       <UniqueIdentifier>{972c8bee-3769-4f18-aa3b-ee8c0664fc09}</UniqueIdentifier>
     </Filter>
@@ -69,6 +72,9 @@
     <ClCompile Include="bezier_solid.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="bezier_line.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="bezier_dots.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -107,6 +113,9 @@
     <ClInclude Include="bezier_solid.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="bezier_line.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="bezier_common.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -130,6 +139,9 @@
     </None>
     <None Include="shaders\bezier_solid\solid_common.hlsli">
       <Filter>shaders\bezier solid</Filter>
+    </None>
+    <None Include="shaders\bezier_line\line_common.hlsli">
+      <Filter>shaders\bezier line</Filter>
     </None>
     <None Include="shaders\bezier_dots\dot_common.hlsli">
       <Filter>shaders\bezier dots</Filter>
@@ -168,6 +180,12 @@
     </FxCompile>
     <FxCompile Include="shaders\bezier_solid\solid_ps.hlsl">
       <Filter>shaders\bezier solid</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_line\line_vert.hlsl">
+      <Filter>shaders\bezier line</Filter>
+    </FxCompile>
+    <FxCompile Include="shaders\bezier_line\line_ps.hlsl">
+      <Filter>shaders\bezier line</Filter>
     </FxCompile>
     <FxCompile Include="shaders\bezier_dots\dot_calc_points.hlsl">
       <Filter>shaders\bezier dots</Filter>

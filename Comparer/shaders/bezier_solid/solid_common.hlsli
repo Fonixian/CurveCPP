@@ -2,20 +2,33 @@
 #define SOLID_COMMON_HLSLI
 
 struct BezierCurveData {
-    float3 K0;
+    float3 K0; //
     int    FirstIndex;
-    float3 K1;
+    float3 K1; //
     int    LastIndex;
-    float3 K2;
-    uint   ColorBegin;
-    float3 K3;
-    uint   ColorEnd;
-    float  MinHeight;
-    float  MaxHeight;
+    float3 K2; //
+    uint ColorBegin; //
+    float3 K3; //
+    uint ColorEnd; //
+    float MinHeight; //
+    float MaxHeight;//
     // First / last sample of the whole merged chain (== FirstIndex / LastIndex when unmerged).
     int    ChainFirstIndex;
     int    ChainLastIndex;
 };
+
+//struct BezierData {
+//    uint4 c0_c1_heights_width;
+//};
+//StructuredBuffer<float3> control_points;
+//struct ColorData {
+//    uint4 c0_c1_height0_height1;
+//};
+//struct Indices {
+//    uint2 first_last;
+//};
+
+
 
 struct SolidCurveStyle {
     float Width;
