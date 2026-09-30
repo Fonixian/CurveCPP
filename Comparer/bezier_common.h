@@ -141,6 +141,23 @@ void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3&
 void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
 	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
 
+// Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scene
+// scale; only used by the merge asserts in the curve uploads.
+bool EndpointsMeet(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b);
+
+// Which part of the curve data a BezierCurve setter changed. The base renderers ignore it and upload
+// everything whenever need_upload is set; a renderer that keeps positions, colours and styles in
+// separate buffers (BezierLineRenderer) reads it through UploadCurves() and re-uploads only those.
+// DirtyLayout is never raised by a setter: it is what AllocateBuffers() adds, because sample ranges
+// (first/last index) only move when the layout does.
+enum CurveDirtyBits : uint8_t {
+	DirtyPositions  = 1u << 0, // control_points()
+	DirtyColors     = 1u << 1, // colors(), HeightRange()
+	DirtyStyles     = 1u << 2, // Width(), Cap(), Join(), DashLength(), Spacing(), Dot()
+	DirtyLayout     = 1u << 3, // sample ranges - after a resize / relayout only
+	DirtyAll        = DirtyPositions | DirtyColors | DirtyStyles | DirtyLayout
+};
+
 void ClearComputeBindings(Axodox::Graphics::GraphicsDeviceContext* context);
 void ClearDrawBindings(Axodox::Graphics::GraphicsDeviceContext* context);
 
@@ -221,6 +238,9 @@ protected:
 
 	bool need_resize = true;
 	bool need_upload = false;
+	// CurveDirtyBits: which parts the setters since the last upload touched. Raised together with
+	// need_upload, cleared together with it; only UploadCurves() overrides look at it.
+	uint8_t upload_parts = 0;
 
 	uint32_t total_points = 0;
 
@@ -259,6 +279,16 @@ protected:
 	// allocating the buffer would cost 16 bytes per sample point that nothing ever reads.
 	virtual bool NeedsCalculatedPoints() const { return true; }
 
+	// Whether this renderer wants `bezier_data`, the 80-byte UploadBezierData per curve. The line
+	// renderer does not: it keeps positions, colours and sample ranges in three buffers of its own,
+	// allocated in AllocateCurveBuffers and filled by its UploadCurves override.
+	virtual bool NeedsBezierData() const { return true; }
+
+	// Fills the per-curve GPU data. `parts` is a CurveDirtyBits mask: DirtyAll straight after a
+	// (re)layout, otherwise whatever the setters touched. The default ignores the mask and uploads
+	// bezier_data plus the styles in full - the behaviour every renderer had before the split.
+	virtual void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts);
+
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 	virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}
 	virtual void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) = 0;
@@ -289,7 +319,9 @@ protected:
 	BezierData& data() { assert(valid()); return renderer->curves[curve_index]; }
 	const BezierData& data() const { assert(valid()); return renderer->curves[curve_index]; }
 
-	inline void touch() { renderer->need_upload = true; }
+	// `parts` is a CurveDirtyBits mask; see there. The default keeps any caller that does not say what
+	// it changed on the safe side.
+	inline void touch(uint8_t parts = DirtyAll) { renderer->need_upload = true; renderer->upload_parts |= parts; }
 	inline void touch_layout() { renderer->need_resize = true; }
 
 public:
@@ -317,9 +349,9 @@ public:
 	inline DirectX::XMFLOAT3 P2() const { return data().P2; }
 	inline DirectX::XMFLOAT3 P3() const { return data().P3; }
 
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1) { data().P0 = P0; data().P1 = P1; data().bezier_power = 1; touch(); }
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().bezier_power = 2; touch(); }
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().P3 = P3; data().bezier_power = 3; touch(); }
+	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1) { data().P0 = P0; data().P1 = P1; data().bezier_power = 1; touch(DirtyPositions); }
+	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().bezier_power = 2; touch(DirtyPositions); }
+	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().P3 = P3; data().bezier_power = 3; touch(DirtyPositions); }
 
 	inline int power() { return data().bezier_power; };
 
@@ -328,8 +360,8 @@ public:
 	inline float MinHeight() const { return data().min_height; }
 	inline float MaxHeight() const { return data().max_height; }
 
-	inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { data().C0 = C0; data().C1 = C1; touch(); }
-	inline void HeightRange(float min, float max) { data().min_height = min; data().max_height = max; touch(); }
+	inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { data().C0 = C0; data().C1 = C1; touch(DirtyColors); }
+	inline void HeightRange(float min, float max) { data().min_height = min; data().max_height = max; touch(DirtyColors); }
 
 	
 	inline float Width() const { return data().width; }
@@ -339,13 +371,13 @@ public:
 	inline float DashLength() const { return data().dash_length; }
 	inline float Spacing() const { return data().spacing; }
 
-	inline void Width(float value) { data().width = value; touch(); }
-	inline void Cap(CurveCap front, CurveCap back) { data().cap_front = front; data().cap_back = back; touch(); }
-	inline void Join(CurveJoin value) { data().join = value; touch(); }
-	inline void DashLength(float value) { data().dash_length = value; touch(); }
-	inline void Spacing(float value) { data().spacing = value; touch(); }
+	inline void Width(float value) { data().width = value; touch(DirtyStyles); }
+	inline void Cap(CurveCap front, CurveCap back) { data().cap_front = front; data().cap_back = back; touch(DirtyStyles); }
+	inline void Join(CurveJoin value) { data().join = value; touch(DirtyStyles); }
+	inline void DashLength(float value) { data().dash_length = value; touch(DirtyStyles); }
+	inline void Spacing(float value) { data().spacing = value; touch(DirtyStyles); }
 
-	inline void Dot() { data().cap_front = CurveCap::Round; data().cap_back = CurveCap::Round; data().dash_length = 0.f; touch(); }
+	inline void Dot() { data().cap_front = CurveCap::Round; data().cap_back = CurveCap::Round; data().dash_length = 0.f; touch(DirtyStyles); }
 
 	inline unsigned Resolution() const { return data().resolution; }
 	inline void Resolution(unsigned value) { data().resolution = value; touch_layout(); }

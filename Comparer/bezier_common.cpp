@@ -262,9 +262,7 @@ void BezierCurve::Remove() {
 	renderer = nullptr;
 }
 
-// Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scene
-// scale; only used by the merge assert in UploadCurveData.
-[[maybe_unused]] static bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
+bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
 	const XMVECTOR va = XMLoadFloat3(&a), vb = XMLoadFloat3(&b);
 	const float scale = std::max(1.0f, XMVectorGetX(XMVectorMax(XMVector3Length(va), XMVector3Length(vb))));
 	return XMVectorGetX(XMVector3Length(va - vb)) <= 1e-4f * scale;
@@ -309,7 +307,8 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	}
 
 	if (curves_allocated != curves_required) {
-		bezier_data.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadBezierData>(curves_required)));
+		if (NeedsBezierData())
+			bezier_data.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadBezierData>(curves_required)));
 		AllocateStyleBuffer(device, curves_required);
 		AllocateCurveBuffers(device, curves_required);
 		curves_allocated = curves_required;
@@ -350,15 +349,18 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
 	curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
 
+	// Everything: a buffer that was just (re)allocated holds nothing yet.
+	UploadCurves(context, DirtyAll);
+}
+
+void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t) {
 	UploadCurveData(context);
 }
 
 void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 	pattern_upper_bound = 0;
 
-	// Not gated on curve_styles: BezierLineRenderer has none. Every renderer that does have one
-	// allocates it in AllocateStyleBuffer(), right next to bezier_data, so the two exist together.
-	if (curves.empty() || !bezier_data) return;
+	if (curves.empty() || !bezier_data || !curve_styles) return;
 
 	std::vector<UploadBezierData> upload_data;
 	upload_data.reserve(curves.size());
@@ -452,11 +454,15 @@ bool BezierRendererBase::UpdateBuffers(const GraphicsDevice& device, GraphicsDev
 		AllocateBuffers(device, context);
 		need_resize = false;
 		need_upload = false;
+		upload_parts = 0;
 		updated = true;
 	}
 	else if (need_upload) {
-		UploadCurveData(context);
+		// A need_upload with no part recorded can only come from code that sets the flag directly;
+		// treat it as "anything may have changed".
+		UploadCurves(context, upload_parts ? upload_parts : static_cast<uint8_t>(DirtyAll));
 		need_upload = false;
+		upload_parts = 0;
 		updated = true;
 	}
 

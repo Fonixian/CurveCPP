@@ -7,23 +7,25 @@ cbuffer CameraData : register(b1) {
     uint TotalCurveCount;
 };
 
-StructuredBuffer<uint>            CurveBegins    : register(t1);
-StructuredBuffer<BezierCurveData> BezierData     : register(t3);
-StructuredBuffer<uint>            BezierIndexMap : register(t4);
+StructuredBuffer<uint>      CurveBegins    : register(t1);
+StructuredBuffer<float3>    control_points : register(t3); // K0,K1,K2,K3; K0,K1,K2,K3; ...
+StructuredBuffer<uint>      BezierIndexMap : register(t4);
+StructuredBuffer<ColorData> colors         : register(t5);
+StructuredBuffer<Indices>   indices        : register(t6);
 
-float3 EvaluateBezier(BezierCurveData bez, float t) {
-    return mad(mad(mad(bez.K3, t, bez.K2), t, bez.K1), t, bez.K0);
+float3 EvaluateBezier(uint curveIndex, float t) {
+    const uint k = curveIndex << 2u;
+    float3 cp0 = control_points[k], cp1 = control_points[k + 1], cp2 = control_points[k + 2], cp3 = control_points[k + 3];
+    return mad(mad(mad(cp3, t, cp2), t, cp1), t, cp0);
 }
 
-float SampleT(BezierCurveData bez, uint sampleIndex) {
-    return float(sampleIndex - (uint)bez.FirstIndex) / float((uint)bez.LastIndex - (uint)bez.FirstIndex);
-}
-
-float3 SampleColor(BezierCurveData bez, float height, float t) {
+float3 SampleColor(uint4 color, float height, float t) {
+    const float minHeight = asfloat(color.z);
+    const float maxHeight = asfloat(color.w);
     float blend = t;
-    if (bez.MinHeight < bez.MaxHeight)
-        blend = saturate((height - bez.MinHeight) / (bez.MaxHeight - bez.MinHeight));
-    return lerp(UnpackColorBits(bez.ColorBegin).rgb, UnpackColorBits(bez.ColorEnd).rgb, blend);
+    if (minHeight < maxHeight)
+        blend = saturate((height - minHeight) / (maxHeight - minHeight));
+    return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
 }
 
 // Drawn as a LINELIST of 2 * (TotalPointCount - 1) vertices: line `segment` joins sample `segment` to
@@ -47,11 +49,11 @@ LineVSOutput main(uint vertexId : SV_VertexID) {
 
     const uint sampleIndex = segment + (vertexId & 1u);
     const uint curveIndex = BezierIndexMap[sampleIndex];
-    const BezierCurveData bez = BezierData[curveIndex];
-    const float t = SampleT(bez, sampleIndex);
-    const float3 p = EvaluateBezier(bez, t);
+    const uint2 range = indices[curveIndex].first_last;
+    const float t = float(sampleIndex - range.x) / float(range.y - range.x);
+    const float3 p = EvaluateBezier(curveIndex, t);
 
     o.Position = mul(float4(p, 1.0), VP);
-    o.Color = SampleColor(bez, p.y, t);
+    o.Color = SampleColor(colors[curveIndex].c0_c1_height0_height1, p.y, t);
     return o;
 }

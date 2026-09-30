@@ -1,19 +1,14 @@
 #ifndef LINE_COMMON_HLSLI
 #define LINE_COMMON_HLSLI
 
-struct BezierCurveData {
-    float3 K0;
-    int    FirstIndex;
-    float3 K1;
-    int    LastIndex;
-    float3 K2;
-    uint   ColorBegin;
-    float3 K3;
-    uint   ColorEnd;
-    float  MinHeight;
-    float  MaxHeight;
-    int    ChainFirstIndex;
-    int    ChainLastIndex;
+// Per-curve data, split by how often it changes - see bezier_line.h. The control points are a plain
+// StructuredBuffer<float3>, four per curve: the monomial coefficients K0..K3, P(t) = K0 + t(K1 + t(K2 + tK3)).
+struct ColorData {
+    uint4 c0_c1_height0_height1; // ColorBegin, ColorEnd, asuint(MinHeight), asuint(MaxHeight)
+};
+
+struct Indices {
+    uint2 first_last; // FirstIndex, LastIndex
 };
 
 // Straight from the vertex shader to the rasteriser: there is no geometry stage, so the line is the
