@@ -270,10 +270,15 @@ float4 main(CurveVSOutput input) : SV_Target
     const float2 coord = float2(abs(lateral), localArc);
     
     const float currentArc = input.ScreenArcBegin + localArc;
-    
-    const bool atTerminus = (currentArc < 0.0) || (currentArc > input.ScreenArcEnd);
 
-    const uint cap = (currentArc < 0.0) ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
+    // Per segment, as in solid_ps.hlsl: past B with no neighbour before it is the chain's front
+    // terminus, past C with none after it the back one. This used to be currentArc < 0 /
+    // currentArc > ScreenArcEnd against the chain's last sample, which the split per-curve data no
+    // longer carries.
+    const bool2 pastEnd = bool2(localArc < 0.0, localArc > segmentLength);
+    const bool atTerminus = any(pastEnd && (input.Neighbors == 0u));
+
+    const uint cap = pastEnd.x ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
 
     float sdf = CurveStrokeSDF(
         coord,

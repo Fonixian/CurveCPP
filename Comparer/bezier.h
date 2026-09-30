@@ -31,6 +31,15 @@
 //
 // If every curve in the scene is solid, use BezierSolidRenderer instead - it skips all of it.
 //
+// Curve data is BezierSplitRendererBase's split upload, like the other three renderers: control
+// points (K0..K3), colours and sample ranges in three buffers, each re-sent only when its part
+// changes, plus one PatternStyle (width_capcapjoin, spacing, dash_length) per curve re-sent only when
+// a style setter fired. curve_vs builds the strip the way solid_vert does - B, C and both neighbours
+// evaluated straight from the control points, a neighbour across a merged joint taken from the
+// adjacent curve - so there is no CalculatedPoints buffer; the point pass keeps only the two arc
+// lengths. The chain range is gone from the per-curve data with the 80-byte struct: the terminus test
+// is per segment (Neighbors, from the begin bits), as in the solid renderer.
+//
 // The centre count used to come back from pattern_ini through a blocking Download(), which drains the
 // whole GPU queue in the middle of the frame just to size one buffer. It does not any more: the
 // buffer is sized from BezierRendererBase::PatternBound(), a CPU-side upper bound that needs no GPU
@@ -54,7 +63,7 @@
 // per curve (pattern_offsets) plus ParalellScan's block-sum buffers, and two dispatches where there
 // was one; an atomic needs no room to work in, a scan does.
 
-class BezierRenderer : public BezierRendererBase {
+class BezierRenderer : public BezierSplitRendererBase {
 public:
 	explicit BezierRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
@@ -67,6 +76,10 @@ protected:
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
+	// The base upload, plus what the pattern passes need on top of it: the CPU-side pattern bound
+	// (the split base does not compute it) and need_recount - raised only when something the centre
+	// count depends on changed, so a colour-only change no longer recounts.
+	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
 
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
@@ -74,9 +87,26 @@ private:
 	void CountPatternCenters(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunPatternPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
-	// Set whenever the curve data changed, so the centre count is recomputed once rather than every
-	// frame. The count depends on world arc length only, which the camera does not move.
+	// Set whenever positions, sample layout or styles changed, so the centre count is recomputed once
+	// rather than every frame. The count depends on world arc length and spacing only, which the
+	// camera does not move. Colours never raise it. See UploadCurves.
 	bool need_recount = false;
+
+	// PatternBound() over the live curves, from the cubic control polygons and spacings.
+	void UpdatePatternBound();
+
+	// Matches PatternStyle in curve_common.hlsli: width << 24 | cap_front << 16 | cap_back << 8 |
+	// join, then spacing and dash length. The low three bytes are the solid renderer's CapCapJoin; the
+	// width takes the top byte, so it is rounded to a WHOLE pixel and clamped to [0, 255] like the
+	// solid renderer's.
+	struct UploadPatternStyle {
+		uint32_t width_capcapjoin;
+		float    spacing;
+		float    dash_length;
+	};
+	static_assert(sizeof(UploadPatternStyle) == 12, "UploadPatternStyle must match PatternStyle in the shaders");
+
+	std::vector<UploadPatternStyle> style_scratch;
 
 	uint32_t patterns_allocated = 0;
 

@@ -7,14 +7,31 @@ cbuffer CameraData : register(b1) {
     uint TotalCurveCount;
 };
 
-StructuredBuffer<float4> CalculatedPoints : register(t0);
-StructuredBuffer<uint> CurveBegins : register(t1);
-StructuredBuffer<float> WorldDistances : register(t2);
-StructuredBuffer<BezierCurveData> BezierData : register(t3);
-StructuredBuffer<uint> BezierIndexMap : register(t4);
-StructuredBuffer<uint> PatternOffsets : register(t5);
-StructuredBuffer<CurveStyle> CurveStyles : register(t6);
-StructuredBuffer<float> ScreenDistances : register(t7);
+// t1 and t3..t7 are solid_vert's slots, so the two evaluate the strip from identical bindings. The
+// patterned renderer's own three buffers take what is left: world arc at t0 (CalculatedPoints there
+// once - no longer allocated, this shader evaluates the curve itself), screen arc at t2, and the
+// pattern offsets at t8.
+StructuredBuffer<float>        WorldDistances  : register(t0);
+StructuredBuffer<uint>         CurveBegins     : register(t1);
+StructuredBuffer<float>        ScreenDistances : register(t2);
+StructuredBuffer<float3>       ControlPoints   : register(t3); // K0..K3 per curve, see LoadCubic
+StructuredBuffer<uint>         BezierIndexMap  : register(t4);
+StructuredBuffer<ColorData>    Colors          : register(t5);
+StructuredBuffer<PatternStyle> CurveStyles     : register(t6);
+StructuredBuffer<Indices>      CurveIndices    : register(t7);
+StructuredBuffer<uint>         PatternOffsets  : register(t8);
+
+// The coefficients sit at a fixed stride of four, so where to read them follows from the curve index
+// alone; all four loads are independent and go out together.
+Cubic LoadCubic(uint curveIndex) {
+    const uint k = curveIndex << 2u;
+    Cubic c;
+    c.k0 = ControlPoints[k];
+    c.k1 = ControlPoints[k + 1u];
+    c.k2 = ControlPoints[k + 2u];
+    c.k3 = ControlPoints[k + 3u];
+    return c;
+}
 
 bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
     uint w = ((pointIndex >> 5u) == wordBase) ? words.x : words.y;
@@ -100,31 +117,57 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const uint pointCount = TotalPointCount;
     
     const bool nearSide = index < 2u;
-    const uint wordBase = (i > 0u ? i - 1u : 0u) >> 5u;
+
+    const uint wordBase = i >> 5u;
     const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
     const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
     const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
 
-    const float4 rawB = CalculatedPoints[i];
-    const float4 rawC = CalculatedPoints[i + 1u];
-
-    // The neighbours are simply the adjacent samples. A merged chain shares ONE sample at each joint
-    // (bezier_common.cpp lays it out that way), so there is no duplicated point to step over and no
-    // zero-length bridge segment between two links - the begin bits alone say where a stroke ends.
-    const uint indexA = hasA ? (i - 1u) : (i + 1u);
-    const uint indexD = hasD ? (i + 2u) : i;
-
-    const float3 rawA = CalculatedPoints[indexA].xyz;
-    const float3 rawD = CalculatedPoints[indexD].xyz;
-
+    // Bridge instance between two chains (or past the end): nothing to draw, and nothing loaded yet.
     if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
+    // Same evaluation as solid_vert.hlsl - see the note there. Segment [i, i + 1] belongs to ONE curve,
+    // S = the owner of sample i, which evaluates B and C over its own t in [0, 1] (C = S's P(1) at a
+    // merged joint, a few ulps off the next curve's K0 - accepted).
+    const uint curveB = BezierIndexMap[i];
+    const Cubic cubicB = LoadCubic(curveB);
+    const uint2 rangeB = CurveIndices[curveB].first_last;
+
+    const float tB = SampleT(rangeB, i);
+    const float tC = SampleT(rangeB, i + 1u);
+    const float3 rawB = EvaluateBezier(cubicB, tB);
+    const float3 rawC = EvaluateBezier(cubicB, tC);
+
+    // Unlike solid_vert this needs BOTH neighbours on every vertex, not just the one on its own side:
+    // ArcShear is nointerpolation and built from A and D, so all five vertices must agree on it.
+    // Each neighbour is evaluated by the curve the adjacent segment uses for that sample, so the two
+    // segments at a joint build their miter and shear from the same points: S itself inside S's
+    // range (no loads), S - 1 / S + 1 only across a merged joint (a chain is a run of consecutive
+    // curves). Without a neighbour the value is never used - A/D fall back to C/B below - so it takes
+    // the no-load path, where i - 1 may wrap and only make t meaningless.
+    const bool crossesA = hasA && (i == rangeB.x);
+    const bool crossesD = hasD && ((i + 1u) == rangeB.y);
+
+    float3 rawA;
+    [branch] if (crossesA) {
+        const uint curveA = curveB - 1u;
+        rawA = EvaluateBezier(LoadCubic(curveA), SampleT(CurveIndices[curveA].first_last, i - 1u));
+    }
+    else rawA = EvaluateBezier(cubicB, SampleT(rangeB, i - 1u));
+
+    float3 rawD;
+    [branch] if (crossesD) {
+        const uint curveD = curveB + 1u;
+        rawD = EvaluateBezier(LoadCubic(curveD), SampleT(CurveIndices[curveD].first_last, i + 2u));
+    }
+    else rawD = EvaluateBezier(cubicB, SampleT(rangeB, i + 2u));
+
     float4 A4 = mul(float4(rawA, 1.0), VP);
-    float4 B4 = mul(float4(rawB.xyz, 1.0), VP);
-    float4 C4 = mul(float4(rawC.xyz, 1.0), VP);
+    float4 B4 = mul(float4(rawB, 1.0), VP);
+    float4 C4 = mul(float4(rawC, 1.0), VP);
     float4 D4 = mul(float4(rawD, 1.0), VP);
 
     float t0, t1;
@@ -135,33 +178,35 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     // A clipped end is no longer a real joint, and neither is a terminus: the neighbour is replaced
     // by this segment's own far point, which reads as a fold everywhere below and ends the segment
-    // flat instead of on a bisector. C4/B4 are post-clip, so this has to win over whatever iA/iD
-    // indexed.
+    // flat instead of on a bisector. C4/B4 are post-clip, so this has to win over whatever was
+    // evaluated above.
     if (!hasA || t0 > 0.0) A4 = C4;
     if (!hasD || t1 < 1.0) D4 = B4;
 
     pull_in_front(A4, B4);
     pull_in_front(D4, C4);
 
-    const uint curveIndex = BezierIndexMap[i];
-    const CurveStyle style = CurveStyles[curveIndex];
-    const float width_pixel = style.Width;
+    const PatternStyle style = CurveStyles[curveB];
+    const float width_pixel = StyleWidth(style.width_capcapjoin);
 
-    const float3 cB = UnpackColorBits(asuint(rawB.w)).xyz;
-    const float3 cC = UnpackColorBits(asuint(rawC.w)).xyz;
+    const uint4 colorB = Colors[curveB].c0_c1_height0_height1;
+    const float3 cB = SampleColor(colorB, rawB.y, tB);
+    const float3 cC = SampleColor(colorB, rawC.y, tC); // S's own colours, t = 1 at its end
     const float2 dB = float2(WorldDistances[i], ScreenDistances[i]);
     const float2 dC = float2(WorldDistances[i + 1u], ScreenDistances[i + 1u]);
     const float tEnd = nearSide ? t0 : t1;
 
-    const bool patterned = style.Spacing > 0.0;
+    const bool patterned = style.spacing > 0.0;
 
     o.ScreenArcBegin = lerp(dB.y, dC.y, t0);
-    // The CHAIN's end, not this curve's: ScreenArcBegin keeps counting across merged joints (the scan
-    // only restarts at a chain start), so testing against the curve's own LastIndex would put a back
-    // cap on every interior joint. The front needs nothing - arc < 0 only happens at a chain start.
-    o.ScreenArcEnd = ScreenDistances[BezierData[curveIndex].ChainLastIndex];
-    o.DashLength = style.DashLength;
-    o.CapCapJoin = style.CapCapJoin | (patterned ? CurvePatternedBit : 0u);
+    // The terminus test, per segment: an end with no neighbour gets its cap. An end the frustum cut
+    // off counts as having one, so it gets the join shape rather than a cap - the old
+    // ScreenArcBegin/ScreenArcEnd test behaved that way, because the arc at a clipped end lies
+    // strictly inside the chain. (solid_vert sends hasA/hasD alone, so it caps at a clipped chain end.)
+    o.Neighbors = uint2((hasA || t0 > 0.0) ? 1u : 0u, (hasD || t1 < 1.0) ? 1u : 0u);
+    o.DashLength = style.dash_length;
+    // The width byte is dropped (the pixel shader has it in SDF.z) - bit 24 is the patterned flag.
+    o.CapCapJoin = (style.width_capcapjoin & 0x00FFFFFFu) | (patterned ? CurvePatternedBit : 0u);
 
     // --- the pattern coordinate ---------------------------------------------------------------
     // bezier_common.cpp sets one begin bit per CHAIN, so WorldDistances is cumulative along a whole
@@ -180,12 +225,12 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // breaks the telescoping and the bias is what absorbs it.
     float patternCoord = 0.0;
     if (patterned) {
-        const float curveArcBegin = WorldDistances[BezierData[curveIndex].FirstIndex];
+        const float curveArcBegin = WorldDistances[rangeB.x];
         const float patternBase = (curveArcBegin > 0.0)
-            ? floor(curveArcBegin / style.Spacing) + 1.0
+            ? floor(curveArcBegin / style.spacing) + 1.0
             : 0.0;
-        patternCoord = lerp(dB.x, dC.x, tEnd) / style.Spacing
-                     + (float(PatternOffsets[curveIndex]) - patternBase);
+        patternCoord = lerp(dB.x, dC.x, tEnd) / style.spacing
+                     + (float(PatternOffsets[curveB]) - patternBase);
     }
 
     o.ColorPattern = float4(lerp(cB, cC, tEnd), patternCoord);

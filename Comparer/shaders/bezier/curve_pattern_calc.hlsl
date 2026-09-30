@@ -17,13 +17,13 @@ cbuffer PatternCapacity : register(b1)
     uint3 CapacityPadding;
 };
 
-StructuredBuffer<BezierCurveData> BezierData      : register(t0);
+StructuredBuffer<Indices>         CurveIndices    : register(t0);
 // The only pass that reads both channels, and it reads them in two distinct phases: the binary
 // search walks WORLD arc length alone (one float per probe, not a float2 with half of it discarded),
 // and only the single bracketing pair it lands on is looked up in SCREEN arc length.
 StructuredBuffer<float>           WorldDistances  : register(t1);
 StructuredBuffer<float>           ScreenDistances : register(t2);
-StructuredBuffer<CurveStyle>      CurveStyles     : register(t3);
+StructuredBuffer<PatternStyle>    CurveStyles     : register(t3);
 // Exclusive scan of the per-curve centre counts, with the grand total appended one slot past the
 // last curve. PatternOffsets[i] is curve i's base index into PatternPosition and the gap to
 // PatternOffsets[i + 1] is its count - the last curve included, which is what the appended total
@@ -45,10 +45,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (patternCount == 0) return;
 
-    BezierCurveData bez            = BezierData[curveIndex];
-    uint            sampleStartIdx = (uint)bez.FirstIndex;
-    uint            sampleEndIdx   = (uint)bez.LastIndex;
-    float           worldSpacing   = CurveStyles[curveIndex].Spacing;
+    uint2 range          = CurveIndices[curveIndex].first_last;
+    uint  sampleStartIdx = range.x;
+    uint  sampleEndIdx   = range.y;
+    float worldSpacing   = CurveStyles[curveIndex].spacing;
 
     // The centre grid is CHAIN-global (see curve_pattern_ini.hlsl): centre n sits at world distance
     // n * spacing from the chain's origin, not from this curve's own start. patternBase is the first

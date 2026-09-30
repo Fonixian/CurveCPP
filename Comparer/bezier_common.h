@@ -394,7 +394,7 @@ public:
 	inline void Merged(bool value) { if (data().merge_with_previous != value) { data().merge_with_previous = value; touch_layout(); } }
 };
 
-// The per-curve upload shared by the line, solid and dot renderers. Instead of one 80-byte UploadBezierData
+// The per-curve upload shared by all four renderers (line, solid, dots, patterned). Instead of one 80-byte UploadBezierData
 // re-sent on any change, the curve data is split by how often it changes into three buffers, each
 // re-uploaded only when its part is dirty (see CurveDirtyBits):
 //
@@ -428,8 +428,8 @@ protected:
 	};
 	static_assert(sizeof(SplitIndices) == 8, "SplitIndices must match Indices in the shaders");
 
-	// None of them reads bezier_data, and none keeps per-sample positions (the dots' point pass
-	// measures chord lengths and drops the positions).
+	// None of them reads bezier_data, and none keeps per-sample positions (the dots' and the
+	// patterned renderer's point passes measure chord lengths and drop the positions).
 	bool NeedsCalculatedPoints() const override { return false; }
 	bool NeedsBezierData() const override { return false; }
 

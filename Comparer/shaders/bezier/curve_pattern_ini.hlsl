@@ -23,9 +23,9 @@ cbuffer CameraData : register(b0)
     uint     TotalCurveCount;
 };
 
-StructuredBuffer<BezierCurveData> BezierData     : register(t0);
-StructuredBuffer<float>           WorldDistances : register(t1);
-StructuredBuffer<CurveStyle>      CurveStyles    : register(t2);
+StructuredBuffer<Indices>      CurveIndices   : register(t0);
+StructuredBuffer<float>        WorldDistances : register(t1);
+StructuredBuffer<PatternStyle> CurveStyles    : register(t2);
 
 RWStructuredBuffer<uint> PatternOffsets : register(u0);
 
@@ -39,10 +39,10 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint curveIndex = dispatchThreadId.x;
     if (curveIndex >= TotalCurveCount) return;
 
-    
-    float prev_arc = WorldDistances[BezierData[curveIndex].FirstIndex];
-    float current_arc = WorldDistances[BezierData[curveIndex].LastIndex];
-    float spacing = CurveStyles[curveIndex].Spacing;
+    uint2 range = CurveIndices[curveIndex].first_last;
+    float prev_arc = WorldDistances[range.x];
+    float current_arc = WorldDistances[range.y];
+    float spacing = CurveStyles[curveIndex].spacing;
     
     uint dot_count = pattern_count(current_arc, spacing) - pattern_count(prev_arc, spacing);
 
