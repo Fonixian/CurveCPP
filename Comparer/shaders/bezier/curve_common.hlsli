@@ -6,9 +6,11 @@
 // in MONOMIAL form K0..K3, P(t) = K0 + t(K1 + t(K2 + tK3)) - NOT its control points. Same layout as
 // solid_common.hlsli / dot_common.hlsli / line_common.hlsli, duplicated on purpose.
 //
-// There is no chain range. The terminus test is per segment (Neighbors, from the begin bits, the way
-// the solid renderer does it), and every other consumer - the point pass, pattern_ini/calc, the
-// pattern coordinate - reads the chain-cumulative arc length at the curve's OWN first/last sample.
+// There is no chain SAMPLE range. The terminus test is per segment (Neighbors, from the begin bits,
+// the way the solid renderer does it), and every other consumer - the point pass, pattern_ini/calc,
+// the pattern coordinate - reads the chain-cumulative arc length at the curve's OWN first/last
+// sample. The one chain-wide thing is curve_vs's CurveChains (first/last CURVE of the chain), which
+// only bounds the slots the pixel shader may read - see PatternSlots below.
 struct ColorData {
     uint4 c0_c1_height0_height1; // ColorBegin, ColorEnd, asuint(MinHeight), asuint(MaxHeight)
 };
@@ -68,6 +70,11 @@ struct CurveVSOutput {
     // (SDF.y == l_CB). 0 where there is no neighbour. Turns the segment-local arc into the arc
     // measured against the joint's angle bisector - see CurvePatternArc in curve_ps.hlsl.
     nointerpolation float2 ArcShear : TEXCOORD5;
+    // The slots of PatternPosition this segment's CHAIN owns, [x, y): PatternOffsets of the chain's
+    // first curve and of the curve just past its last. The flat array is one sorted run per chain,
+    // each starting again at screen arc 0, so a slot outside this range is another stroke's centre
+    // and must never be read. x == y for a patterned chain with no centre at all (all gap).
+    nointerpolation uint2 PatternSlots : TEXCOORD6;
 };
 
 float4 UnpackColorBits(uint packed) {

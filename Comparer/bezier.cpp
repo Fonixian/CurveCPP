@@ -55,9 +55,12 @@ void BezierRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t
 	// One element longer than the curve count on purpose: the scan parks the grand total in the slot
 	// just past the last curve, and a structured-buffer UAV drops an out-of-range store without
 	// complaining, so a buffer sized exactly to curves_required would lose the total silently rather
-	// than fault. curve_pattern_calc reads [i + 1] for its count and curve_ps reads that appended
-	// total as its clamp bound, so the slot is live geometry, not slack.
+	// than fault. curve_pattern_calc reads [i + 1] for its count and curve_vs reads
+	// [last curve of the chain + 1] as the end of the chain's slot range - the appended total when
+	// that chain is the scene's last - so the slot is live geometry, not slack.
 	pattern_offsets.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(curves_required + 1u)));
+
+	curve_chains.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadChainCurves>(curves_required)));
 }
 
 void BezierRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint32_t curves_required) {
@@ -93,6 +96,21 @@ void BezierRenderer::UploadCurves(GraphicsDeviceContext* context, uint8_t parts)
 		UpdatePatternBound();
 	if (parts & (DirtyPositions | DirtyStyles | DirtyLayout))
 		need_recount = true;
+
+	// The chain each curve belongs to, as a curve range. A chain is a run of consecutive curves that
+	// starts at IsChainStart(), so the last curve of one is the curve before the next start.
+	if ((parts & DirtyLayout) && curve_chains && !curves.empty()) {
+		chain_scratch.resize(curves.size());
+		size_t chain_first = 0;
+		for (size_t curveIndex = 1; curveIndex <= curves.size(); ++curveIndex) {
+			if (curveIndex == curves.size() || IsChainStart(curveIndex)) {
+				for (size_t k = chain_first; k < curveIndex; ++k)
+					chain_scratch[k] = UploadChainCurves{ uint32_t(chain_first), uint32_t(curveIndex - 1) };
+				chain_first = curveIndex;
+			}
+		}
+		curve_chains->Upload(std::span<const UploadChainCurves>{ chain_scratch }, context);
+	}
 }
 
 void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
@@ -240,8 +258,8 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	// t1 and t3..t7 are exactly the solid renderer's bindings; the three buffers only this renderer
-	// has take t0, t2 and t8.
+	// t1 and t3..t7 are exactly the solid renderer's bindings; the four buffers only this renderer
+	// has take t0, t2, t8 and t9.
 	world_distances->BindOrdered(ShaderStage::Vertex, 0, context);     // t0: cumulative world arc length
 	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);        // t1: chain boundary flags
 	screen_distances->BindOrdered(ShaderStage::Vertex, 2, context);    // t2: cumulative screen arc length, px
@@ -249,13 +267,13 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: point -> curve index
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width_capcapjoin / spacing / dash length
 	pattern_offsets->BindOrdered(ShaderStage::Vertex, 8, context);     // t8: pattern base per curve
+	curve_chains->Bind(ShaderStage::Vertex, 9, context);               // t9: first/last curve of the chain
 
-	if (patterns) patterns->BindOrdered(ShaderStage::Pixel, 1, context); // t1: screen arc length per pattern center
-	// t2: the pixel shader reads one slot of this - [TotalCurveCount], the chain's centre total,
-	// which is the whole of its clamp bound now that the pattern window is chain-global rather than
-	// per curve. Cheaper there than as an interpolant: it is wave-uniform, so it scalarises, where
-	// an interpolant would be written once per vertex, five times per segment.
-	pattern_offsets->BindOrdered(ShaderStage::Pixel, 2, context);
+	// t1: screen arc length per pattern center. Its clamp bound used to be read here too, from
+	// pattern_offsets[TotalCurveCount] - the SCENE's centre total, which let a curve read the next
+	// chain's centres. The bound is the chain's slot range now, and it arrives as an interpolant
+	// (PatternSlots) from curve_vs, so pattern_offsets is no longer bound to the pixel stage.
+	if (patterns) patterns->BindOrdered(ShaderStage::Pixel, 1, context);
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context); // b1
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);  // b1

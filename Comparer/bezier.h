@@ -18,16 +18,24 @@
 //   offset_scan      an exclusive prefix sum turning those counts into each curve's slice
 //   pattern_calc     binary-searches the world sum per centre and samples the screen sum there
 //
-// The pattern is CONTINUOUS ACROSS CURVES. bezier_common marks one segment begin for the whole
-// scene, so the prefix sum runs over the chain and the centres sit on one grid of world distances
-// n * spacing shared by every curve in it. pattern_ini gives each curve the window of that grid
-// lying inside its own arc span rather than restarting at n = 0, pattern_calc places exactly those
-// n, and curve_vs hands the pixel shader the bias that turns a global n back into a slot in the
-// flat array (plus one slot of slack at each end, so a dash centred just past a joint still draws
-// on the near side of it). Two curves joined end to end therefore continue one dash sequence
-// instead of each starting a fresh dash at their shared endpoint. This mirrors what bezier_dots
-// does - dot_ini.hlsl / dot_calc.hlsl take the same window - except that dots need no slack,
-// because each dot is its own quad and owes nothing to the geometry it sits on.
+// The pattern is CONTINUOUS ACROSS THE CURVES OF A MERGED CHAIN, and only across those.
+// bezier_common marks one segment begin per CHAIN, so each prefix sum runs over one chain, restarts
+// at 0 at the next, and the centres of a chain sit on one grid of world distances n * spacing shared
+// by every curve in it. pattern_ini gives each curve the window of that grid lying inside its own
+// arc span rather than restarting at n = 0, pattern_calc places exactly those n, and curve_vs hands
+// the pixel shader the bias that turns a grid n back into a slot in the flat array. Two curves
+// merged end to end therefore continue one dash sequence instead of each starting a fresh dash at
+// their shared endpoint. This mirrors what bezier_dots does - dot_ini.hlsl / dot_calc.hlsl take the
+// same window.
+//
+// The flat array is therefore one sorted run PER CHAIN, laid end to end in curve order - NOT one
+// sorted run for the scene: the screen arc of the next chain's first centre is 0 again. A pixel may
+// look at any centre of its own chain (a dash centred just past a joint still draws on the near side
+// of it) and at nothing outside it, so curve_vs hands the pixel shader the chain's slot range,
+// [PatternOffsets[first curve], PatternOffsets[last curve + 1]), built from curve_chains below. Before
+// that range existed the pixel shader clamped to the whole SCENE's slots, and a curve's last dash
+// measured its neighbour gap against the next, unrelated curve's first centre - so adding a curve
+// changed how the curve before it was drawn.
 //
 // If every curve in the scene is solid, use BezierSolidRenderer instead - it skips all of it.
 //
@@ -107,6 +115,20 @@ private:
 	static_assert(sizeof(UploadPatternStyle) == 12, "UploadPatternStyle must match PatternStyle in the shaders");
 
 	std::vector<UploadPatternStyle> style_scratch;
+
+	// Matches StructuredBuffer<uint2> CurveChains in curve_vs.hlsl: the first and last CURVE index of
+	// the merged chain a curve belongs to (both itself for an unmerged curve). Changes only with the
+	// layout (Add / remove / Merged / Resolution), so it is re-sent on DirtyLayout alone.
+	struct UploadChainCurves {
+		uint32_t first_curve;
+		uint32_t last_curve;
+	};
+	static_assert(sizeof(UploadChainCurves) == 8, "UploadChainCurves must match CurveChains in curve_vs.hlsl");
+
+	std::vector<UploadChainCurves> chain_scratch;
+	// One UploadChainCurves per curve. curve_vs turns it into the chain's slot range in the pattern
+	// array, which is all the pixel shader is allowed to read.
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_chains;
 
 	uint32_t patterns_allocated = 0;
 

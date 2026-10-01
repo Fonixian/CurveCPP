@@ -28,10 +28,9 @@ cbuffer CameraData : register(b1) {
 
 StructuredBuffer<float> PatternPosition : register(t1);
 
-// Exactly one slot of this is read - [TotalCurveCount], the chain's centre total, which is the
-// whole clamp bound now that the pattern window is chain-global. Wave-uniform, so it scalarises
-// into one cached load instead of an interpolant written five times per segment.
-StructuredBuffer<uint>  PatternOffsets  : register(t2);
+// PatternOffsets is no longer bound here. Its [TotalCurveCount] slot - the SCENE's centre total - was
+// the clamp bound, which is only right while the whole scene is one chain; it is the chain's slot
+// range now, and that is per segment, so it arrives as the PatternSlots interpolant.
 
 static const float CurveInvSqrt2 = 0.70710678118;
 static const float CurveSdfInside = -1e30;
@@ -158,17 +157,17 @@ float CurvePatternArc(
 #endif
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
-// slot0/slot1 are absolute slots in the flat pattern array. The look-back is refused only at the
-// very first centre in the SCENE now, not at the start of each curve's slice - everywhere else the
-// span is measured against the previous centre along the chain, whichever curve owns it. Same
-// result the one-slot slice widening used to buy, without the widening.
-float CurvePatternCentreSpan(int slot0, int slot1, float c0, float c1)
+// slot0/slot1 are absolute slots in the flat pattern array, both already inside the chain's range.
+// The look-back is refused at the chain's first centre - the slot before it belongs to a different
+// stroke - and nowhere else: across a merged joint the span is measured against the previous centre
+// along the chain, whichever curve owns it.
+float CurvePatternCentreSpan(int slot0, int slot1, float c0, float c1, int firstSlot)
 {
     if (slot1 != slot0)
     {
         return abs(c1 - c0);
     }
-    if (slot0 > 0)
+    if (slot0 > firstSlot)
     {
         return abs(c0 - PatternPosition[uint(slot0 - 1)]);
     }
@@ -196,7 +195,8 @@ float CurvePatternSDF(
     float  patternCoord,
     float  dashLength,
     float  halfWidth,
-    uint   capCapJoin)
+    uint   capCapJoin,
+    uint2  patternSlots)
 {
     // SOLID is spacing <= 0 and nothing else. It used to be tested as "this curve owns no pattern
     // centres", which meant the same thing only while every curve started its own pattern at its
@@ -210,30 +210,30 @@ float CurvePatternSDF(
         return CurveSdfInside;
     }
 
-    // --- the window is the whole chain ---------------------------------------------------------
-    // One chain (see curve_vs.hlsl) means PatternPosition is one dense, sorted run covering every
-    // curve, so the only slots that do not exist are off its two ends and [0, lastSlot] is the
-    // complete bound. The per-curve window - a slice plus one slot of widening at each end so a
-    // dash could reach across a joint - is a subset of what this clamp already allows, so it and
-    // its two interpolants go together.
+    // --- the window is the chain ---------------------------------------------------------------
+    // PatternPosition is one dense, sorted run PER CHAIN, the chains laid end to end in curve order
+    // and each starting again at screen arc 0. So the window is the chain's own slots,
+    // [patternSlots.x, patternSlots.y): a dash may be centred on any curve of this chain (that is
+    // what lets a dash reach across a merged joint), and never on another stroke.
     //
-    // Given up: an out-of-range coordinate used to clamp to this curve's own edge, one centre away,
-    // so a bad coordinate drew a slightly misplaced dash. It now clamps to the end of the scene,
-    // where nothing is near patternArc, so a GROSS error drops the dash instead. Small errors still
-    // land on a neighbouring centre, the array being dense and sorted. Measured: with the arc
-    // correct the old clamp never fired at all; it only ever damped the noperspective world-arc
-    // error, which is better fixed than damped.
-    const int lastSlot = int(PatternOffsets[TotalCurveCount]) - 1;
+    // This used to clamp to [0, scene's last slot]. That is only the chain's range while the whole
+    // scene is one chain; with several, slot0 + 1 at a curve's last centre was the NEXT chain's first
+    // centre (screen arc 0), so shrink-to-fit measured that dash's gap against an unrelated stroke and
+    // whether a curve had another curve after it changed how its last dash was drawn.
+    const int firstSlot = int(patternSlots.x);
+    const int lastSlot  = int(patternSlots.y) - 1;
 
     // Patterned, but the chain holds no centre at all - it is all gap, NOT solid.
-    if (lastSlot < 0)
+    if (lastSlot < firstSlot)
     {
         return CurveSdfOutside;
     }
 
     // patternCoord already IS the slot coordinate - the vertex shader folded the divide by spacing
-    // and the grid-index-to-slot bias into it.
-    const int slot0 = clamp(int(floor(patternCoord)), 0, lastSlot);
+    // and the grid-index-to-slot bias into it. The vertex values bound it to this curve's own slice,
+    // so the clamp only catches rounding at the slice's edge (a coordinate a hair under the chain's
+    // first slot would otherwise floor into the previous stroke).
+    const int slot0 = clamp(int(floor(patternCoord)), firstSlot, lastSlot);
     const int slot1 = min(slot0 + 1, lastSlot);
 
     const float c0 = PatternPosition[uint(slot0)];
@@ -252,7 +252,7 @@ float CurvePatternSDF(
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
     arcDist *= CurvePatternArcScale(
-        CurvePatternCentreSpan(slot0, slot1, c0, c1),
+        CurvePatternCentreSpan(slot0, slot1, c0, c1, firstSlot),
         CurvePatternElementLength(dashLength, halfWidth, cap));
 #endif
     return CurveCapSDF(float2(abs(lateral), arcDist + dashLength * 0.5), dashLength, halfWidth, cap);
@@ -302,7 +302,8 @@ float4 main(CurveVSOutput input) : SV_Target
         input.ColorPattern.w,
         input.DashLength,
         halfWidth,
-        input.CapCapJoin));
+        input.CapCapJoin,
+        input.PatternSlots));
 
     if (sdf > 0.5) discard;
     return float4(input.ColorPattern.rgb, saturate(0.5 - sdf));

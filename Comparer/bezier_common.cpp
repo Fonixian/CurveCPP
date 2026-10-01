@@ -146,11 +146,12 @@ void ClearComputeBindings(GraphicsDeviceContext* context) {
 		context->BindUnorderedAccessView(nullptr, slot);
 }
 
-// t0..t8: the patterned renderer's curve_vs binds nine (see BezierRenderer::Draw).
-constexpr uint32_t vertexSrvSlots = 9u;
-// t1 pattern positions, t2 pattern offsets. Slot 0 is never bound to the pixel stage by any of the
-// three renderers, so the loop starts at 1.
-constexpr uint32_t pixelSrvSlots = 3u;
+// t0..t9: the patterned renderer's curve_vs binds ten (see BezierRenderer::Draw).
+constexpr uint32_t vertexSrvSlots = 10u;
+// t1 pattern positions - the only pixel-stage SRV any renderer binds now (pattern offsets left the
+// pixel stage when the chain's slot range became an interpolant). Slot 0 is never bound to the pixel
+// stage, so the loop starts at 1.
+constexpr uint32_t pixelSrvSlots = 2u;
 void ClearDrawBindings(GraphicsDeviceContext* context) {
 	for (uint32_t slot = 0; slot < vertexSrvSlots; ++slot)
 		context->BindShaderResourceView(nullptr, ShaderStage::Vertex, slot);

@@ -10,7 +10,7 @@ cbuffer CameraData : register(b1) {
 // t1 and t3..t7 are solid_vert's slots, so the two evaluate the strip from identical bindings. The
 // patterned renderer's own three buffers take what is left: world arc at t0 (CalculatedPoints there
 // once - no longer allocated, this shader evaluates the curve itself), screen arc at t2, and the
-// pattern offsets at t8.
+// pattern offsets at t8, the chain's curve range at t9.
 StructuredBuffer<float>        WorldDistances  : register(t0);
 StructuredBuffer<uint>         CurveBegins     : register(t1);
 StructuredBuffer<float>        ScreenDistances : register(t2);
@@ -20,6 +20,7 @@ StructuredBuffer<ColorData>    Colors          : register(t5);
 StructuredBuffer<PatternStyle> CurveStyles     : register(t6);
 StructuredBuffer<Indices>      CurveIndices    : register(t7);
 StructuredBuffer<uint>         PatternOffsets  : register(t8);
+StructuredBuffer<uint2>        CurveChains     : register(t9); // first, last curve of this curve's chain
 
 // The coefficients sit at a fixed stride of four, so where to read them follows from the curve index
 // alone; all four loads are independent and go out together.
@@ -223,7 +224,13 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     // The bias is identically 0 while every curve shares one spacing - the ini counts telescope, so
     // sliceBegin == patternBase. Kept because mixed spacing (a solid curve between two dashed ones)
     // breaks the telescoping and the bias is what absorbs it.
+    //
+    // The pixel shader may read the chain's own slots and nothing else: [PatternOffsets[first curve],
+    // PatternOffsets[last curve + 1]). Chains are runs of consecutive curves and slices are laid out
+    // in curve order, so that is one contiguous range. Outside it lies the NEXT or PREVIOUS stroke,
+    // whose screen arcs restart at 0 - reading those is how one unmerged curve used to change another.
     float patternCoord = 0.0;
+    uint2 patternSlots = uint2(0u, 0u);
     if (patterned) {
         const float curveArcBegin = WorldDistances[rangeB.x];
         const float patternBase = (curveArcBegin > 0.0)
@@ -231,7 +238,11 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
             : 0.0;
         patternCoord = lerp(dB.x, dC.x, tEnd) / style.spacing
                      + (float(PatternOffsets[curveB]) - patternBase);
+
+        const uint2 chain = CurveChains[curveB];
+        patternSlots = uint2(PatternOffsets[chain.x], PatternOffsets[chain.y + 1u]);
     }
+    o.PatternSlots = patternSlots;
 
     o.ColorPattern = float4(lerp(cB, cC, tEnd), patternCoord);
 
