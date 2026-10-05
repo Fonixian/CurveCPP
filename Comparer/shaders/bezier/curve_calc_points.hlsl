@@ -16,7 +16,7 @@ cbuffer CameraData : register(b0) {
 
 // The index map hands a merged joint sample to the LATER curve, so its chord is measured along the
 // curve that leaves it.
-StructuredBuffer<float3>  ControlPoints  : register(t0); // K0..K3 per curve at curveIndex * 4
+StructuredBuffer<float3>  ControlPoints  : register(t0); // P0..P3 per curve at curveIndex * 4
 StructuredBuffer<uint>    BezierIndexMap : register(t1);
 StructuredBuffer<Indices> CurveIndices   : register(t2);
 
@@ -33,15 +33,14 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     const uint k = curveIndex << 2u;
     Cubic cubic;
-    cubic.k0 = ControlPoints[k];
-    cubic.k1 = ControlPoints[k + 1u];
-    cubic.k2 = ControlPoints[k + 2u];
-    cubic.k3 = ControlPoints[k + 3u];
+    cubic.p0 = ControlPoints[k];
+    cubic.p1 = ControlPoints[k + 1u];
+    cubic.p2 = ControlPoints[k + 2u];
+    cubic.p3 = ControlPoints[k + 3u];
 
-    // The last sample of a curve measures a zero-length chord to itself: t.y is clamped to 1.
-    const uint resolution = range.y - range.x;
-    const uint i = pointIndex - range.x;
-    const float2 t = float2(uint2(i, min(i + 1, resolution))) / float(resolution);
+    // The last sample of a curve measures a zero-length chord to itself: t.y is clamped to 1. Through
+    // SampleT, so these are the same t values curve_vs evaluates.
+    const float2 t = float2(SampleT(range, pointIndex), SampleT(range, min(pointIndex + 1u, range.y)));
     float4 p0 = float4(EvaluateBezier(cubic, t.x), 1.0);
     float4 p1 = float4(EvaluateBezier(cubic, t.y), 1.0);
 

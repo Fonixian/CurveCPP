@@ -119,7 +119,7 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	// No CalculatedPoints: the point pass measures the two chord lengths and drops the positions -
 	// curve_vs evaluates the ones it draws itself (NeedsCalculatedPoints is false).
 	viewport_data->Bind(ShaderStage::Compute, 0, context);        // b0
-	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: K0..K3 per curve
+	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: P0..P3 per curve
 	bezier_data_map->Bind(ShaderStage::Compute, 1, context);      // t1: owning curve per sample
 	curve_indices->Bind(ShaderStage::Compute, 2, context);        // t2: sample range per curve
 	world_distances->BindUnordered(0, context);                   // u0

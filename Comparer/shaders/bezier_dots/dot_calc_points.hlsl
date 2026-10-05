@@ -22,7 +22,7 @@ cbuffer CameraData : register(b0) {
 // The index map is the one per-sample buffer this renderer still reads, and only here: at a merged
 // joint it hands the shared sample to the LATER curve, so that sample's chord is measured along the
 // curve that leaves it. Nothing after this pass needs it - dot_calc and dot_vert stay inside one curve.
-StructuredBuffer<float3>  ControlPoints  : register(t0); // K0..K3 per curve at curveIndex * 4
+StructuredBuffer<float3>  ControlPoints  : register(t0); // P0..P3 per curve at curveIndex * 4
 StructuredBuffer<uint>    BezierIndexMap : register(t1);
 StructuredBuffer<Indices> CurveIndices   : register(t2);
 
@@ -36,9 +36,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     uint curveIndex = BezierIndexMap[pointIndex];
     uint2 range = CurveIndices[curveIndex].first_last;
 
-    uint firstIndex = range.x;
     uint lastIndex  = range.y;
-    uint resolution = lastIndex - firstIndex; // resolution - 1
 
     // One float per point. This used to be a float2 with .y pinned at 0, because SegmentedScan's
     // element type was fixed at float2 for the patterned renderer's sake; that renderer splits its
@@ -47,13 +45,14 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (pointIndex < lastIndex) {
         const uint k = curveIndex << 2u;
         Cubic cubic;
-        cubic.k0 = ControlPoints[k];
-        cubic.k1 = ControlPoints[k + 1u];
-        cubic.k2 = ControlPoints[k + 2u];
-        cubic.k3 = ControlPoints[k + 3u];
+        cubic.p0 = ControlPoints[k];
+        cubic.p1 = ControlPoints[k + 1u];
+        cubic.p2 = ControlPoints[k + 2u];
+        cubic.p3 = ControlPoints[k + 3u];
 
-        float t     = float(pointIndex - firstIndex) / float(resolution);
-        float tNext = float(pointIndex - firstIndex + 1) / float(resolution);
+        // Through SampleT, so these are the same t values dot_vert evaluates.
+        float t     = SampleT(range, pointIndex);
+        float tNext = SampleT(range, pointIndex + 1u);
 
         float3 position     = EvaluateBezier(cubic, t);
         float3 nextPosition = EvaluateBezier(cubic, tNext);

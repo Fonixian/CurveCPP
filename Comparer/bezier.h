@@ -40,7 +40,7 @@
 // If every curve in the scene is solid, use BezierSolidRenderer instead - it skips all of it.
 //
 // Curve data is BezierSplitRendererBase's split upload, like the other three renderers: control
-// points (K0..K3), colours and sample ranges in three buffers, each re-sent only when its part
+// points (P0..P3), colours and sample ranges in three buffers, each re-sent only when its part
 // changes, plus one PatternStyle (width_capcapjoin, spacing, dash_length) per curve re-sent only when
 // a style setter fired. curve_vs builds the strip the way solid_vert does - B, C and both neighbours
 // evaluated straight from the control points, a neighbour across a merged joint taken from the

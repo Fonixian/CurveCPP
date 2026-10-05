@@ -33,7 +33,7 @@
 // diagnostic neither this renderer nor the patterned one pays for any more.
 //
 // Curve data is BezierSplitRendererBase's split upload, like the line and solid renderers: control
-// points (K0..K3), colours and sample ranges in three buffers, each re-sent only when its part
+// points (P0..P3), colours and sample ranges in three buffers, each re-sent only when its part
 // changes, plus one DotStyle (width_capcap + spacing) per curve re-sent only when a style setter
 // fired. None of the solid renderer's merged-joint handling is needed here: a dot's two bracketing
 // samples always belong to one curve, so the draw binds no curve_begins and no index map. The point

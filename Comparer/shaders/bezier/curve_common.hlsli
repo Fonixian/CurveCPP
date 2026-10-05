@@ -3,8 +3,8 @@
 
 // Per-curve data, split by how often it changes - see BezierSplitRendererBase in bezier_common.h.
 // The control points are a plain StructuredBuffer<float3>, four per curve at curveIndex * 4: the cubic
-// in MONOMIAL form K0..K3, P(t) = K0 + t(K1 + t(K2 + tK3)) - NOT its control points. Same layout as
-// solid_common.hlsli / dot_common.hlsli / line_common.hlsli, duplicated on purpose.
+// as its four Bezier control points P0..P3 (lower degrees raised to cubic on upload), evaluated in
+// Bernstein form by EvaluateBezier below. Same layout as solid_common.hlsli / dot_common.hlsli / line_common.hlsli, duplicated on purpose.
 //
 // There is no chain SAMPLE range. The terminus test is per segment (Neighbors, from the begin bits,
 // the way the solid renderer does it), and every other consumer - the point pass, pattern_ini/calc,
@@ -84,22 +84,35 @@ float4 UnpackColorBits(uint packed) {
     return float4(unpacked_u) / 255.0;
 }
 
-// The four coefficients of one curve. The point pass and the vertex shader each declare their own
+// The four control points of one curve. The point pass and the vertex shader each declare their own
 // ControlPoints buffer and a four-load LoadCubic; both evaluate through the ONE EvaluateBezier below,
 // so a sample the point pass measured is the same float the vertex shader draws.
 struct Cubic {
-    float3 k0, k1, k2, k3;
+    float3 p0, p1, p2, p3;
 };
 
-// Horner: P(t) = K0 + t * (K1 + t * (K2 + t * K3)) - three fused multiply-adds per component.
+// Bernstein form, straight over the control points:
+//
+//     P(t) = s^3 P0 + 3 s^2 t P1 + 3 s t^2 P2 + t^3 P3,    s = 1 - t
+//
+// The weights come out as exactly (1, 0, 0, 0) at t = 0 and (0, 0, 0, 1) at t = 1, so the curve
+// reaches P0 and P3 bit-exactly, in whatever order the compiler sums the terms. That is what makes a
+// merged joint exact: the curve ending there evaluates P(1) = its P3, the one starting there P(0) = its
+// P0, and those are the same control point. (The monomial form K0 + K1 + K2 + K3 only got within a few
+// ulps of P3.) Cost: ~9 scalar ops for the weights plus a mul and three mads per component, against
+// Horner's three mads per component; the loads are the same four float3.
 float3 EvaluateBezier(Cubic c, float t) {
-    return mad(mad(mad(c.k3, t, c.k2), t, c.k1), t, c.k0);
+    const float s   = 1.0 - t;
+    const float st3 = 3.0 * s * t;
+    return mad(c.p3, t * t * t, mad(c.p2, st3 * t, mad(c.p1, st3 * s, c.p0 * (s * s * s))));
 }
 
 // Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. `range` is the
-// curve's inclusive sample range, Indices.first_last.
+// curve's inclusive sample range, Indices.first_last. The last sample is pinned to exactly 1: a GPU
+// divide may be a reciprocal and a multiply, and n * (1 / n) is not always 1 in float (n = 41 is the
+// first), which would leave P(1) a hair short of P3 and undo the exact endpoint EvaluateBezier gives.
 float SampleT(uint2 range, uint sampleIndex) {
-    return float(sampleIndex - range.x) / float(range.y - range.x);
+    return sampleIndex == range.y ? 1.0 : float(sampleIndex - range.x) / float(range.y - range.x);
 }
 
 // Colour of one sample: world Y clamped to the height band when one is set, otherwise t.

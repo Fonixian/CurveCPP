@@ -73,19 +73,14 @@ struct CameraDataBuffer {
 	uint32_t TotalCurveCount;
 };
 
-// The four float3 slots hold the curve in the MONOMIAL (power) basis, not its control points:
+// The four float3 slots hold the curve's cubic control points P0..P3 (ToCubic's output - lower degrees
+// raised to cubic, nothing else converted). The shaders evaluate them in Bernstein form,
 //
-//     P(t) = K0 + t * (K1 + t * (K2 + t * K3))
+//     P(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
 //
-// Same cubic, same 80 bytes, same slots - only what the numbers mean changed. The GPU never wants
-// the control points themselves, only something it can evaluate, and Horner does that in three
-// fused multiply-adds per component where the Bernstein form needs three weight products and four
-// scale-adds. ToPowerBasis in bezier_common.cpp does the conversion once per upload; the control
-// points stay in BezierData on the CPU side, which is what PatternBound() and ToCubic() read.
-//
-// Whoever adds a GPU pass that genuinely needs P0..P3 (subdivision, a control-polygon bound on the
-// GPU, hull rendering) has to convert back or carry them separately - the conversion is not
-// invertible in-place without the Bernstein matrix.
+// whose weights are exactly 0 / 1 at the two ends, so P(0) == P0 and P(1) == P3 bit-for-bit and a
+// merged joint is exact from both sides. (Until 2026-10 these slots held the monomial coefficients
+// K0..K3 for Horner, which reached P3 only to within a few ulps.)
 //
 // first_index / last_index are the curve's first and last SAMPLE indices. Inside a chain they overlap
 // by one: a merged curve's first_index is the previous curve's last_index (the shared joint sample,
@@ -96,13 +91,13 @@ struct CameraDataBuffer {
 // curve belongs to. For an unmerged curve they equal first_index / last_index. curve_vs.hlsl reads
 // ChainLastIndex for the back-terminus test, so interior joints of a chain get no caps.
 struct UploadBezierData {
-	DirectX::XMFLOAT3 K0;
+	DirectX::XMFLOAT3 P0;
 	int32_t  first_index;
-	DirectX::XMFLOAT3 K1;
+	DirectX::XMFLOAT3 P1;
 	int32_t  last_index;
-	DirectX::XMFLOAT3 K2;
+	DirectX::XMFLOAT3 P2;
 	uint32_t color_begin;
-	DirectX::XMFLOAT3 K3;
+	DirectX::XMFLOAT3 P3;
 	uint32_t color_end;
 	float    min_height;
 	float    max_height;
@@ -136,10 +131,6 @@ uint32_t FitCapacity(uint32_t allocated, uint32_t required);
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
 void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3& p3);
-// Cubic control points -> the monomial coefficients UploadBezierData carries. Call it on ToCubic's
-// output, and only after anything that needs the control polygon itself (the pattern bound) is done.
-void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
-	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
 
 // One curve's share of PatternBound(): floor(control polygon / spacing) + 1, clamped to
 // maxPatternCount, or 0 when spacing <= 0. Takes the CUBIC control points (ToCubic's output), since
@@ -398,8 +389,8 @@ public:
 // re-sent on any change, the curve data is split by how often it changes into three buffers, each
 // re-uploaded only when its part is dirty (see CurveDirtyBits):
 //
-//   curve_control_points   4 x float3 per curve, the cubic in MONOMIAL form K0..K3 - the same
-//                          coefficients as UploadBezierData, at curveIndex * 4   (48 B)  when re-posed
+//   curve_control_points   4 x float3 per curve, the cubic control points P0..P3 (ToCubic's
+//                          output, as in UploadBezierData) at curveIndex * 4   (48 B)  when re-posed
 //   curve_colors           SplitColorData                 (16 B)  when colours / height band change
 //   curve_indices          SplitIndices                   ( 8 B)  only when the layout changes
 //

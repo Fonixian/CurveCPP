@@ -11,38 +11,51 @@ cbuffer CameraData : register(b1) {
 // shader evaluates the three samples it needs (B, C and the neighbour) straight from the control points
 // at t3, the same slot the patterned and dot vertex shaders read their curve definitions from.
 StructuredBuffer<uint>            CurveBegins      : register(t1);
-StructuredBuffer<float3>          control_points   : register(t3); // K0,K1,K2,K3 per curve, see LoadCubic
+StructuredBuffer<float3>          control_points   : register(t3); // P0..P3 per curve, see LoadCubic
 StructuredBuffer<uint>            BezierIndexMap   : register(t4);
 StructuredBuffer<ColorData>       colors           : register(t5);
 StructuredBuffer<SolidCurveStyle> CurveStyles      : register(t6);
 StructuredBuffer<Indices>         indices          : register(t7);
 
-// The cubic's monomial coefficients K0..K3 sit at a fixed stride of four, so where to read them follows
+// The cubic's control points P0..P3 sit at a fixed stride of four, so where to read them follows
 // from the curve index alone - no lookup into `indices` has to come back first. All four loads are
 // independent and go out together.
 struct Cubic {
-    float3 k0, k1, k2, k3;
+    float3 p0, p1, p2, p3;
 };
 
 Cubic LoadCubic(uint curveIndex) {
     const uint k = curveIndex << 2u;
     Cubic c;
-    c.k0 = control_points[k];
-    c.k1 = control_points[k + 1u];
-    c.k2 = control_points[k + 2u];
-    c.k3 = control_points[k + 3u];
+    c.p0 = control_points[k];
+    c.p1 = control_points[k + 1u];
+    c.p2 = control_points[k + 2u];
+    c.p3 = control_points[k + 3u];
     return c;
 }
 
-// Horner: P(t) = K0 + t * (K1 + t * (K2 + t * K3)) - three fused multiply-adds per component.
+// Bernstein form, straight over the control points:
+//
+//     P(t) = s^3 P0 + 3 s^2 t P1 + 3 s t^2 P2 + t^3 P3,    s = 1 - t
+//
+// The weights come out as exactly (1, 0, 0, 0) at t = 0 and (0, 0, 0, 1) at t = 1, so the curve
+// reaches P0 and P3 bit-exactly, in whatever order the compiler sums the terms. That is what makes a
+// merged joint exact: the curve ending there evaluates P(1) = its P3, the one starting there P(0) = its
+// P0, and those are the same control point. (The monomial form K0 + K1 + K2 + K3 only got within a few
+// ulps of P3.) Cost: ~9 scalar ops for the weights plus a mul and three mads per component, against
+// Horner's three mads per component; the loads are the same four float3.
 float3 EvaluateBezier(Cubic c, float t) {
-    return mad(mad(mad(c.k3, t, c.k2), t, c.k1), t, c.k0);
+    const float s   = 1.0 - t;
+    const float st3 = 3.0 * s * t;
+    return mad(c.p3, t * t * t, mad(c.p2, st3 * t, mad(c.p1, st3 * s, c.p0 * (s * s * s))));
 }
 
 // Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. `range` is the
-// curve's inclusive sample range, Indices.xy.
+// curve's inclusive sample range, Indices.first_last. The last sample is pinned to exactly 1: a GPU
+// divide may be a reciprocal and a multiply, and n * (1 / n) is not always 1 in float (n = 41 is the
+// first), which would leave P(1) a hair short of P3 and undo the exact endpoint EvaluateBezier gives.
 float SampleT(uint2 range, uint sampleIndex) {
-    return float(sampleIndex - range.x) / float(range.y - range.x);
+    return sampleIndex == range.y ? 1.0 : float(sampleIndex - range.x) / float(range.y - range.x);
 }
 
 // Colour of one sample: world Y clamped to the height band when one is set, otherwise t.
@@ -127,10 +140,9 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     }
 
     // Segment [i, i + 1] belongs to ONE curve, S = the owner of sample i, and S evaluates B and C over
-    // its own t in [0, 1] - including C = P(1) on S's last segment. At a merged joint that is the next
-    // curve's K0 only up to a few ulps (P(1) = K0 + K1 + K2 + K3 in monomial form; <= ~4.5e-6 world
-    // units, ~1e-4 px at scene scale), so the two segments meeting there may place their shared corner
-    // that far apart. Accepted: vertices snap to 1/256 px, so it almost never survives rasterisation.
+    // its own t in [0, 1] - including C = P(1) on S's last segment. At a merged joint that is S's P3,
+    // bit-for-bit the next curve's P0 (Bernstein weights are exactly 0/1 at the ends and SampleT pins
+    // the last sample to t = 1), so the two segments meeting there share their corner exactly.
     //
     // The neighbour IS kept consistent: it is always evaluated by the curve the adjacent segment uses
     // for that same sample, so both segments build their miter from the same three points. Inside S's

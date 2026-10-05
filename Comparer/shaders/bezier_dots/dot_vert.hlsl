@@ -26,7 +26,7 @@ cbuffer CameraData : register(b1) {
 // indices). The dots take t4, which is the index map there: in both it is the "which curve am I"
 // lookup. Nothing per sample point is bound - no CurveBegins, no index map - because a dot's two
 // bracketing samples always belong to its own curve, so there is no joint to look across.
-StructuredBuffer<float3>    ControlPoints : register(t3); // K0..K3 per curve at curveIndex * 4
+StructuredBuffer<float3>    ControlPoints : register(t3); // P0..P3 per curve at curveIndex * 4
 StructuredBuffer<DotSample> Dots          : register(t4);
 StructuredBuffer<ColorData> Colors        : register(t5);
 StructuredBuffer<DotStyle>  DotStyles     : register(t6);
@@ -35,10 +35,10 @@ StructuredBuffer<Indices>   CurveIndices  : register(t7);
 Cubic LoadCubic(uint curveIndex) {
     const uint k = curveIndex << 2u;
     Cubic c;
-    c.k0 = ControlPoints[k];
-    c.k1 = ControlPoints[k + 1u];
-    c.k2 = ControlPoints[k + 2u];
-    c.k3 = ControlPoints[k + 3u];
+    c.p0 = ControlPoints[k];
+    c.p1 = ControlPoints[k + 1u];
+    c.p2 = ControlPoints[k + 2u];
+    c.p3 = ControlPoints[k + 3u];
     return c;
 }
 

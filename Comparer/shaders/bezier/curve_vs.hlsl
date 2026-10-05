@@ -14,7 +14,7 @@ cbuffer CameraData : register(b1) {
 StructuredBuffer<float>        WorldDistances  : register(t0);
 StructuredBuffer<uint>         CurveBegins     : register(t1);
 StructuredBuffer<float>        ScreenDistances : register(t2);
-StructuredBuffer<float3>       ControlPoints   : register(t3); // K0..K3 per curve, see LoadCubic
+StructuredBuffer<float3>       ControlPoints   : register(t3); // P0..P3 per curve, see LoadCubic
 StructuredBuffer<uint>         BezierIndexMap  : register(t4);
 StructuredBuffer<ColorData>    Colors          : register(t5);
 StructuredBuffer<PatternStyle> CurveStyles     : register(t6);
@@ -27,10 +27,10 @@ StructuredBuffer<uint2>        CurveChains     : register(t9); // first, last cu
 Cubic LoadCubic(uint curveIndex) {
     const uint k = curveIndex << 2u;
     Cubic c;
-    c.k0 = ControlPoints[k];
-    c.k1 = ControlPoints[k + 1u];
-    c.k2 = ControlPoints[k + 2u];
-    c.k3 = ControlPoints[k + 3u];
+    c.p0 = ControlPoints[k];
+    c.p1 = ControlPoints[k + 1u];
+    c.p2 = ControlPoints[k + 2u];
+    c.p3 = ControlPoints[k + 3u];
     return c;
 }
 
@@ -132,7 +132,7 @@ CurveVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
 
     // Same evaluation as solid_vert.hlsl - see the note there. Segment [i, i + 1] belongs to ONE curve,
     // S = the owner of sample i, which evaluates B and C over its own t in [0, 1] (C = S's P(1) at a
-    // merged joint, a few ulps off the next curve's K0 - accepted).
+    // merged joint, bit-for-bit the next curve's P0 - see solid_vert).
     const uint curveB = BezierIndexMap[i];
     const Cubic cubicB = LoadCubic(curveB);
     const uint2 rangeB = CurveIndices[curveB].first_last;
