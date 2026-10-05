@@ -4,6 +4,19 @@
 #define CURVE_PATTERN_SHRINK_TO_FIT 1
 #endif
 
+// Clamp the pattern arc to the segment's OWN arc range at its joints. The quad reaches well past the
+// segment's ends (a miter, or a half-width of overshoot), and there the segment-local arc keeps
+// counting straight on while the curve turns away - so those pixels read the pattern at arcs this
+// segment never covers. Worst when the curve heads toward the camera: the segment is ~0 px long on
+// screen but its quad is a full stroke wide, so nearly all of it evaluates the pattern at somebody
+// else's arc and a segment lying wholly inside a dash only fills a stripe of its quad. Clamped, a
+// pixel can never read past where this segment starts or where the next one begins: a segment inside
+// a dash fills its whole quad, a joint in a gap stays a gap. Chain ends (no neighbour) are not
+// clamped, so the dash and the terminus cap shape the curve's ends exactly as before.
+#ifndef CURVE_PATTERN_CLAMP_TO_SEGMENT
+#define CURVE_PATTERN_CLAMP_TO_SEGMENT 1
+#endif
+
 #ifndef CURVE_PATTERN_FILL
 #define CURVE_PATTERN_FILL 0.95
 #endif
@@ -242,6 +255,7 @@ float CurvePatternSDF(
     const float a0 = patternArc - c0;
     const float a1 = patternArc - c1;
     float arcDist = (abs(a0) <= abs(a1)) ? a0 : a1;
+
     // BEHAVIOUR CHANGE, the only one here. This read `totalDistance > arcDist`, comparing a WORLD
     // arc length against a SCREEN-pixel offset from a centre - the unit mismatch in
     // curve_renderer.md. The world arc is gone and the slot coordinate replacing it is no more
@@ -290,10 +304,20 @@ float4 main(CurveVSOutput input) : SV_Target
 
     // The pattern is the one consumer that spans segments, so it gets the seam-consistent arc.
 #if CURVE_PATTERN_BISECTOR
-    const float patternArc = input.ScreenArcBegin + CurvePatternArc(
+    float patternArc = input.ScreenArcBegin + CurvePatternArc(
         localArc, lateral, segmentLength, halfWidth, input.ArcShear);
 #else
-    const float patternArc = currentArc;
+    float patternArc = currentArc;
+#endif
+
+#if CURVE_PATTERN_CLAMP_TO_SEGMENT
+    // [ScreenArcBegin, ScreenArcBegin + segmentLength] is this segment's arc range: B is where it
+    // starts, C where the next segment begins. Only clamped at ends that have a neighbour.
+    {
+        const float arcLo = (input.Neighbors.x != 0u) ? input.ScreenArcBegin : -1e30;
+        const float arcHi = (input.Neighbors.y != 0u) ? input.ScreenArcBegin + segmentLength : 1e30;
+        patternArc = clamp(patternArc, arcLo, arcHi);
+    }
 #endif
 
     sdf = max(sdf, CurvePatternSDF(
