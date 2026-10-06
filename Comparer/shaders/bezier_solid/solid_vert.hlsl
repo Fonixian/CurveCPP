@@ -7,19 +7,13 @@ cbuffer CameraData : register(b1) {
     uint TotalCurveCount;
 };
 
-// t0 used to be CalculatedPoints, written by a solid_calc_points compute pass. That pass is gone: this
-// shader evaluates the three samples it needs (B, C and the neighbour) straight from the control points
-// at t3, the same slot the patterned and dot vertex shaders read their curve definitions from.
-StructuredBuffer<uint>            CurveBegins      : register(t1);
-StructuredBuffer<float3>          control_points   : register(t3); // P0..P3 per curve, see LoadCubic
-StructuredBuffer<uint>            BezierIndexMap   : register(t4);
-StructuredBuffer<ColorData>       colors           : register(t5);
-StructuredBuffer<SolidCurveStyle> CurveStyles      : register(t6);
-StructuredBuffer<Indices>         indices          : register(t7);
+StructuredBuffer<uint>   current_curveegins : register(t1);
+StructuredBuffer<float3> control_points     : register(t3);
+StructuredBuffer<uint>   BezierIndexMap     : register(t4);
+StructuredBuffer<uint4>  colors             : register(t5); // color1, color2, height1, height2 (for interpolation based on height)
+StructuredBuffer<uint>   CurveStyles        : register(t6); // width << 24 | front_cap << 16 | back_cap << 8 | join
+StructuredBuffer<uint2>  indices            : register(t7); // FirstIndex, LastIndex: the curve's sample range. e.g [0,50] [51,90]
 
-// The cubic's control points P0..P3 sit at a fixed stride of four, so where to read them follows
-// from the curve index alone - no lookup into `indices` has to come back first. All four loads are
-// independent and go out together.
 struct Cubic {
     float3 p0, p1, p2, p3;
 };
@@ -34,28 +28,14 @@ Cubic LoadCubic(uint curveIndex) {
     return c;
 }
 
-// Bernstein form, straight over the control points:
-//
-//     P(t) = s^3 P0 + 3 s^2 t P1 + 3 s t^2 P2 + t^3 P3,    s = 1 - t
-//
-// The weights come out as exactly (1, 0, 0, 0) at t = 0 and (0, 0, 0, 1) at t = 1, so the curve
-// reaches P0 and P3 bit-exactly, in whatever order the compiler sums the terms. That is what makes a
-// merged joint exact: the curve ending there evaluates P(1) = its P3, the one starting there P(0) = its
-// P0, and those are the same control point. (The monomial form K0 + K1 + K2 + K3 only got within a few
-// ulps of P3.) Cost: ~9 scalar ops for the weights plus a mul and three mads per component, against
-// Horner's three mads per component; the loads are the same four float3.
 float3 EvaluateBezier(Cubic c, float t) {
     const float s   = 1.0 - t;
     const float st3 = 3.0 * s * t;
     return mad(c.p3, t * t * t, mad(c.p2, st3 * t, mad(c.p1, st3 * s, c.p0 * (s * s * s))));
 }
 
-// Curve parameter of one sample index - resolution - 1 intervals span t in [0, 1]. `range` is the
-// curve's inclusive sample range, Indices.first_last. The last sample is pinned to exactly 1: a GPU
-// divide may be a reciprocal and a multiply, and n * (1 / n) is not always 1 in float (n = 41 is the
-// first), which would leave P(1) a hair short of P3 and undo the exact endpoint EvaluateBezier gives.
 float SampleT(uint2 range, uint sampleIndex) {
-    return sampleIndex == range.y ? 1.0 : float(sampleIndex - range.x) / float(range.y - range.x);
+    return float(sampleIndex - range.x) / float(range.y - range.x);
 }
 
 // Colour of one sample: world Y clamped to the height band when one is set, otherwise t.
@@ -68,46 +48,46 @@ float3 SampleColor(uint4 color, float height, float t) {
     return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
 }
 
-bool IsCurveBegin(uint2 words, uint wordBase, uint pointIndex) {
+bool Iscurrent_curveegin(uint2 words, uint wordBase, uint pointIndex) {
     uint w = ((pointIndex >> 5u) == wordBase) ? words.x : words.y;
     return ((w >> (pointIndex & 31u)) & 1u) != 0u;
 }
 
-float4 side_dist(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
-float2 depth_dist(float4 p) { return float2(p.z, p.w - p.z); }
+float4 SidePlaneDistances(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
+float2 DepthPlaneDistances(float4 p) { return float2(p.z, p.w - p.z); }
 
 float max4(float4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
 float min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
 float max2(float2 v) { return max(v.x, v.y); }
 float min2(float2 v) { return min(v.x, v.y); }
 
-bool clip(inout float4 B, inout float4 C, out float t0, out float t1) {
+bool clip(inout float4 start, inout float4 end, out float t0, out float t1) {
     t0 = 0.0;
     t1 = 1.0;
 
-    if (isnan(B.x) || isnan(C.x)) return false;
+    if (isnan(start.x) || isnan(end.x)) return false;
 
-    float4 sB = side_dist(B), sC = side_dist(C);
-    float2 nB = depth_dist(B), nC = depth_dist(C);
+    const float4 sideStart = SidePlaneDistances(start), sideEnd = SidePlaneDistances(end);
+    const float2 depthStart = DepthPlaneDistances(start), depthEnd = DepthPlaneDistances(end);
 
-    if (any(min(sB, sC) < 0.0) || any(min(nB, nC) < 0.0)) {
-        if (any(max(sB, sC) < 0.0) || any(max(nB, nC) < 0.0)) return false;
+    if (any(min(sideStart, sideEnd) < 0.0) || any(min(depthStart, depthEnd) < 0.0)) {
+        if (any(max(sideStart, sideEnd) < 0.0) || any(max(depthStart, depthEnd) < 0.0)) return false;
 
-        float4 ds = sC - sB;
-        float4 ts = -sB / ds;
-        t0 = max(0.0, max4((ds > 0.0) ? ts : 0.0));
-        t1 = min(1.0, min4((ds < 0.0) ? ts : 1.0));
+        float4 sideDelta = sideEnd - sideStart;
+        float4 sideT = -sideStart / sideDelta;
+        t0 = max(0.0, max4((sideDelta > 0.0) ? sideT : 0.0));
+        t1 = min(1.0, min4((sideDelta < 0.0) ? sideT : 1.0));
 
-        float2 dn = nC - nB;
-        float2 tn = -nB / dn;
-        t0 = max(t0, max2((dn > 0.0) ? tn : 0.0));
-        t1 = min(t1, min2((dn < 0.0) ? tn : 1.0));
+        float2 depthDelta = depthEnd - depthStart;
+        float2 depthT = -depthStart / depthDelta;
+        t0 = max(t0, max2((depthDelta > 0.0) ? depthT : 0.0));
+        t1 = min(t1, min2((depthDelta < 0.0) ? depthT : 1.0));
 
         if (t0 >= t1) return false;
 
-        float4 B0 = B, C0 = C;
-        B = lerp(B0, C0, t0);
-        C = lerp(B0, C0, t1);
+        float4 start0 = start, end0 = end;
+        start = lerp(start0, end0, t0);
+        end = lerp(start0, end0, t1);
     }
 
     return true;
@@ -127,47 +107,34 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
     const uint pointCount = TotalPointCount;
 
     const bool nearSide = index < 2u;
-    
     const uint wordBase = i >> 5u;
-    const uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
-    const bool hasA = i > 0u && !IsCurveBegin(beginWords, wordBase, i);
-    const bool hasD = (i + 2u) < pointCount && !IsCurveBegin(beginWords, wordBase, i + 2u);
+    const uint2 beginWords = uint2(current_curveegins[wordBase], current_curveegins[wordBase + 1u]);
+    const bool hasA = i > 0u && !Iscurrent_curveegin(beginWords, wordBase, i);
+    const bool hasD = (i + 2u) < pointCount && !Iscurrent_curveegin(beginWords, wordBase, i + 2u);
     const bool hasN = nearSide ? hasA : hasD;
     
-    if ((i + 1u) >= pointCount || IsCurveBegin(beginWords, wordBase, i + 1u)) {
+    if ((i + 1u) >= pointCount || Iscurrent_curveegin(beginWords, wordBase, i + 1u)) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
-    // Segment [i, i + 1] belongs to ONE curve, S = the owner of sample i, and S evaluates B and C over
-    // its own t in [0, 1] - including C = P(1) on S's last segment. At a merged joint that is S's P3,
-    // bit-for-bit the next curve's P0 (Bernstein weights are exactly 0/1 at the ends and SampleT pins
-    // the last sample to t = 1), so the two segments meeting there share their corner exactly.
-    //
-    // The neighbour IS kept consistent: it is always evaluated by the curve the adjacent segment uses
-    // for that same sample, so both segments build their miter from the same three points. Inside S's
-    // range that is S itself - no loads. Only across a merged joint is it another curve, and then it is
-    // simply S - 1 or S + 1, because a chain is a run of consecutive curves (see merge_with_previous).
-    const uint curveB = BezierIndexMap[i];
-    const Cubic cubicB = LoadCubic(curveB);
-    const uint2 rangeB = indices[curveB].first_last;
+    const uint current_curve = BezierIndexMap[i];
+    const Cubic current_cubic = LoadCubic(current_curve);
+    const uint2 current_range = indices[current_curve];
 
-    const float tB = SampleT(rangeB, i);
-    const float tC = SampleT(rangeB, i + 1u);
-    const float3 rawB = EvaluateBezier(cubicB, tB);
-    const float3 rawC = EvaluateBezier(cubicB, tC);
+    const float tB = SampleT(current_range, i);
+    const float tC = SampleT(current_range, i + 1u);
+    const float3 rawB = EvaluateBezier(current_cubic, tB);
+    const float3 rawC = EvaluateBezier(current_cubic, tC);
 
-    // i - 1 leaves S only when B is S's first sample; i + 2 only when C is S's last. With hasN that
-    // means the chain goes on into S - 1 / S + 1. When !hasN the value is never used (A falls back to C
-    // below), so it takes the no-load path too - ni may wrap there, which only makes t meaningless.
     const uint ni = nearSide ? (i - 1u) : (i + 2u);
-    const bool crossesJoint = hasN && (nearSide ? (i == rangeB.x) : ((i + 1u) == rangeB.y));
+    const bool crosses_curve = hasN && (nearSide ? (i == current_range.x) : ((i + 1u) == current_range.y));
     float3 rawN;
-    [branch] if (crossesJoint) {
-        const uint curveN = nearSide ? (curveB - 1u) : (curveB + 1u);
-        rawN = EvaluateBezier(LoadCubic(curveN), SampleT(indices[curveN].first_last, ni));
+    [branch] if (crosses_curve) {
+        const uint curveN = nearSide ? (current_curve - 1u) : (current_curve + 1u);
+        rawN = EvaluateBezier(LoadCubic(curveN), SampleT(indices[curveN], ni));
     }
-    else rawN = EvaluateBezier(cubicB, SampleT(rangeB, ni));
+    else rawN = EvaluateBezier(current_cubic, SampleT(current_range, ni));
 
     float4 B4 = mul(float4(rawB, 1.0), VP);
     float4 C4 = mul(float4(rawC, 1.0), VP);
@@ -195,15 +162,17 @@ SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
         if (uN > 0.0) N4 = lerp(N4, P, uN);
     }
 
-    const uint style = CurveStyles[curveB].width_capcapjoin;
-    const float width_pixel = StyleWidth(style);
+    const uint style = CurveStyles[current_curve];
+    const float width_pixel = Width(style);
 
-    const uint4 colorB = colors[curveB].c0_c1_height0_height1;
+    const uint4 colorB = colors[current_curve];
     const float3 cB = SampleColor(colorB, rawB.y, tB);
-    const float3 cC = SampleColor(colorB, rawC.y, tC); // S's own colours, t = 1 at its end
+    const float3 cC = SampleColor(colorB, rawC.y, tC);
     o.Color = float4(lerp(cB, cC, nearSide ? t0 : t1), 1.0);
-    o.CapCapJoin = style; // the width byte on top is ignored by FrontCap/BackCap/Join
-    o.Neighbors = uint2(hasA ? 1u : 0u, hasD ? 1u : 0u);
+    uint ends = Join(style);
+    ends |= (hasA ? CurveEndJoined : FrontCap(style)) << 16;
+    ends |= (hasD ? CurveEndJoined : BackCap(style)) << 8;
+    o.CapCapJoin = ends;
 
     const float3 ndcB = B4.xyz / B4.w;
     const float3 ndcC = C4.xyz / C4.w;
