@@ -8,16 +8,7 @@ cbuffer CameraData : register(b0)
     uint     TotalCurveCount;
 };
 
-// How many entries PatternPosition actually holds. The CPU sizes it from an upper bound that cannot
-// be smaller than the count curve_pattern_ini arrives at, so the clamp below should never bite - it
-// is here so a wrong bound loses the tail of a pattern instead of writing past the end.
-cbuffer PatternCapacity : register(b1)
-{
-    uint  Capacity;
-    uint3 CapacityPadding;
-};
-
-StructuredBuffer<Indices>         CurveIndices    : register(t0);
+StructuredBuffer<uint2>           CurveIndices    : register(t0);
 // The only pass that reads both channels, and it reads them in two distinct phases: the binary
 // search walks WORLD arc length alone (one float per probe, not a float2 with half of it discarded),
 // and only the single bracketing pair it lands on is looked up in SCREEN arc length.
@@ -40,12 +31,17 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (curveIndex >= TotalCurveCount) return;
 
+    // The CPU sizes PatternPosition from an upper bound that is clamped to maxPatternCount, so the
+    // offsets can run past its end. Clamp this curve's slice to the buffer once, here, so a too-small
+    // buffer loses the tail of the pattern instead of writing past the end.
+    uint capacity, stride;
+    PatternPosition.GetDimensions(capacity, stride);
     uint patternFirst = PatternOffsets[curveIndex];
-    uint patternCount = PatternOffsets[curveIndex + 1u] - patternFirst;
+    uint patternCount = min(PatternOffsets[curveIndex + 1u], capacity) - min(patternFirst, capacity);
 
     if (patternCount == 0) return;
 
-    uint2 range          = CurveIndices[curveIndex].first_last;
+    uint2 range          = CurveIndices[curveIndex];
     uint  sampleStartIdx = range.x;
     uint  sampleEndIdx   = range.y;
     float worldSpacing   = CurveStyles[curveIndex].spacing;
@@ -63,7 +59,6 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     for (uint localIdx = threadLaneIdx; localIdx < patternCount; localIdx += 8)
     {
         uint  globalIdx       = patternFirst + localIdx;
-        if (globalIdx >= Capacity) continue;
 
         // One multiply from the grid index, so this lands on exactly the distance curve_ps.hlsl
         // inverts with floor(totalDistance / spacing) - accumulating base * spacing separately would

@@ -91,7 +91,7 @@ protected:
 
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
-	void AllocatePatternBuffer(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
+	void AllocatePatternBuffer(const Axodox::Graphics::GraphicsDevice& device);
 	void CountPatternCenters(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunPatternPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
@@ -145,10 +145,6 @@ private:
 	// Allocated one element longer than the curve count for it.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_offsets;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> patterns;        // One float per pattern: screen arc length of the center
-
-	// patterns_allocated, so pattern_calc can clamp rather than run off the end of the buffer.
-	PatternCapacityBuffer capacity_cb_data{};
-	std::unique_ptr<Axodox::Graphics::ConstantBuffer> pattern_capacity;
 
 	Axodox::Graphics::ComputeShader* pattern_ini;
 	Axodox::Graphics::ComputeShader* pattern_calc;

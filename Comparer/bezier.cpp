@@ -37,8 +37,6 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 		RasterizerState{ device, RasterizerFlags::CullNone },
 		{ 1.f, 1.f, 1.f, 1.f }
 	});
-
-	pattern_capacity = std::make_unique<ConstantBuffer>(device, capacity_cb_data);
 }
 
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
@@ -146,7 +144,7 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 // Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
 // Rounded up by next_pow2 on top of a bound that already over-counts, and shrunk only at a quarter,
 // so a scene edit usually costs no reallocation at all.
-void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device) {
 	// Grow when the bound no longer fits, shrink once it has fallen to a quarter of the allocation
 	// (removed curves, a larger spacing) - see FitCapacity() in bezier_common.
 	const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
@@ -154,9 +152,6 @@ void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device, Graphic
 
 	patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(required)));
 	patterns_allocated = required;
-
-	capacity_cb_data.capacity = patterns_allocated;
-	pattern_capacity->Upload(capacity_cb_data, context);
 }
 
 // Count, then scan. No atomic anywhere in here, so curve i's slice of the pattern array is a
@@ -204,7 +199,6 @@ void BezierRenderer::RunPatternPass(GraphicsDeviceContext* context) {
 	ClearComputeBindings(context);
 
 	viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
-	pattern_capacity->Bind(ShaderStage::Compute, 1, context);         // b1
 	curve_indices->Bind(ShaderStage::Compute, 0, context);            // t0: sample range per curve
 	world_distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1: binary-search key
 	screen_distances->BindOrdered(ShaderStage::Compute, 2, context);  // t2: what the hit interpolates
@@ -231,7 +225,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	}
 
 	// CPU-side and independent of anything the GPU is doing: it reads PatternBound() only.
-	AllocatePatternBuffer(device, context);
+	AllocatePatternBuffer(device);
 
 	UploadCameraData(view_proj, context);
 
