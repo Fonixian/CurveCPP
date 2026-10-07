@@ -4,39 +4,35 @@ cbuffer CameraData : register(b0)
 {
     float4x4 VP;
     float2   WH;
-    uint     TotalPointCount;
-    uint     TotalCurveCount;
+    uint     TotalPointCount; // samples, 64 per piece
+    uint     TotalCurveCount; // pieces
 };
 
-StructuredBuffer<uint2>           CurveIndices    : register(t0);
-StructuredBuffer<float>           WorldDistances  : register(t1);
-StructuredBuffer<float>           ScreenDistances : register(t2);
-StructuredBuffer<PatternStyle>    CurveStyles     : register(t3);
-StructuredBuffer<uint>            PatternOffsets  : register(t4);
+StructuredBuffer<float>           WorldDistances  : register(t0); // arc at each sample, from the chain's start
+StructuredBuffer<float>           ScreenDistances : register(t1); // same, px
+StructuredBuffer<PatternStyle>    CurveStyles     : register(t2);
+StructuredBuffer<uint>            PatternOffsets  : register(t3);
 
 RWStructuredBuffer<float> PatternPosition : register(u0);
 
 [numthreads(8, 8, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    uint curveIndex    = dispatchThreadId.y;
+    uint pieceIndex    = dispatchThreadId.y;
     uint threadLaneIdx = dispatchThreadId.x;
 
-    if (curveIndex >= TotalCurveCount) return;
+    if (pieceIndex >= TotalCurveCount) return;
 
     uint capacity, stride;
     PatternPosition.GetDimensions(capacity, stride);
-    uint patternFirst = PatternOffsets[curveIndex];
-    uint patternCount = min(PatternOffsets[curveIndex + 1u], capacity) - min(patternFirst, capacity);
+    uint patternFirst = PatternOffsets[pieceIndex];
+    uint patternCount = min(PatternOffsets[pieceIndex + 1u], capacity) - min(patternFirst, capacity);
 
     if (patternCount == 0) return;
 
-    uint2 range          = CurveIndices[curveIndex];
-    uint  sampleStartIdx = range.x;
-    uint  sampleEndIdx   = range.y;
-    float worldSpacing   = CurveStyles[curveIndex].spacing;
-
-    float arcBegin = WorldDistances[sampleStartIdx];
+    uint  firstSample  = pieceIndex << PieceSampleShift;
+    float worldSpacing = CurveStyles[pieceIndex].spacing;
+    float arcBegin     = WorldDistances[firstSample];
 
     uint patternBase = (arcBegin > 0.0 && worldSpacing > 0.0)
         ? (uint) floor(arcBegin / worldSpacing) + 1u
@@ -44,26 +40,19 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     for (uint localIdx = threadLaneIdx; localIdx < patternCount; localIdx += 8)
     {
-        uint  globalIdx       = patternFirst + localIdx;
-
         float targetWorldDist = (float)(patternBase + localIdx) * worldSpacing;
 
-        uint low     = sampleStartIdx;
-        uint high    = sampleEndIdx;
-        uint sampleA = sampleStartIdx;
-
-        while (low <= high) {
-            uint mid = (low + high) / 2;
-            if (WorldDistances[mid] <= targetWorldDist) {
-                sampleA = mid;
-                low     = mid + 1;
-            } else {
-                if (mid == sampleStartIdx) break;
-                high = mid - 1;
-            }
+        // The last sample of the piece at or before the target (the first one if none is), over the
+        // fixed 64-sample block: always exactly PieceSampleShift dependent loads, no loop exit.
+        uint sampleA = 0u;
+        [unroll]
+        for (uint step = PieceSamples >> 1u; step > 0u; step >>= 1u) {
+            if (WorldDistances[firstSample + sampleA + step] <= targetWorldDist)
+                sampleA += step;
         }
-
-        uint sampleB = min(sampleA + 1, sampleEndIdx);
+        uint sampleB = min(sampleA + 1u, PieceSampleMask);
+        sampleA += firstSample;
+        sampleB += firstSample;
 
         float distA = WorldDistances[sampleA];
         float distB = WorldDistances[sampleB];
@@ -76,6 +65,6 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
         float screenDistA = ScreenDistances[sampleA];
         float screenDistB = ScreenDistances[sampleB];
 
-        PatternPosition[globalIdx] = lerp(screenDistA, screenDistB, saturate(segmentT));
+        PatternPosition[patternFirst + localIdx] = lerp(screenDistA, screenDistB, saturate(segmentT));
     }
 }

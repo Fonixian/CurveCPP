@@ -256,6 +256,16 @@ protected:
 	bool UpdateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
 	void UploadCameraData(const DirectX::XMMATRIX& view_proj, Axodox::Graphics::GraphicsDeviceContext* context);
 
+	// How many curves the GPU sees - what UploadCameraData puts in TotalCurveCount. One per BezierData
+	// by default; the patterned renderer cuts every curve into fixed-size pieces and reports those.
+	virtual uint32_t GpuCurveCount() const { return static_cast<uint32_t>(curves.size()); }
+
+	// Sizes the point / curve buffers for the (already compacted) `curves`, builds the per-sample
+	// curve map and the chain begin bits, then uploads everything. Runs on every layout change
+	// (Add / Remove / Resolution / Merged). The default is the per-curve, variable-resolution layout
+	// the line, solid and dot renderers use; BezierRenderer overrides it with fixed-size pieces.
+	virtual void LayoutBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
+
 	// Opens and closes the profiler frame and the "total" metric. Every Draw() override must call
 	// BeginDraw() first and EndDraw() on every exit path, early returns included.
 	void BeginDraw();

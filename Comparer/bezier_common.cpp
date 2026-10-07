@@ -241,9 +241,12 @@ bool BezierRendererBase::IsChainStart(size_t index) const {
 
 void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
 	// Removal only ever raises need_resize, so this is the one place it has to be folded in - and it
-	// must happen before anything below reads `curves`.
+	// must happen before anything the layout does reads `curves`.
 	CompactRemoved();
+	LayoutBuffers(device, context);
+}
 
+void BezierRendererBase::LayoutBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
 	// A merged curve shares its first sample with the previous curve's last one (see
 	// merge_with_previous), so it adds one sample fewer than its resolution.
 	total_points = 0;
@@ -428,7 +431,7 @@ bool BezierRendererBase::UpdateBuffers(const GraphicsDevice& device, GraphicsDev
 void BezierRendererBase::UploadCameraData(const XMMATRIX& view_proj, GraphicsDeviceContext* context) {
 	XMStoreFloat4x4(&camera_cb_data.VP, XMMatrixTranspose(view_proj));
 	camera_cb_data.TotalPointCount = total_points;
-	camera_cb_data.TotalCurveCount = static_cast<uint32_t>(curves.size());
+	camera_cb_data.TotalCurveCount = GpuCurveCount();
 	viewport_data->Upload(camera_cb_data, context);
 }
 

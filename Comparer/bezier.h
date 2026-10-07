@@ -39,14 +39,42 @@
 //
 // If every curve in the scene is solid, use BezierSolidRenderer instead - it skips all of it.
 //
-// Curve data is BezierSplitRendererBase's split upload, like the other three renderers: control
-// points (P0..P3), colours and sample ranges in three buffers, each re-sent only when its part
-// changes, plus one PatternStyle (width_capcapjoin, spacing, dash_length) per curve re-sent only when
-// a style setter fired. curve_vs builds the strip the way solid_vert does - B, C and both neighbours
-// evaluated straight from the control points, a neighbour across a merged joint taken from the
-// adjacent curve - so there is no CalculatedPoints buffer; the point pass keeps only the two arc
-// lengths. The chain range is gone from the per-curve data with the 80-byte struct: the terminus test
-// is per segment (Neighbors, from the begin bits), as in the solid renderer.
+// FIXED-SIZE PIECES. The GPU never sees a BezierData. Every curve is cut, on the CPU, into
+// ceil(resolution / 64) sub-curves of exactly PieceSamples = 64 sample points (63 segments) each - a
+// 192-point curve becomes three pieces over t in [0, 1/3], [1/3, 2/3], [2/3, 1] - and those pieces are
+// what every buffer below is indexed by. Because every piece has the same sample count, a sample
+// index says everything about where it lives:
+//
+//     piece = sample >> 6        local = sample & 63        t = local / 63   (local 63 is exactly 1)
+//
+// so no shader needs a per-sample curve map, a per-curve sample range or a divide by (last - first):
+// BezierIndexMap and CurveIndices are gone from this renderer, and the control points of a sample can
+// be fetched the moment its index is known. The resolution a curve asks for is rounded UP to a whole
+// number of pieces, so a short curve at resolution 2 costs a full 64-sample piece.
+//
+// Pieces do NOT share their joint sample: a piece's last sample (t = 1) and the next piece's first
+// (t = 0) are the same point, stored twice. That keeps every piece a 64-sample block. The duplicate
+// costs one zero-length "segment" per piece: curve_calc_points writes 0 for a piece's last sample,
+// so the arc lengths simply carry across the joint (x + 0 == x exactly), and the draw skips it - it
+// draws 63 instances per piece and maps instance s to sample s + s / 63.
+//
+// The pieces of one curve are a merged chain of their own (the first one merged into the previous
+// curve iff the curve is), so the pattern grid, the caps and the joins run across the cuts exactly as
+// they run across a merged joint. The cuts are taken by blossoming the cubic in double precision, so
+// the joint point is computed by the same arithmetic on both sides and is bit-identical, and the
+// first and last pieces keep the curve's own P0 and P3.
+//
+// Colour: a curve blended by t (no height band) would restart its blend in every piece, so a piece
+// carries its parent-t range [tA, tB] instead, in the two height floats it does not otherwise use -
+// stored as (tB, tA), so that "min >= max" still reads as "blend by t". The vertex shader blends by
+// lerp(tA, tB, t), which is the parent's t exactly; the endpoint colours stay the parent's C0 / C1,
+// so nothing is re-quantised to 8 bits at a cut. A curve with a height band does not care about t
+// and keeps its heights.
+//
+// Per piece there is one PatternStyle (width_capcapjoin, spacing, dash_length), a colour (see
+// above), the four control points and the chain's first / last piece, each re-sent only when its
+// part changed (CurveDirtyBits). Positions re-split every curve; layout (Add / Remove / Resolution /
+// Merged) re-cuts the piece table.
 //
 // The centre count used to come back from pattern_ini through a blocking Download(), which drains the
 // whole GPU queue in the middle of the frame just to size one buffer. It does not any more: the
@@ -71,22 +99,42 @@
 // per curve (pattern_offsets) plus ParalellScan's block-sum buffers, and two dispatches where there
 // was one; an atomic needs no room to work in, a scan does.
 
-class BezierRenderer : public BezierSplitRendererBase {
+class BezierRenderer : public BezierRendererBase {
 public:
+	// Sample points per GPU piece, as a shift. Must match PieceSampleShift in curve_common.hlsli.
+	static constexpr uint32_t PieceSampleShift = 6u;
+	static constexpr uint32_t PieceSamples = 1u << PieceSampleShift;  // 64
+	static constexpr uint32_t PieceSegments = PieceSamples - 1u;      // 63 - the last sample is the joint duplicate
+
+	// How many pieces a curve of `resolution` sample points is cut into: ceil(resolution / 64), never
+	// fewer than one.
+	static uint32_t PieceCount(unsigned resolution);
+
 	explicit BezierRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
 	uint32_t PatternCapacity() const override { return patterns_allocated; }
 
+	// GPU pieces in the scene - what the shaders see as TotalCurveCount.
+	uint32_t PieceTotal() const { return piece_total; }
+
 protected:
+	bool NeedsCalculatedPoints() const override { return false; }
+	bool NeedsBezierData() const override { return false; }
+	uint32_t GpuCurveCount() const override { return piece_total; }
+
+	// The piece layout: cuts every curve into PieceCount() pieces, sizes every buffer by pieces and
+	// samples, and sets one begin bit per chain at the first sample of its first piece.
+	void LayoutBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context) override;
+
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
-	// The base upload, plus what the pattern passes need on top of it: the CPU-side pattern bound
-	// (the split base does not compute it) and need_recount - raised only when something the centre
-	// count depends on changed, so a colour-only change no longer recounts.
+	// Per-piece uploads, each only when its part is dirty, plus what the pattern passes need on top:
+	// the CPU-side pattern bound and need_recount - raised only when something the centre count
+	// depends on changed, so a colour-only change does not recount.
 	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
 
 private:
@@ -95,18 +143,24 @@ private:
 	void CountPatternCenters(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunPatternPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
-	// Set whenever positions, sample layout or styles changed, so the centre count is recomputed once
+	// Set whenever positions, layout or styles changed, so the centre count is recomputed once
 	// rather than every frame. The count depends on world arc length and spacing only, which the
 	// camera does not move. Colours never raise it. See UploadCurves.
 	bool need_recount = false;
 
-	// PatternBound() over the live curves, from the cubic control polygons and spacings.
+	// PatternBound() over the live curves, from the cubic control polygons and spacings. Taken per
+	// CURVE, not per piece: the piece counts of one curve telescope to the curve's own window of the
+	// chain grid, so the per-curve bound already covers all of its pieces.
 	void UpdatePatternBound();
 
+	// piece_first[c] is the first piece of curve c; piece_first[curves.size()] == piece_total. Rebuilt
+	// by LayoutBuffers, so it is valid in every upload.
+	std::vector<uint32_t> piece_first;
+	uint32_t piece_total = 0;
+
 	// Matches PatternStyle in curve_common.hlsli: width << 24 | cap_front << 16 | cap_back << 8 |
-	// join, then spacing and dash length. The low three bytes are the solid renderer's CapCapJoin; the
-	// width takes the top byte, so it is rounded to a WHOLE pixel and clamped to [0, 255] like the
-	// solid renderer's.
+	// join, then spacing and dash length. The width takes the top byte, so it is rounded to a WHOLE
+	// pixel and clamped to [0, 255] like the solid renderer's.
 	struct UploadPatternStyle {
 		uint32_t width_capcapjoin;
 		float    spacing;
@@ -114,35 +168,49 @@ private:
 	};
 	static_assert(sizeof(UploadPatternStyle) == 12, "UploadPatternStyle must match PatternStyle in the shaders");
 
-	std::vector<UploadPatternStyle> style_scratch;
-
-	// Matches StructuredBuffer<uint2> CurveChains in curve_vs.hlsl: the first and last CURVE index of
-	// the merged chain a curve belongs to (both itself for an unmerged curve). Changes only with the
-	// layout (Add / remove / Merged / Resolution), so it is re-sent on DirtyLayout alone.
-	struct UploadChainCurves {
-		uint32_t first_curve;
-		uint32_t last_curve;
+	// Matches the uint4 CurveColors in curve_vs.hlsl. z / w are the height band when min < max,
+	// otherwise the piece's parent-t range stored as (tB, tA) - see the note above.
+	struct UploadPieceColor {
+		uint32_t color_begin;
+		uint32_t color_end;
+		float    z;
+		float    w;
 	};
-	static_assert(sizeof(UploadChainCurves) == 8, "UploadChainCurves must match CurveChains in curve_vs.hlsl");
+	static_assert(sizeof(UploadPieceColor) == 16, "UploadPieceColor must match CurveColors in curve_vs.hlsl");
 
-	std::vector<UploadChainCurves> chain_scratch;
-	// One UploadChainCurves per curve. curve_vs turns it into the chain's slot range in the pattern
-	// array, which is all the pixel shader is allowed to read.
+	// Matches StructuredBuffer<uint2> CurveChains: the first and last PIECE of the chain a piece
+	// belongs to. Changes only with the layout, so it is re-sent on DirtyLayout alone.
+	struct UploadChainPieces {
+		uint32_t first_piece;
+		uint32_t last_piece;
+	};
+	static_assert(sizeof(UploadChainPieces) == 8, "UploadChainPieces must match CurveChains in the shaders");
+
+	// Staging vectors, kept between uploads so a per-frame re-pose does not allocate.
+	std::vector<DirectX::XMFLOAT3>  control_point_scratch;
+	std::vector<UploadPieceColor>   color_scratch;
+	std::vector<UploadPatternStyle> style_scratch;
+	std::vector<UploadChainPieces>  chain_scratch;
+	std::vector<uint32_t>           begin_scratch;
+
+	// Per piece: P0..P3 at piece * 4 (48 B), the colour (16 B), the chain range (8 B). The style
+	// buffer is the base's curve_styles, also per piece.
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> piece_control_points;
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> piece_colors;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_chains;
 
 	uint32_t patterns_allocated = 0;
 
 	// --- per-frame compute results -------------------------------------------------
-	// One float per point each, written as a segment length by curve_calc_points and turned into a
-	// chain-cumulative running total by the matching scan below. Kept apart rather than interleaved
-	// into one float2 so each consumer loads only the channel it reads; see the note above.
+	// One float per SAMPLE each, written by curve_calc_points as the chord to the next sample (0 for a
+	// piece's last sample, the joint duplicate) and turned into an exclusive chain-cumulative running
+	// total by the matching scan below: [i] is the arc at sample i, so a piece spans [64k] .. [64k + 63].
+	// Kept apart rather than interleaved so each consumer loads only the channel it reads.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> world_distances;   // world arc length
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> screen_distances;  // screen arc length, px
-	// Per curve: written as the centre count by pattern_ini, then scanned IN PLACE into that curve's
-	// base offset, with the grand total appended one slot past the last curve. That appended slot is
-	// why there is no second buffer of counts and no resolve pass: curve i's count is the gap to
-	// offset i + 1, valid for the last curve too, and the total is a plain load at [curve count].
-	// Allocated one element longer than the curve count for it.
+	// Per piece: written as the centre count by pattern_ini, then scanned IN PLACE into that piece's
+	// base offset, with the grand total appended one slot past the last piece - so a piece's count is
+	// the gap to offset i + 1 and the total is a plain load at [piece count]. Allocated one longer.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_offsets;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> patterns;        // One float per pattern: screen arc length of the center
 
@@ -152,6 +220,6 @@ private:
 	// through, so the two channels cannot share one.
 	SegmentedScan world_scan;
 	SegmentedScan screen_scan;
-	// Over curve counts, not points - at most one element per curve, so its own buffers are tiny.
+	// Over piece counts, not samples - at most one element per piece, so its own buffers are tiny.
 	ParalellScan offset_scan;
 };

@@ -8,16 +8,15 @@ cbuffer CameraData : register(b1) {
 };
 
 
-StructuredBuffer<float>        WorldDistances     : register(t0); // arc length from the chain's start, per sample
-StructuredBuffer<uint>         CurveBegins        : register(t1);
+// Everything is per PIECE (a fixed 64-sample sub-curve, see bezier.h) or per SAMPLE; the piece and t
+// follow from the sample index - no index map, no sample ranges. t1, t4 and t7 are no longer bound.
+StructuredBuffer<float>        WorldDistances     : register(t0); // arc at each sample, from the chain's start
 StructuredBuffer<float>        ScreenDistances    : register(t2); // same in pixels
-StructuredBuffer<float3>       CurveControlPoints : register(t3);
-StructuredBuffer<uint>         BezierIndexMap     : register(t4);
-StructuredBuffer<uint4>        CurveColors        : register(t5);
+StructuredBuffer<float3>       CurveControlPoints : register(t3); // P0..P3 per piece
+StructuredBuffer<uint4>        CurveColors        : register(t5); // c0, c1, then heights or the piece's (tB, tA)
 StructuredBuffer<PatternStyle> CurveStyles        : register(t6);
-StructuredBuffer<uint2>        CurveIndices       : register(t7);
 StructuredBuffer<uint>         PatternOffsets     : register(t8);
-StructuredBuffer<uint2>        CurveChains        : register(t9);
+StructuredBuffer<uint2>        CurveChains        : register(t9); // first / last piece of the chain
 
 Cubic LoadCubic(uint curveIndex) {
     uint k = curveIndex << 2u;
@@ -29,19 +28,18 @@ Cubic LoadCubic(uint curveIndex) {
     return c;
 }
 
+// colorData.zw is the height band when z < w. Otherwise it is (tB, tA), the piece's range of its
+// PARENT curve's t, so the blend follows the parent across every cut: lerp(tA, tB, t), which is
+// exactly t for an uncut curve (tA = 0, tB = 1).
 float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float t1, bool nearSide) {
     float minHeight = asfloat(colorData.z);
     float maxHeight = asfloat(colorData.w);
     float3 colorA = UnpackColorBits(colorData.x).rgb;
     float3 colorB = UnpackColorBits(colorData.y).rgb;
-    float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
+    float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight))
+                                                 : mad(t, minHeight - maxHeight, maxHeight);
     float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
     return float4(lerp(colorA, colorB, blend), 1.0);
-}
-
-bool IsCurveBegin(uint2 words, uint wordBase, uint sampleIndex) {
-    uint w = ((sampleIndex >> 5u) == wordBase) ? words.x : words.y;
-    return ((w >> (sampleIndex & 31u)) & 1u) != 0u;
 }
 
 float4 SidePlaneDistances(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
@@ -119,45 +117,47 @@ bool InnerMiterOverlaps(float2 dirAB, float cosTurn, float2 bisector, float leng
     return l > lengthAB || l > lengthCB;
 }
 
-PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID) {
+PatternedVSOutput main(uint vertexId : SV_VertexID, uint segmentIndex : SV_InstanceID) {
     PatternedVSOutput o = (PatternedVSOutput)0;
     bool nearSide = vertexId < 2u;
 
-    uint wordBase = sampleIndex >> 5u;
-    uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
-    bool hasPrev = sampleIndex > 0u && !IsCurveBegin(beginWords, wordBase, sampleIndex);
-    bool hasNext = (sampleIndex + 2u) < TotalPointCount && !IsCurveBegin(beginWords, wordBase, sampleIndex + 2u);
+    // 63 instances per piece, every one a real segment: the piece is segment / 63, and the segment
+    // starts at sample segment + piece, which steps over each piece's joint duplicate. The
+    // control-point loads can issue immediately. The chain range replaces the begin bits for the
+    // terminus tests.
+    uint currentCurve = PieceOfSegment(segmentIndex); // the piece
+    uint sampleIndex = segmentIndex + currentCurve;
+    uint local = sampleIndex & PieceSampleMask;       // 0..62
+    uint2 chain = CurveChains[currentCurve];
+    bool chainStart = chain.x == currentCurve;
+    bool firstSegment = local == 0u;
+    bool lastSegment = local == PieceSegments - 1u;
+    bool hasPrev = !firstSegment || !chainStart;
+    bool hasNext = !lastSegment || chain.y != currentCurve;
 
-    if ((sampleIndex + 1u) >= TotalPointCount || IsCurveBegin(beginWords, wordBase, sampleIndex + 1u)) {
-        o.Position = 0.0 / 0.0;
-        return o;
-    }
-
-    uint currentCurve = BezierIndexMap[sampleIndex];
     Cubic currentCubic = LoadCubic(currentCurve);
-    uint2 currentRange = CurveIndices[currentCurve];
 
-    float tStart = SampleT(currentRange, sampleIndex);
-    float tEnd = SampleT(currentRange, sampleIndex + 1u);
+    float tStart = PieceT(local);
+    float tEnd = PieceT(local + 1u);
     float3 startWorld = EvaluateBezier(currentCubic, tStart);
     float3 endWorld = EvaluateBezier(currentCubic, tEnd);
 
-    // Unlike solid curve case every vertex needs BOTH neighbors
+    // Unlike solid curve case every vertex needs BOTH neighbors. Across a cut or a merged joint the
+    // neighbour comes from the adjacent piece (pieces of a chain are consecutive), at the same t that
+    // piece uses for its own sample, so both sides of the joint agree bit for bit.
     float3 beforeWorld;
     [branch]
-    if (hasPrev && sampleIndex == currentRange.x) {
-        uint prevCurve = currentCurve - 1u;
-        beforeWorld = EvaluateBezier(LoadCubic(prevCurve), SampleT(CurveIndices[prevCurve], sampleIndex - 1u));
-    } else
-        beforeWorld = EvaluateBezier(currentCubic, SampleT(currentRange, sampleIndex - 1u));
+    if (hasPrev && firstSegment)
+        beforeWorld = EvaluateBezier(LoadCubic(currentCurve - 1u), PieceT(PieceSegments - 1u)); // skips its duplicate end
+    else
+        beforeWorld = EvaluateBezier(currentCubic, PieceT(local - 1u));
 
     float3 afterWorld;
     [branch]
-    if (hasNext && (sampleIndex + 1u) == currentRange.y) {
-        uint nextCurve = currentCurve + 1u;
-        afterWorld = EvaluateBezier(LoadCubic(nextCurve), SampleT(CurveIndices[nextCurve], sampleIndex + 2u));
-    } else
-        afterWorld = EvaluateBezier(currentCubic, SampleT(currentRange, sampleIndex + 2u));
+    if (hasNext && lastSegment)
+        afterWorld = EvaluateBezier(LoadCubic(currentCurve + 1u), PieceT(1u));
+    else
+        afterWorld = EvaluateBezier(currentCubic, PieceT(local + 2u));
 
     float4 beforeClip = mul(float4(beforeWorld, 1.0), VP);
     float4 startClip = mul(float4(startWorld, 1.0), VP);
@@ -206,14 +206,13 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     // The divide and the bias are both linear, so they commute with the rasterizer's interpolation
     // and the pixel shader only has to floor() it. The bias is 0 while every curve of the chain has
     // the same spacing; it is there for mixed spacing.
-    float curveArcStart = WorldDistances[currentRange.x];
+    float curveArcStart = WorldDistances[currentCurve << PieceSampleShift];
     float patternBase = (curveArcStart > 0.0) ? floor(curveArcStart / style.spacing) + 1.0 : 0.0;
     float patternCoord = lerp(startWorldDistance, endWorldDistance, cornerT) / style.spacing
                        + (float(PatternOffsets[currentCurve]) - patternBase);
 
-    // Chains are runs of consecutive curves and their slots are laid out in curve order, so the
+    // Chains are runs of consecutive pieces and their slots are laid out in piece order, so the
     // chain's slots are one contiguous range.
-    uint2 chain = CurveChains[currentCurve];
     o.PatternSlots = uint2(PatternOffsets[chain.x], PatternOffsets[chain.y + 1u]);
 
     float3 color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide).rgb;

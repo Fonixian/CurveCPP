@@ -4,13 +4,12 @@ cbuffer CameraData : register(b0)
 {
     float4x4 VP;
     float2   WH;
-    uint     TotalPointCount;
-    uint     TotalCurveCount;
+    uint     TotalPointCount; // samples, 64 per piece
+    uint     TotalCurveCount; // pieces
 };
 
-StructuredBuffer<uint2>        CurveIndices   : register(t0);
-StructuredBuffer<float>        WorldDistances : register(t1);
-StructuredBuffer<PatternStyle> CurveStyles    : register(t2);
+StructuredBuffer<float>        WorldDistances : register(t0); // arc at each sample, from the chain's start
+StructuredBuffer<PatternStyle> CurveStyles    : register(t1);
 
 RWStructuredBuffer<uint> PatternOffsets : register(u0);
 
@@ -21,15 +20,14 @@ uint pattern_count(float arc, float spacing) {
 [numthreads(256, 1, 1)]
 void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 {
-    uint curveIndex = dispatchThreadId.x;
-    if (curveIndex >= TotalCurveCount) return;
+    uint pieceIndex = dispatchThreadId.x;
+    if (pieceIndex >= TotalCurveCount) return;
 
-    uint2 range = CurveIndices[curveIndex];
-    float prevArc = WorldDistances[range.x];
-    float currentArc = WorldDistances[range.y];
-    float spacing = CurveStyles[curveIndex].spacing;
+    // The piece spans its first sample to its last; no range lookup, the block is fixed.
+    uint firstSample = pieceIndex << PieceSampleShift;
+    float prevArc = WorldDistances[firstSample];
+    float currentArc = WorldDistances[firstSample + PieceSampleMask];
+    float spacing = CurveStyles[pieceIndex].spacing;
     
-    uint dotCount = pattern_count(currentArc, spacing) - pattern_count(prevArc, spacing);
-
-    PatternOffsets[curveIndex] = dotCount;
+    PatternOffsets[pieceIndex] = pattern_count(currentArc, spacing) - pattern_count(prevArc, spacing);
 }

@@ -53,6 +53,29 @@ float3 EvaluateBezier(Cubic c, float t) {
     return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
 }
 
+// Every GPU piece of the patterned renderer has exactly PieceSamples sample points (BezierRenderer::
+// PieceSampleShift on the CPU - keep the two equal), so a sample index alone gives the piece and t:
+//     piece = sample >> PieceSampleShift, local = sample & PieceSampleMask, t = local / 63.
+// The last sample (local 63, t = 1) is the same point as the next piece's first: a duplicate, never
+// the start of a drawn segment.
+static const uint PieceSampleShift = 6u;
+static const uint PieceSamples     = 1u << PieceSampleShift;  // 64
+static const uint PieceSampleMask  = PieceSamples - 1u;
+static const uint PieceSegments    = PieceSamples - 1u;       // 63 drawn segments per piece
+
+// segment / 63 without an integer divide (FXC emits a real udiv for it). Exact, fused or not, for
+// every segment index below 4.39M; BezierRenderer asserts the scene stays under maxElementCount
+// (1.2M samples, so at most 1.18M segments).
+uint PieceOfSegment(uint segmentIndex) {
+    return uint(mad(float(segmentIndex), 1.0 / 63.0, 0.5 / 63.0));
+}
+
+// t of the piece-local sample `local`. Multiplying by 1/63 is not exact, so the end is pinned: any
+// local at or past the last sample gives exactly 1.0, and the curve lands exactly on P3.
+float PieceT(uint local) {
+    return (local >= PieceSegments) ? 1.0 : float(local) * (1.0 / float(PieceSegments));
+}
+
 float SampleT(uint2 range, uint sampleIndex) {
     return float(sampleIndex - range.x) / float(range.y - range.x); // Driver can cause problem if it compiles this to n * (1 / n)
 }
