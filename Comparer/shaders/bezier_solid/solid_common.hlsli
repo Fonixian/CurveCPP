@@ -20,15 +20,16 @@ struct SolidVSOutput {
 };
 
 float4 UnpackColorBits(uint packed) {
-    uint4 unpacked_u = uint4(packed, packed, packed, packed);
-    unpacked_u >>= uint4(0, 8, 16, 24);
-    unpacked_u &= 0xFF;
-    return float4(unpacked_u) / 255.0;
+    uint4 unpacked = uint4(packed, packed, packed, packed);
+    unpacked >>= uint4(0, 8, 16, 24);
+    unpacked &= 0xFF;
+    return float4(unpacked) / 255.0;
 }
 
-float Width(uint width_capcapjoin) { return float(width_capcapjoin >> 24); }
-uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
-uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
-uint Join(uint capcapjoin) { return capcapjoin & 0xFF; }
+// style: half_width << 24 | front_cap << 16 | back_cap << 8 | join
+float HalfWidth(uint style) { return float(style >> 24); }
+uint FrontCap(uint capCapJoin) { return (capCapJoin >> 16) & 0xFF; }
+uint BackCap(uint capCapJoin) { return (capCapJoin >> 8) & 0xFF; }
+uint Join(uint capCapJoin) { return capCapJoin & 0xFF; }
 
 #endif

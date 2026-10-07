@@ -26,19 +26,19 @@ float4 main(SolidVSOutput input) : SV_Target {
     float segmentLength = input.SDF.w;
 
     float2 coord = float2(abs(lateral), localArc);
-    
-    bool2 past_end = bool2(localArc < 0.0, localArc > segmentLength);
-    uint endcap = past_end.x ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
-    bool atEndcap = any(past_end) && endcap != CurveEndJoined;
+
+    bool2 pastEnd = bool2(localArc < 0.0, localArc > segmentLength);
+    uint endCap = pastEnd.x ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
+    bool atEndCap = any(pastEnd) && endCap != CurveEndJoined;
 
     float sdf = coord.x - halfWidth;
     float overshoot = max(-coord.y, coord.y - segmentLength);
-    
-    if ((atEndcap && endcap == CurveCapRound) || (!atEndcap && Join(input.CapCapJoin) == CurveJoinRound))
+
+    if ((atEndCap && endCap == CurveCapRound) || (!atEndCap && Join(input.CapCapJoin) == CurveJoinRound))
         sdf = (overshoot > 0.0) ? length(float2(coord.x, overshoot)) - halfWidth : sdf;
-    else if (atEndcap)
-        sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endcap));
-    
+    else if (atEndCap)
+        sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endCap));
+
     if (sdf > 0.5) discard;
     return float4(input.Color.rgb, saturate(0.5 - sdf));
 }

@@ -1,5 +1,24 @@
 #include "solid_common.hlsli"
 
+// Drawn as DrawInstanced(5, total_points - 1) with a TRIANGLESTRIP:
+//
+//                0 ----------------- 2
+//                |                   |  \
+//     start  ->  +  ---- segment --- +    4      <- 4: extra vertex that fills the
+//    (sample i)  |                   |  /             outer side of the join at the end
+//                1 ----------------- 3
+//                               end (sample i+1)
+//
+// Vertices 0, 1 sit on the segment's start ("near side"), 2, 3, 4 on its end ("far side").
+// Each vertex works in a LOCAL frame centered on the end point it sits on (the "corner"):
+//
+//     prevCorner  ----------->  corner  ----------->  nextCorner
+//                 dirIn                 dirOut
+//
+// so for near-side vertices the segment is seen backwards, and "right" means the opposite
+// physical side from the near side. In its local frame, 0, 3 and 4 offset to the right and
+// 1, 2 to the left - which physically puts 0 and 2 on one side of the stroke, 1 and 3 on the other.
+
 cbuffer CameraData : register(b1) {
     float4x4 VP;
     float2 WH;
@@ -7,81 +26,85 @@ cbuffer CameraData : register(b1) {
     uint TotalCurveCount;
 };
 
-StructuredBuffer<uint>   current_curveegins : register(t1);
-StructuredBuffer<float3> control_points     : register(t3);
+StructuredBuffer<uint>   CurveBegins        : register(t1); // one bit per sample: set where a new curve chain begins
+StructuredBuffer<float3> CurveControlPoints : register(t3);
 StructuredBuffer<uint>   BezierIndexMap     : register(t4);
-StructuredBuffer<uint4>  colors             : register(t5); // color1, color2, height1, height2 (for interpolation based on height)
+StructuredBuffer<uint4>  CurveColors        : register(t5); // color1, color2, height1, height2 (for interpolation based on height)
 StructuredBuffer<uint>   CurveStyles        : register(t6); // width << 24 | front_cap << 16 | back_cap << 8 | join
-StructuredBuffer<uint2>  indices            : register(t7); // FirstIndex, LastIndex: the curve's sample range. e.g [0,50] [51,90]
+StructuredBuffer<uint2>  CurveIndices       : register(t7); // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
 
 struct Cubic {
-    float3 p0, p1, p2, p3;
+    float3 P0, P1, P2, P3;
 };
 
 Cubic LoadCubic(uint curveIndex) {
-    const uint k = curveIndex << 2u;
+    uint k = curveIndex << 2u;
     Cubic c;
-    c.p0 = control_points[k];
-    c.p1 = control_points[k + 1u];
-    c.p2 = control_points[k + 2u];
-    c.p3 = control_points[k + 3u];
+    c.P0 = CurveControlPoints[k];
+    c.P1 = CurveControlPoints[k + 1u];
+    c.P2 = CurveControlPoints[k + 2u];
+    c.P3 = CurveControlPoints[k + 3u];
     return c;
 }
 
 float3 EvaluateBezier(Cubic c, float t) {
-    const float s   = 1.0 - t;
-    const float st3 = 3.0 * s * t;
-    return mad(c.p3, t * t * t, mad(c.p2, st3 * t, mad(c.p1, st3 * s, c.p0 * (s * s * s))));
+    // Bernstein form
+    float s   = 1.0 - t;
+    float st3 = 3.0 * s * t;
+    return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
 }
 
+// [range.x, range.y] -> [0.0, 1.0]
 float SampleT(uint2 range, uint sampleIndex) {
     return float(sampleIndex - range.x) / float(range.y - range.x);
 }
 
-// Colour of one sample: world Y clamped to the height band when one is set, otherwise t.
-float3 SampleColor(uint4 color, float height, float t) {
-    const float minHeight = asfloat(color.z);
-    const float maxHeight = asfloat(color.w);
-    float blend = t;
-    if (minHeight < maxHeight)
-        blend = saturate((height - minHeight) / (maxHeight - minHeight));
-    return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
+// Blends color based on clipping and height or t
+float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float t1, bool nearSide) {
+    float minHeight = asfloat(colorData.z);
+    float maxHeight = asfloat(colorData.w);
+    float3 colorA = UnpackColorBits(colorData.x).rgb;
+    float3 colorB = UnpackColorBits(colorData.y).rgb;
+    float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
+    float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
+    return float4(lerp(colorA, colorB, blend), 1.0);
 }
 
-bool Iscurrent_curveegin(uint2 words, uint wordBase, uint pointIndex) {
-    uint w = ((pointIndex >> 5u) == wordBase) ? words.x : words.y;
-    return ((w >> (pointIndex & 31u)) & 1u) != 0u;
+bool IsCurveBegin(uint2 words, uint wordBase, uint sampleIndex) {
+    uint w = ((sampleIndex >> 5u) == wordBase) ? words.x : words.y;
+    return ((w >> (sampleIndex & 31u)) & 1u) != 0u;
 }
 
 float4 SidePlaneDistances(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
 float2 DepthPlaneDistances(float4 p) { return float2(p.z, p.w - p.z); }
 
-float max4(float4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
-float min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
-float max2(float2 v) { return max(v.x, v.y); }
-float min2(float2 v) { return min(v.x, v.y); }
+float Max4(float4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
+float Min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
+float Max2(float2 v) { return max(v.x, v.y); }
+float Min2(float2 v) { return min(v.x, v.y); }
 
-bool clip(inout float4 start, inout float4 end, out float t0, out float t1) {
+// Clips the segment start -> end against the frustum.
+bool ClipSegment(inout float4 start, inout float4 end, out float t0, out float t1) {
     t0 = 0.0;
     t1 = 1.0;
 
     if (isnan(start.x) || isnan(end.x)) return false;
 
-    const float4 sideStart = SidePlaneDistances(start), sideEnd = SidePlaneDistances(end);
-    const float2 depthStart = DepthPlaneDistances(start), depthEnd = DepthPlaneDistances(end);
+    float4 sideStart = SidePlaneDistances(start), sideEnd = SidePlaneDistances(end);
+    float2 depthStart = DepthPlaneDistances(start), depthEnd = DepthPlaneDistances(end);
 
     if (any(min(sideStart, sideEnd) < 0.0) || any(min(depthStart, depthEnd) < 0.0)) {
         if (any(max(sideStart, sideEnd) < 0.0) || any(max(depthStart, depthEnd) < 0.0)) return false;
 
         float4 sideDelta = sideEnd - sideStart;
         float4 sideT = -sideStart / sideDelta;
-        t0 = max(0.0, max4((sideDelta > 0.0) ? sideT : 0.0));
-        t1 = min(1.0, min4((sideDelta < 0.0) ? sideT : 1.0));
+        t0 = max(0.0, Max4((sideDelta > 0.0) ? sideT : 0.0));
+        t1 = min(1.0, Min4((sideDelta < 0.0) ? sideT : 1.0));
 
         float2 depthDelta = depthEnd - depthStart;
         float2 depthT = -depthStart / depthDelta;
-        t0 = max(t0, max2((depthDelta > 0.0) ? depthT : 0.0));
-        t1 = min(t1, min2((depthDelta < 0.0) ? depthT : 1.0));
+        t0 = max(t0, Max2((depthDelta > 0.0) ? depthT : 0.0));
+        t1 = min(t1, Min2((depthDelta < 0.0) ? depthT : 1.0));
 
         if (t0 >= t1) return false;
 
@@ -93,162 +116,160 @@ bool clip(inout float4 start, inout float4 end, out float t0, out float t1) {
     return true;
 }
 
-bool calc_overlap(float2 dir_AB, float d, float2 v, float l_AB, float l_CB, float line_width) {
-    if (d <= -0.9996) return true;
+bool InnerMiterOverlaps(float2 dirAB, float cosTurn, float2 bisector, float lengthAB, float lengthCB, float lineWidth) {
+    if (cosTurn <= -0.9996) return true;
 
-    float cos_abc = abs(dot(dir_AB, v));
-    float sin_abc = rsqrt(max(0.0, 1.0 - cos_abc * cos_abc));
-    float l = line_width * cos_abc * sin_abc;
-    return l > l_AB || l > l_CB;
+    float cosABC = abs(dot(dirAB, bisector));
+    float invSinABC = rsqrt(max(0.0, 1.0 - cosABC * cosABC));
+    float l = lineWidth * cosABC * invSinABC;
+    return l > lengthAB || l > lengthCB;
 }
 
-SolidVSOutput main(uint index : SV_VertexID, uint i : SV_InstanceID) {
+SolidVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID) {
     SolidVSOutput o = (SolidVSOutput)0;
-    const uint pointCount = TotalPointCount;
+    bool nearSide = vertexId < 2u;
 
-    const bool nearSide = index < 2u;
-    const uint wordBase = i >> 5u;
-    const uint2 beginWords = uint2(current_curveegins[wordBase], current_curveegins[wordBase + 1u]);
-    const bool hasA = i > 0u && !Iscurrent_curveegin(beginWords, wordBase, i);
-    const bool hasD = (i + 2u) < pointCount && !Iscurrent_curveegin(beginWords, wordBase, i + 2u);
-    const bool hasN = nearSide ? hasA : hasD;
-    
-    if ((i + 1u) >= pointCount || Iscurrent_curveegin(beginWords, wordBase, i + 1u)) {
+    uint wordBase = sampleIndex >> 5u;
+    uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
+    bool hasPrev = sampleIndex > 0u && !IsCurveBegin(beginWords, wordBase, sampleIndex); // segment before the start
+    bool hasNext = (sampleIndex + 2u) < TotalPointCount && !IsCurveBegin(beginWords, wordBase, sampleIndex + 2u); // segment after the end
+    bool hasNeighbor = nearSide ? hasPrev : hasNext;
+
+    if ((sampleIndex + 1u) >= TotalPointCount || IsCurveBegin(beginWords, wordBase, sampleIndex + 1u)) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
-    const uint current_curve = BezierIndexMap[i];
-    const Cubic current_cubic = LoadCubic(current_curve);
-    const uint2 current_range = indices[current_curve];
+    uint currentCurve = BezierIndexMap[sampleIndex];
+    Cubic currentCubic = LoadCubic(currentCurve);
+    uint2 currentRange = CurveIndices[currentCurve];
 
-    const float tB = SampleT(current_range, i);
-    const float tC = SampleT(current_range, i + 1u);
-    const float3 rawB = EvaluateBezier(current_cubic, tB);
-    const float3 rawC = EvaluateBezier(current_cubic, tC);
+    float tStart = SampleT(currentRange, sampleIndex);
+    float tEnd = SampleT(currentRange, sampleIndex + 1u);
+    float3 startWorld = EvaluateBezier(currentCubic, tStart);
+    float3 endWorld = EvaluateBezier(currentCubic, tEnd);
 
-    const uint ni = nearSide ? (i - 1u) : (i + 2u);
-    const bool crosses_curve = hasN && (nearSide ? (i == current_range.x) : ((i + 1u) == current_range.y));
-    float3 rawN;
-    [branch] if (crosses_curve) {
-        const uint curveN = nearSide ? (current_curve - 1u) : (current_curve + 1u);
-        rawN = EvaluateBezier(LoadCubic(curveN), SampleT(indices[curveN], ni));
-    }
-    else rawN = EvaluateBezier(current_cubic, SampleT(current_range, ni));
+    // The neighbor normally lies on the same curve, but we allow merging neighboring curves
+    // When merging two curves we assume one's end position is the same as the other's start
+    uint neighborSample = sampleIndex + (nearSide ? -1u : 2u);
+    float3 neighborWorld;
+    [branch]
+    if (hasNeighbor && (nearSide ? (sampleIndex == currentRange.x) : ((sampleIndex + 1u) == currentRange.y))) { // Crosses curve
+        uint neighborCurve = currentCurve + (nearSide ? -1u : 1u);
+        neighborWorld = EvaluateBezier(LoadCubic(neighborCurve), SampleT(CurveIndices[neighborCurve], neighborSample));
+    } else
+        neighborWorld = EvaluateBezier(currentCubic, SampleT(currentRange, neighborSample));
 
-    float4 B4 = mul(float4(rawB, 1.0), VP);
-    float4 C4 = mul(float4(rawC, 1.0), VP);
-    float4 N4 = mul(float4(rawN, 1.0), VP);
+    float4 startClip = mul(float4(startWorld, 1.0), VP);
+    float4 endClip = mul(float4(endWorld, 1.0), VP);
+    float4 neighborClip = mul(float4(neighborWorld, 1.0), VP);
 
     float t0, t1;
-    if (!clip(B4, C4, t0, t1)) {
+    if (!ClipSegment(startClip, endClip, t0, t1)) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
-    // P is the endpoint this vertex sits on, Q the far one. The neighbour is
-    // dropped onto Q when this end was cut off by the frustum.
-    const float4 P = nearSide ? B4 : C4;
-    const float4 Q = nearSide ? C4 : B4;
-    if (nearSide ? (t0 > 0.0) : (t1 < 1.0)) N4 = Q;
+    float4 cornerClip = nearSide ? startClip : endClip;
+    float4 otherClip = nearSide ? endClip : startClip;
 
-    // Pull the neighbour in front of the near plane. Only reachable when the
-    // neighbour is actually behind it, so the divides stay off the fast path.
-    const float2 hN = N4.zw;
-    if (min2(hN) < 0.0) {
-        float2 eN = P.zw - hN;
-        float2 tN = -hN / eN;
-        float uN = max(0.0, max(eN.x > 0.0 ? tN.x : 0.0, eN.y > 0.0 ? tN.y : 0.0));
-        if (uN > 0.0) N4 = lerp(N4, P, uN);
+    // If the frustum cut off this vertex's end, the real neighbor is off screen: put it on the
+    // other end, which makes this end look like a curve terminus
+    if (nearSide ? (t0 > 0.0) : (t1 < 1.0))
+        neighborClip = otherClip;
+
+    // Pull the neighbor in front of the near plane.
+    if (Min2(neighborClip.zw) < 0.0) {
+        float2 toCorner = cornerClip.zw - neighborClip.zw;
+        float2 tPlane = -neighborClip.zw / toCorner;
+        float pull = max(0.0, max(toCorner.x > 0.0 ? tPlane.x : 0.0, toCorner.y > 0.0 ? tPlane.y : 0.0));
+        if (pull > 0.0)
+            neighborClip = lerp(neighborClip, cornerClip, pull);
     }
 
-    const uint style = CurveStyles[current_curve];
-    const float width_pixel = Width(style);
+    uint style = CurveStyles[currentCurve];
+    float halfWidth = HalfWidth(style);
 
-    const uint4 colorB = colors[current_curve];
-    const float3 cB = SampleColor(colorB, rawB.y, tB);
-    const float3 cC = SampleColor(colorB, rawC.y, tC);
-    o.Color = float4(lerp(cB, cC, nearSide ? t0 : t1), 1.0);
-    uint ends = Join(style);
-    ends |= (hasA ? CurveEndJoined : FrontCap(style)) << 16;
-    ends |= (hasD ? CurveEndJoined : BackCap(style)) << 8;
-    o.CapCapJoin = ends;
+    o.Color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide);
+    uint capCapJoin = Join(style);
+    capCapJoin |= (hasPrev ? CurveEndJoined : FrontCap(style)) << 16;
+    capCapJoin |= (hasNext ? CurveEndJoined : BackCap(style)) << 8;
+    o.CapCapJoin = capCapJoin;
 
-    const float3 ndcB = B4.xyz / B4.w;
-    const float3 ndcC = C4.xyz / C4.w;
-    const float2 ndcN = N4.xy / N4.w;
+    float3 startNdc = startClip.xyz / startClip.w;
+    float3 endNdc = endClip.xyz / endClip.w;
+    float2 neighborNdc = neighborClip.xy / neighborClip.w;
 
-    o.Position = float4(nearSide ? ndcB : ndcC, 1.0);
+    o.Position = float4(nearSide ? startNdc : endNdc, 1.0);
 
-    const float2 scrB = mad(ndcB.xy, 0.5, 0.5) * WH;
-    const float2 scrC = mad(ndcC.xy, 0.5, 0.5) * WH;
-    const float2 scrN = mad(ndcN, 0.5, 0.5) * WH;
+    float2 startPx = mad(startNdc.xy, 0.5, 0.5) * WH;
+    float2 endPx = mad(endNdc.xy, 0.5, 0.5) * WH;
+    float2 neighborPx = mad(neighborNdc.xy, 0.5, 0.5) * WH;
 
-    const float2 B = nearSide ? scrB : scrC;
-    const float2 C = nearSide ? scrC : scrB;
-    const float2 A = (hasN && !isnan(scrN.x)) ? scrN : C;
+    float2 corner = nearSide ? startPx : endPx;
+    float2 prevCorner = nearSide ? endPx : startPx;
+    float2 nextCorner = (hasNeighbor && !isnan(neighborPx.x)) ? neighborPx : prevCorner;
 
-    const float l_AB = distance(A, B);
-    const float l_CB = distance(B, C);
-    const float2 dir_AB = (A - B) / l_AB;
-    const float2 dir_BC = (B - C) / l_CB;
+    float nextLength = distance(nextCorner, corner);
+    float currentLength = distance(corner, prevCorner);
+    float2 dirOut = (nextCorner - corner) / nextLength;
+    float2 dirIn = (corner - prevCorner) / currentLength;
 
-    const float2 dir_AB_r = float2(dir_AB.y, -dir_AB.x);
-    const float2 dir_BC_r = float2(dir_BC.y, -dir_BC.x);
+    float2 rightOut = float2(dirOut.y, -dirOut.x);
+    float2 rightIn = float2(dirIn.y, -dirIn.x);
 
-    const float d = dot(dir_AB, dir_BC);
-    const float s_12 = (index == 1u || index == 2u) ? -1.0 : 1.0;
+    float cosTurn = dot(dirOut, dirIn); // 1 = straight on, -1 = full reversal
+    float sideSign = (vertexId == 1u || vertexId == 2u) ? -1.0 : 1.0;
 
     float2 offset;
-    if (d >= 0.0) {
-        // Dense tessellation keeps consecutive segments near-collinear, so this
-        // is the overwhelmingly common case: plain miter, nothing else needed.
-        offset = s_12 * ((dir_AB_r + dir_BC_r) / (1.0 + d));
-    }
-    else {
-        const float2 right_offset = (d <= -0.9999) ? dir_AB_r : (dir_AB_r + dir_BC_r) / (1.0 + d);
+    if (cosTurn >= 0.0) {
+        // Miter
+        offset = sideSign * ((rightOut + rightIn) / (1.0 + cosTurn));
+    } else {
+        float2 miterRight = (cosTurn <= -0.9999) ? rightOut : (rightOut + rightIn) / (1.0 + cosTurn);
+        bool innerOnRight = dot(rightOut, dirIn) < 0.0;
+        float2 innerMiter = innerOnRight ? miterRight : -miterRight;
+        float2 bisector = normalize(miterRight);
 
-        // dot(right_offset, inner) only ever carries the sign that built inner,
-        // which is this cross product's sign.
-        const bool side = dot(dir_AB_r, dir_BC) < 0.0;
-        const float2 inner = side ? right_offset : -right_offset;
-
-        // normalize(inner) and the sign flip that follows it cancel: whichever
-        // way inner points, the flipped vector is normalize(right_offset).
-        // calc_overlap only ever takes abs(dot(dir_AB, v)), so it is unaffected.
-        const float2 v = normalize(right_offset);
-
-        if (calc_overlap(dir_AB, d, v, l_AB, l_CB, width_pixel)) {
-            offset = dir_BC + s_12 * dir_BC_r;
-        }
-        else {
-            // The a/b swap fires for index 0 and 3 only, and b == a at index 4,
-            // so the whole select collapses to this one predicate.
-            const bool swap = (index == 0u) || (index == 3u);
-            if (index == 4u || (side != swap)) {
-                const float cos_half = clamp(dot(dir_BC_r, v), -1.0, 1.0);
-                const float t = sqrt(max(0.0, 1.0 - cos_half) / (1.0 + cos_half));
-                const bool far4 = index >= 4u;
-                const float2 perp_base = far4 ? dir_AB_r : dir_BC_r;
-                const float2 parallel = far4 ? -dir_AB : dir_BC;
-                offset = (side ? -perp_base : perp_base) + t * parallel;
-            }
-            else {
-                offset = inner;
+        if (InnerMiterOverlaps(dirOut, cosTurn, bisector, nextLength, currentLength, halfWidth)) {
+            // Inner miter would reach past a neighboring segment (or full reversal):
+            // extend this segment halfWidth past the corner and let the pixel shader shape the end.
+            offset = dirIn + sideSign * rightIn;
+        } else {
+            bool vertexOnRight = (vertexId == 0u) || (vertexId == 3u);
+            if (vertexId == 4u || (vertexOnRight != innerOnRight)) {
+                // Bevel halfWidth away from the corner on the outer side of the turn
+                float cosHalf = clamp(dot(rightIn, bisector), -1.0, 1.0);
+                float tanHalf = sqrt(max(0.0, 1.0 - cosHalf) / (1.0 + cosHalf));
+                bool onNeighborEdge = vertexId >= 4u;
+                float2 edgeNormal = onNeighborEdge ? rightOut : rightIn;
+                float2 edgeDir = onNeighborEdge ? -dirOut : dirIn;
+                offset = (innerOnRight ? -edgeNormal : edgeNormal) + tanHalf * edgeDir;
+            } else {
+                // The inner part of the bevel join is just one vertex innerMiter
+                offset = innerMiter;
             }
         }
     }
 
-    float sdf = dot(offset, dir_BC) * -width_pixel;
-    if (index >= 2u)
-        sdf = l_CB - sdf;
+    // Arc position: measured inward from the corner, then flipped on the far side so it runs
+    // 0 at the start .. currentLength at the end for every vertex.
+    // arc values:
+    //   < 0        0            currentLength   > currentLength
+    //    |  -----  *  ------------->  *  ----------  |
+    //            start               end
+    float arc = dot(offset, dirIn) * -halfWidth;
+    if (vertexId >= 2u) arc = currentLength - arc;
 
-    o.SDF.x = (index == 4u) ? (dot(offset, dir_BC_r) * -width_pixel)
-                            : (((index & 1u) == 0u) ? width_pixel : -width_pixel);
-    o.SDF.y = sdf;
-    o.SDF.zw = float2(width_pixel, l_CB);
+    // Lateral position: +-halfWidth on the strip's two edges (0, 2 one side, 1, 3 the other);
+    // vertex 4 is projected onto this segment's normal.
+    o.SDF.x = (vertexId == 4u) ? (dot(offset, rightIn) * -halfWidth)
+                               : (((vertexId & 1u) == 0u) ? halfWidth : -halfWidth);
+    o.SDF.y = arc;
+    o.SDF.zw = float2(halfWidth, currentLength);
 
-    o.Position.xy = mad((2.0 * width_pixel) / WH, offset, o.Position.xy);
+    // Offset in pixels -> NDC coordinate.
+    o.Position.xy = mad((2.0 * halfWidth) / WH, offset, o.Position.xy);
 
     return o;
 }
