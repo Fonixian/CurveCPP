@@ -90,7 +90,7 @@ float PatternSDF(float lateral, float patternArc, float patternCoord, float dash
     int firstSlot = int(patternSlots.x);
     int lastSlot = int(patternSlots.y) - 1;
 
-    // Patterned, but the chain has no center at all: all gap, so erase the body.
+    // The chain has no center at all (too short for one): all gap, so erase the body.
     if (lastSlot < firstSlot) return 1e30;
 
     // The clamp only catches rounding at the edges, e.g. a coordinate a hair under the chain's first
@@ -144,14 +144,12 @@ float4 main(PatternedVSOutput input) : SV_Target {
         sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endCap));
 
     // The pattern is the one thing that spans segments, so it gets the seam-consistent arc.
-    if (IsPatterned(input.CapCapJoin)) {
 #if CURVE_PATTERN_BISECTOR
-        float patternArc = input.ScreenArcBegin + PatternArc(localArc, lateral, segmentLength, halfWidth, input.ArcShear);
+    float patternArc = input.ScreenArcBegin + PatternArc(localArc, lateral, segmentLength, halfWidth, input.ArcShear);
 #else
-        float patternArc = input.ScreenArcBegin + localArc;
+    float patternArc = input.ScreenArcBegin + localArc;
 #endif
-        sdf = max(sdf, PatternSDF(lateral, patternArc, input.ColorPattern.w, input.DashLength, halfWidth, input.CapCapJoin, input.PatternSlots));
-    }
+    sdf = max(sdf, PatternSDF(lateral, patternArc, input.ColorPattern.w, input.DashLength, halfWidth, input.CapCapJoin, input.PatternSlots));
 
     if (sdf > 0.5) discard;
     return float4(input.ColorPattern.rgb, saturate(0.5 - sdf));

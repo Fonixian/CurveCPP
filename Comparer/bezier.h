@@ -5,8 +5,8 @@
 
 // The patterned curve renderer. The pattern is described per curve by two numbers rather than an
 // enum: BezierData::spacing (world arc length between dash centres) and BezierData::dash_length
-// (length of one dash, in pixels). A dot is a zero-length dash with round caps; a solid stroke is
-// spacing <= 0, which yields no pattern centres at all and leaves the body untouched.
+// (length of one dash, in pixels). A dot is a zero-length dash with round caps. There is no solid
+// mode: spacing <= 0 draws nothing - solid strokes belong in BezierSolidRenderer.
 //
 // Everything here exists because a dash is spaced along the curve by WORLD arc length but drawn at a
 // fixed size in PIXELS, so the pixel shader has to be told where each pattern centre landed in

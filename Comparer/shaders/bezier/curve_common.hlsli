@@ -10,15 +10,10 @@ static const uint CurveCapTriangleIn  = 4u;
 static const uint CurveJoinRound  = 0u;
 static const uint CurveJoinSquare = 1u;
 
-// Bit 24 of the CapCapJoin interpolant (the style's width byte is masked off before it is set).
-// Solid is spacing <= 0, which the pixel shader cannot see, so it travels as a flag. Set from
-// spacing > 0.0, so a NaN spacing reads as solid.
-static const uint CurvePatternedBit = 1u << 24;
-
 struct PatternStyle {
     uint  width_capcapjoin; // width << 24 | front_cap << 16 | back_cap << 8 | join
-    float spacing;          // world arc length between dash centers; <= 0 is solid
-    float dash_length;      // one dash, cap to cap, in pixels
+    float spacing;          // world arc length between dash centers; > 0
+    float dash_length;      // length of one dash in pixels, not including caps
 };
 
 struct PatternedVSOutput {
@@ -59,13 +54,18 @@ float3 EvaluateBezier(Cubic c, float t) {
 }
 
 float SampleT(uint2 range, uint sampleIndex) {
-    return float(sampleIndex - range.x) / float(range.y - range.x); // Hardware can cause problem if it compliles this to n * (1 / n)
+    return float(sampleIndex - range.x) / float(range.y - range.x); // Driver can cause problem if it compiles this to n * (1 / n)
+}
+
+// If `p` is behind the near plane (clip z < 0), slides it along the segment toward `other` onto the
+// plane; otherwise returns it unchanged. `other` must be in front of the plane.
+float4 ClipToNearPlane(float4 p, float4 other) {
+    return (p.z < 0.0) ? lerp(p, other, p.z / (p.z - other.z)) : p;
 }
 
 float HalfWidth(uint style) { return float(style >> 24); }
 uint FrontCap(uint capCapJoin) { return (capCapJoin >> 16) & 0xFF; }
 uint BackCap(uint capCapJoin) { return (capCapJoin >> 8) & 0xFF; }
 uint Join(uint capCapJoin) { return capCapJoin & 0xFF; }
-bool IsPatterned(uint capCapJoin) { return (capCapJoin & CurvePatternedBit) != 0u; }
 
 #endif

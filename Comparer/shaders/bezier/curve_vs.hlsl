@@ -164,6 +164,9 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     float4 endClip = mul(float4(endWorld, 1.0), VP);
     float4 afterClip = mul(float4(afterWorld, 1.0), VP);
 
+    // Where curve_calc_points started measuring this segment's screen length.
+    float4 measuredStartClip = ClipToNearPlane(startClip, endClip);
+
     float t0, t1;
     if (!ClipSegment(startClip, endClip, t0, t1)) {
         o.Position = 0.0 / 0.0;
@@ -179,18 +182,21 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     PullInFront(afterClip, endClip);
 
     PatternStyle style = CurveStyles[currentCurve];
+    // No solid mode (that is the solid renderer's job): without a positive spacing there is nothing
+    // to draw, and the pattern coordinate below would divide by it.
+    if (!(style.spacing > 0.0)) {
+        o.Position = 0.0 / 0.0;
+        return o;
+    }
     float halfWidth = HalfWidth(style.width_capcapjoin);
-    bool patterned = style.spacing > 0.0;
     float cornerT = nearSide ? t0 : t1;
 
-    float2 startDistance = float2(WorldDistances[sampleIndex], ScreenDistances[sampleIndex]);
-    float2 endDistance = float2(WorldDistances[sampleIndex + 1u], ScreenDistances[sampleIndex + 1u]);
+    float startWorldDistance = WorldDistances[sampleIndex];
+    float endWorldDistance = WorldDistances[sampleIndex + 1u];
 
-    o.ScreenArcBegin = lerp(startDistance.y, endDistance.y, t0);
     o.Neighbors = uint2((hasPrev || t0 > 0.0) ? 1u : 0u, (hasNext || t1 < 1.0) ? 1u : 0u);
     o.DashLength = style.dash_length;
-    // The width byte is dropped (the pixel shader has it in SDF.z), bit 24 becomes the patterned flag.
-    o.CapCapJoin = (style.width_capcapjoin & 0x00FFFFFFu) | (patterned ? CurvePatternedBit : 0u);
+    o.CapCapJoin = style.width_capcapjoin; // FrontCap/BackCap/Join ignore the width byte
 
     // Pattern coordinate. WorldDistances restarts at 0 at each chain, and the chain's centers sit on
     // one grid, n * spacing from its start, so world arc maps to a slot of PatternPosition by
@@ -200,20 +206,15 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     // The divide and the bias are both linear, so they commute with the rasterizer's interpolation
     // and the pixel shader only has to floor() it. The bias is 0 while every curve of the chain has
     // the same spacing; it is there for mixed spacing.
-    float patternCoord = 0.0;
-    uint2 patternSlots = uint2(0u, 0u);
-    if (patterned) {
-        float curveArcStart = WorldDistances[currentRange.x];
-        float patternBase = (curveArcStart > 0.0) ? floor(curveArcStart / style.spacing) + 1.0 : 0.0;
-        patternCoord = lerp(startDistance.x, endDistance.x, cornerT) / style.spacing
-                     + (float(PatternOffsets[currentCurve]) - patternBase);
+    float curveArcStart = WorldDistances[currentRange.x];
+    float patternBase = (curveArcStart > 0.0) ? floor(curveArcStart / style.spacing) + 1.0 : 0.0;
+    float patternCoord = lerp(startWorldDistance, endWorldDistance, cornerT) / style.spacing
+                       + (float(PatternOffsets[currentCurve]) - patternBase);
 
-        // Chains are runs of consecutive curves and their slots are laid out in curve order, so the
-        // chain's slots are one contiguous range.
-        uint2 chain = CurveChains[currentCurve];
-        patternSlots = uint2(PatternOffsets[chain.x], PatternOffsets[chain.y + 1u]);
-    }
-    o.PatternSlots = patternSlots;
+    // Chains are runs of consecutive curves and their slots are laid out in curve order, so the
+    // chain's slots are one contiguous range.
+    uint2 chain = CurveChains[currentCurve];
+    o.PatternSlots = uint2(PatternOffsets[chain.x], PatternOffsets[chain.y + 1u]);
 
     float3 color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide).rgb;
     o.ColorPattern = float4(color, patternCoord);
@@ -229,6 +230,10 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     float2 startPx = mad(startNdc.xy, 0.5, 0.5) * WH;
     float2 endPx = mad(endNdc.xy, 0.5, 0.5) * WH;
     float2 afterPx = mad(afterNdc, 0.5, 0.5) * WH;
+
+    // The screen arc at the (clipped) start, measured along the screen line from where
+    // curve_calc_points started measuring - never lerped by t0, which is not linear on screen.
+    o.ScreenArcBegin = ScreenDistances[sampleIndex] + distance(mad(measuredStartClip.xy / measuredStartClip.w, 0.5, 0.5) * WH, startPx);
 
     // From the segment's own points, not the per-vertex corner frame below, so all five vertices agree.
     {
