@@ -63,7 +63,7 @@ protected:
 
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
-	void AllocateDotBuffer(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
+	void AllocateDotBuffer(const Axodox::Graphics::GraphicsDevice& device);
 	void CountDots(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunDotPlacementPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
@@ -104,10 +104,6 @@ private:
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dots;        // per dot: bracketing sample pair + t between them
 
 	IndirectDrawArgs draw_args;
-
-	// dots_allocated, so dot_calc can clamp and dot_args can cap the instance count.
-	PatternCapacityBuffer capacity_cb_data{};
-	std::unique_ptr<Axodox::Graphics::ConstantBuffer> dot_capacity;
 
 	Axodox::Graphics::ComputeShader* dot_ini;
 	Axodox::Graphics::ComputeShader* dot_calc;

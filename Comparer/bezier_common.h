@@ -106,13 +106,6 @@ struct UploadBezierData {
 };
 static_assert(sizeof(UploadBezierData) == 80, "UploadBezierData must match BezierCurveData in the shaders");
 
-// Compute-stage b1 for the pattern/dot calc passes: how many entries the pattern buffer actually
-// holds, so a shader can clamp instead of writing past the end. See PatternBound() below.
-struct PatternCapacityBuffer {
-	uint32_t capacity;
-	uint32_t padding[3];
-};
-
 // Ceiling on the CPU-side pattern bound, so a curve with a near-zero spacing asks for a buffer of a
 // sane size rather than one of a few billion entries. Past this the calc shaders clamp and the tail
 // of the pattern simply is not drawn.

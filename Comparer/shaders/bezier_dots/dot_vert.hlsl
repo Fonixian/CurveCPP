@@ -4,138 +4,109 @@
 #define DOT_QUAD_MARGIN 1.5
 #endif
 
-// This shader evaluates the curve itself rather than reading positions the point pass stored. A dot
-// needs exactly two samples - the pair bracketing it - so fetching them from a buffer of every
-// sample on every curve costs more memory than recomputing two cubics costs ALU, and it lets the
-// dots renderer skip allocating CalculatedPoints entirely (see dot_calc_points.hlsl).
+// Drawn as DrawInstancedIndirect(4, dot count) with a TRIANGLESTRIP, one quad per dot:
 //
-// The tangent still comes from PROJECTING those two samples and subtracting in screen space, not
-// from the analytic derivative. Deliberate: a segment's frame everywhere else in these renderers is
-// built from the difference of two projected endpoints, and a perspective-correct world-space
-// tangent would disagree with it under perspective. Same reasoning as the line body never
-// re-projecting an interior point.
+//                 2 ------- 3
+//                 |    ^    |
+//                 |    *    |    * : the dot's center, between sample and sample + 1
+//                 |         |    ^ : the screen tangent, towards the curve's end
+//                 0 ------- 1
+//
+// The quad reaches halfWidth + DOT_QUAD_MARGIN from the center, so the antialiased edge fits.
+// The two samples around the dot are evaluated here rather than read back from a point buffer, and
+// the tangent is taken between their projections, not from the curve's derivative, so it matches
+// the frame the stroke renderers build their segments in.
 
 cbuffer CameraData : register(b1) {
     float4x4 VP;
-    float2   WH;
-    uint     TotalPointCount;
-    uint     TotalCurveCount;
+    float2 WH;
+    uint TotalPointCount;
+    uint TotalCurveCount;
 };
 
-// Same slots as solid_vert for the per-curve buffers (t3 control points, t5 colours, t6 styles, t7
-// indices). The dots take t4, which is the index map there: in both it is the "which curve am I"
-// lookup. Nothing per sample point is bound - no CurveBegins, no index map - because a dot's two
-// bracketing samples always belong to its own curve, so there is no joint to look across.
-StructuredBuffer<float3>    ControlPoints : register(t3); // P0..P3 per curve at curveIndex * 4
-StructuredBuffer<DotSample> Dots          : register(t4);
-StructuredBuffer<ColorData> Colors        : register(t5);
-StructuredBuffer<DotStyle>  DotStyles     : register(t6);
-StructuredBuffer<Indices>   CurveIndices  : register(t7);
+StructuredBuffer<float3>    CurveControlPoints : register(t3);
+StructuredBuffer<DotSample> Dots               : register(t4); // where solid_vert has the index map
+StructuredBuffer<uint4>     CurveColors        : register(t5);
+StructuredBuffer<DotStyle>  CurveStyles        : register(t6);
+StructuredBuffer<uint2>     CurveIndices       : register(t7);
 
 Cubic LoadCubic(uint curveIndex) {
-    const uint k = curveIndex << 2u;
+    uint k = curveIndex << 2u;
     Cubic c;
-    c.p0 = ControlPoints[k];
-    c.p1 = ControlPoints[k + 1u];
-    c.p2 = ControlPoints[k + 2u];
-    c.p3 = ControlPoints[k + 3u];
+    c.P0 = CurveControlPoints[k];
+    c.P1 = CurveControlPoints[k + 1u];
+    c.P2 = CurveControlPoints[k + 2u];
+    c.P3 = CurveControlPoints[k + 3u];
     return c;
 }
 
-struct DotVSOutput {
-    float4 Position : SV_Position;
-    noperspective float4 Color : COLOR0;
-    noperspective float2 Local : TEXCOORD0;
-    nointerpolation float HalfWidth : TEXCOORD1;
-    nointerpolation uint CapCapJoin : TEXCOORD2;
-};
-
-float2 ProjectToScreen(float4 clipPos) {
-    float2 ndc = clipPos.xy / clipPos.w;
-    return mad(ndc, float2(0.5, 0.5), float2(0.5, 0.5)) * WH;
+float4 CalculateColor(uint4 colorData, float2 height, float2 t, float segmentT) {
+    float minHeight = asfloat(colorData.z);
+    float maxHeight = asfloat(colorData.w);
+    float3 colorA = UnpackColorBits(colorData.x).rgb;
+    float3 colorB = UnpackColorBits(colorData.y).rgb;
+    float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
+    float blend = lerp(blendAtEnds.x, blendAtEnds.y, segmentT);
+    return float4(lerp(colorA, colorB, blend), 1.0);
 }
 
-DotVSOutput main(uint vertexId : SV_VertexID, uint dotId : SV_InstanceID) {
+DotVSOutput main(uint vertexId : SV_VertexID, uint dotIndex : SV_InstanceID) {
     DotVSOutput o = (DotVSOutput)0;
 
-    DotSample s = Dots[dotId];
-    uint curveIndex = s.CurveIndex;
+    DotSample dotSample = Dots[dotIndex];
+    uint curveIndex = dotSample.CurveIndex;
 
-    const Cubic cubic = LoadCubic(curveIndex);
-    const uint2 range = CurveIndices[curveIndex].first_last;
-    const uint  style = DotStyles[curveIndex].width_capcap;
-    const float halfWidth = DotRadius(style);
+    Cubic cubic = LoadCubic(curveIndex);
+    uint2 range = CurveIndices[curveIndex];
 
-    float tA = SampleT(range, s.Sample);
-    float tB = SampleT(range, s.Sample + 1u);
+    float tStart = SampleT(range, dotSample.Sample);
+    float tEnd = SampleT(range, dotSample.Sample + 1u);
+    float3 startWorld = EvaluateBezier(cubic, tStart);
+    float3 endWorld = EvaluateBezier(cubic, tEnd);
 
-    float3 posA = EvaluateBezier(cubic, tA);
-    float3 posB = EvaluateBezier(cubic, tB);
+    float4 startClip = mul(float4(startWorld, 1.0), VP);
+    float4 endClip = mul(float4(endWorld, 1.0), VP);
 
-    float4 clipA = mul(float4(posA, 1.0), VP);
-    float4 clipB = mul(float4(posB, 1.0), VP);
-
-    // Behind the camera: drop the dot rather than reproducing the line body's near-plane clip. An
-    // isolated point sprite has no strip continuity to preserve.
-    if (clipA.w <= 1e-5 || clipB.w <= 1e-5) {
+    // Behind the camera: drop the dot. Unlike a strip there is no continuity to keep, so no clipping.
+    if (startClip.w <= 1e-5 || endClip.w <= 1e-5) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
-    float2 screenA = ProjectToScreen(clipA);
-    float2 screenB = ProjectToScreen(clipB);
+    float3 startNdc = startClip.xyz / startClip.w;
+    float3 endNdc = endClip.xyz / endClip.w;
 
-    float2 tangent = screenB - screenA;
-    float  tangentLen = length(tangent);
+    float2 startPx = mad(startNdc.xy, 0.5, 0.5) * WH;
+    float2 endPx = mad(endNdc.xy, 0.5, 0.5) * WH;
 
-    // SampleA == SampleB, which the binary search produces when a dot's target distance lands on or
-    // past the curve's last sample. Fall back to the direction of the preceding interval.
-    // SampleA > 0 always holds, because Add() asserts resolution >= 2.
-    if (tangentLen < 1e-5) {
-        uint prevIndex = s.Sample > 0 ? s.Sample - 1 : s.Sample;
-        float3 posPrev = EvaluateBezier(cubic, SampleT(range, prevIndex));
-        float4 clipPrev = mul(float4(posPrev, 1.0), VP);
-        if (clipPrev.w > 1e-5) {
-            float2 screenPrev = ProjectToScreen(clipPrev);
-            tangent = screenA - screenPrev;
-            tangentLen = length(tangent);
+    float2 dir = endPx - startPx;
+    float dirLength = length(dir);
+
+    // Both samples land on the same pixel (seen end-on): take the direction from the sample before.
+    if (dirLength < 1e-5) {
+        uint prevSample = dotSample.Sample > 0 ? dotSample.Sample - 1 : dotSample.Sample;
+        float4 prevClip = mul(float4(EvaluateBezier(cubic, SampleT(range, prevSample)), 1.0), VP);
+        if (prevClip.w > 1e-5) {
+            float2 prevPx = mad(prevClip.xy / prevClip.w, 0.5, 0.5) * WH;
+            dir = startPx - prevPx;
+            dirLength = length(dir);
         }
     }
-    tangent = (tangentLen > 1e-5) ? (tangent / tangentLen) : float2(1.0, 0.0);
+    dir = (dirLength > 1e-5) ? (dir / dirLength) : float2(1.0, 0.0);
+    float2 right = float2(dir.y, -dir.x);
 
-    float2 lateralDir = float2(-tangent.y, tangent.x);
-    float2 screenPos = lerp(screenA, screenB, s.SegmentT);
-    float  depth = lerp(clipA.z / clipA.w, clipB.z / clipB.w, s.SegmentT);
+    uint style = CurveStyles[curveIndex].width_capcap;
+    float halfWidth = HalfWidth(style);
+    float extent = halfWidth + DOT_QUAD_MARGIN;
 
-    const float extent = halfWidth + DOT_QUAD_MARGIN;
+    o.Color = CalculateColor(CurveColors[curveIndex], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), dotSample.SegmentT);
+    o.CapCapJoin = style; // FrontCap/BackCap ignore the width byte
 
-    float2 cornerSign;
-    if (vertexId == 0)      cornerSign = float2(-1.0, -1.0);
-    else if (vertexId == 1) cornerSign = float2( 1.0, -1.0);
-    else if (vertexId == 2) cornerSign = float2(-1.0,  1.0);
-    else                    cornerSign = float2( 1.0,  1.0);
+    float2 local = extent * float2((vertexId & 1u) ? 1.0 : -1.0, (vertexId & 2u) ? 1.0 : -1.0);
+    o.SDF = float3(local, halfWidth);
 
-    float2 offsetPx = cornerSign.x * extent * lateralDir + cornerSign.y * extent * tangent;
-    float2 finalScreen = screenPos + offsetPx;
-    float2 ndcOut = finalScreen / WH * 2.0 - 1.0;
-
-    // The colour used to be interpolated between two per-sample colours the point pass had already
-    // packed to 8 bits each. Blending the two RAMP POSITIONS and unpacking once is the same value
-    // algebraically - lerp(lerp(C0,C1,a), lerp(C0,C1,b), s) == lerp(C0,C1,lerp(a,b,s)) - and skips
-    // the round trip through 8-bit, so the only difference is that it no longer quantises twice.
-    const uint4 colorData = Colors[curveIndex].c0_c1_height0_height1;
-    float blendA = ColorBlend(colorData, posA, tA);
-    float blendB = ColorBlend(colorData, posB, tB);
-
-    float4 colorBegin = UnpackColorBits(colorData.x);
-    float4 colorEnd   = UnpackColorBits(colorData.y);
-    float3 color = lerp(colorBegin, colorEnd, lerp(blendA, blendB, s.SegmentT)).rgb;
-
-    o.Position = float4(ndcOut, depth, 1.0);
-    o.Color = float4(color, 1.0);
-    o.Local = cornerSign * extent;
-    o.HalfWidth = halfWidth;
-    o.CapCapJoin = style; // the width byte on top is ignored by FrontCap/BackCap
+    o.Position = float4(lerp(startNdc, endNdc, dotSample.SegmentT), 1.0);
+    o.Position.xy = mad(2.0 / WH, local.x * right + local.y * dir, o.Position.xy);
 
     return o;
 }

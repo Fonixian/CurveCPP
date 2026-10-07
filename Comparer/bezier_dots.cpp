@@ -41,8 +41,6 @@ BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
 		RasterizerState{ device, RasterizerFlags::CullNone },
 		{ 1.f, 1.f, 1.f, 1.f }
 	});
-
-	dot_capacity = std::make_unique<ConstantBuffer>(device, capacity_cb_data);
 }
 
 void BezierDotRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
@@ -121,7 +119,7 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context) {
 
 // Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
 // Grow / shrink-at-a-quarter; see BezierRenderer::AllocatePatternBuffer for the same reasoning.
-void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device, GraphicsDeviceContext* context) {
+void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device) {
 	// Grow when the bound no longer fits, shrink once it has fallen to a quarter of the allocation
 	// (removed curves, a larger spacing) - see FitCapacity() in bezier_common.
 	const uint32_t required = FitCapacity(dots_allocated, pattern_upper_bound);
@@ -129,9 +127,6 @@ void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device, Graphics
 
 	dots.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<DotSample>(required)));
 	dots_allocated = required;
-
-	capacity_cb_data.capacity = dots_allocated;
-	dot_capacity->Upload(capacity_cb_data, context);
 }
 
 // Count, scan, then the indirect args. No atomic anywhere in here, so curve i's slice of the dot
@@ -175,7 +170,6 @@ void BezierDotRenderer::CountDots(GraphicsDeviceContext* context) {
 	// so it is always the CURRENT frame's count. The scan binds its own constants at b0, hence the
 	// rebind of viewport_data here.
 	viewport_data->Bind(ShaderStage::Compute, 0, context);      // b0
-	dot_capacity->Bind(ShaderStage::Compute, 1, context);       // b1
 	dot_indices->BindUnordered(0, context);                     // u0
 	draw_args.BindUnordered(1, context);                        // u1
 
@@ -194,7 +188,6 @@ void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context) {
 	ClearComputeBindings(context);
 
 	viewport_data->Bind(ShaderStage::Compute, 0, context);          // b0
-	dot_capacity->Bind(ShaderStage::Compute, 1, context);           // b1
 	curve_indices->Bind(ShaderStage::Compute, 0, context);          // t0: sample range per curve
 	distances->BindOrdered(ShaderStage::Compute, 1, context);       // t1
 	curve_styles->Bind(ShaderStage::Compute, 3, context);           // t3
@@ -221,7 +214,7 @@ void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& vi
 	}
 
 	// CPU-side and independent of anything the GPU is doing: it reads PatternBound() only.
-	AllocateDotBuffer(device, context);
+	AllocateDotBuffer(device);
 
 	UploadCameraData(view_proj, context);
 
