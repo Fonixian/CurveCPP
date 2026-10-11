@@ -8,23 +8,10 @@ cbuffer CameraData : register(b0)
     uint     TotalCurveCount;
 };
 
-// How many entries Dots actually holds. The CPU sizes it from an upper bound that cannot be smaller
-// than the count dot_ini arrives at, and dot_args caps the instance count to the same number, so the
-// clamp below should never bite - it is here so a wrong bound loses the tail of the dots instead of
-// writing past the end.
-cbuffer DotCapacity : register(b1)
-{
-    uint  Capacity;
-    uint3 CapacityPadding;
-};
-
-StructuredBuffer<Indices>         CurveIndices : register(t0);
-StructuredBuffer<float>           Distances   : register(t1);
-StructuredBuffer<DotStyle>        DotStyles   : register(t3);
-// Exclusive scan of dot_ini's per-curve counts, with the grand total appended one slot past the
-// last curve. DotOffsets[i] is curve i's base index into Dots and the gap to DotOffsets[i + 1] is
-// its count - the last curve included, which is what the appended total buys.
-StructuredBuffer<uint>            DotOffsets  : register(t4);
+StructuredBuffer<uint2>    CurveIndices   : register(t0);
+StructuredBuffer<float>    WorldDistances : register(t1);
+StructuredBuffer<DotStyle> CurveStyles    : register(t3);
+StructuredBuffer<uint>     DotOffsets     : register(t4);
 
 RWStructuredBuffer<DotSample> Dots : register(u0);
 
@@ -36,30 +23,29 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     if (curveIndex >= TotalCurveCount) return;
 
+    uint capacity, stride;
+    Dots.GetDimensions(capacity, stride);
     uint dotFirst = DotOffsets[curveIndex];
-    uint dotCount = DotOffsets[curveIndex + 1u] - dotFirst;
+    uint dotCount = min(DotOffsets[curveIndex + 1u], capacity) - min(dotFirst, capacity);
 
     if (dotCount == 0) return;
 
-    uint2 range          = CurveIndices[curveIndex].first_last;
+    uint2 range          = CurveIndices[curveIndex];
     uint  sampleStartIdx = range.x;
     uint  sampleEndIdx   = range.y;
-    float worldSpacing   = DotStyles[curveIndex].spacing;
+    float worldSpacing   = CurveStyles[curveIndex].spacing;
 
-    // Chain-global arc length at this curve's first sample - the scan only restarts at a chain start,
-    // so dots continue their grid across merged curves. See dot_ini.
-    float prevArcLength = Distances[sampleStartIdx];
+    float arcBegin = WorldDistances[sampleStartIdx];
 
-    uint base_index = (prevArcLength > 0.0 && worldSpacing > 0.0)
-        ? (uint) floor(prevArcLength / worldSpacing) + 1u
+    uint dotBase = (arcBegin > 0.0 && worldSpacing > 0.0)
+        ? (uint) floor(arcBegin / worldSpacing) + 1u
         : 0u;
 
     for (uint localIdx = threadLaneIdx; localIdx < dotCount; localIdx += 8)
     {
         uint  globalIdx       = dotFirst + localIdx;
-        if (globalIdx >= Capacity) continue;
 
-        float targetWorldDist = (float) localIdx * worldSpacing + worldSpacing * (float)base_index;
+        float targetWorldDist = (float)(dotBase + localIdx) * worldSpacing;
 
         uint low     = sampleStartIdx;
         uint high    = sampleEndIdx;
@@ -67,7 +53,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         while (low <= high) {
             uint mid = (low + high) / 2;
-            if (Distances[mid] <= targetWorldDist) {
+            if (WorldDistances[mid] <= targetWorldDist) {
                 sampleA = mid;
                 low     = mid + 1;
             } else {
@@ -78,18 +64,18 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         uint sampleB = min(sampleA + 1, sampleEndIdx);
 
-        float distA = Distances[sampleA];
-        float distB = Distances[sampleB];
+        float distA = WorldDistances[sampleA];
+        float distB = WorldDistances[sampleB];
         float segmentLength = distB - distA;
 
         float segmentT = (segmentLength > 0.00001f)
             ? (targetWorldDist - distA) / segmentLength
             : 0.0f;
 
-        DotSample dot;
-        dot.Sample = sampleA;
-        dot.SegmentT = saturate(segmentT);
-        dot.CurveIndex = curveIndex;
-        Dots[globalIdx] = dot;
+        DotSample dotSample;
+        dotSample.Sample = sampleA;
+        dotSample.SegmentT = saturate(segmentT);
+        dotSample.CurveIndex = curveIndex;
+        Dots[globalIdx] = dotSample;
     }
 }
