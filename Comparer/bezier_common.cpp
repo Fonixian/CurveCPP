@@ -90,53 +90,6 @@ void ToCubic(const BezierData& source, XMFLOAT3& p0, XMFLOAT3& p1, XMFLOAT3& p2,
 	}
 }
 
-// Bernstein -> monomial, so the point passes can evaluate by Horner. Expanding
-//
-//     P(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
-//
-// and collecting powers of t gives K0 = P0, K1 = 3(P1 - P0), K2 = 3(P0 - 2P1 + P2),
-// K3 = -P0 + 3P1 - 3P2 + P3 - which are, up to the binomial factors, the forward differences of the
-// control polygon. Taking the differences FIRST and combining them second (rather than scaling the
-// control points and summing) keeps the cancellation local: K3 is a third difference either way, but
-// this spelling never forms 3*P1 and 3*P2 as separate large intermediates.
-//
-// Endpoints: K0 == P0 exactly, so P(0) is bit-exact. P(1) = K0+K1+K2+K3 reaches P3 only in exact
-// arithmetic - measured at 4.5e-6 world units worst case over 20k random curves at scene scale, and
-// chord lengths of drawable size (>= 1e-2 world units) agree with the Bernstein form to 1e-4
-// relative, total arc length to 2e-6.
-//
-// The one behavioural difference, and it is not a rounding curiosity: on a curve whose control points
-// are EXACTLY duplicated this form is exactly constant (K1 = K2 = K3 = 0) where the Bernstein form
-// wobbled by an ulp, so adjacent samples now land on the same float. That is what the vertex shaders
-// want - a zero-length segment gets l_AB == 0 -> 0/0 -> NaN -> culled, which is the behaviour the "do
-// NOT drop the +0.5 in the NDC->screen map" note in solid_vert.hlsl is protecting. The reverse
-// happens too, in 34 of 618k sample pairs, all with duplicated control points: a pair that used to be
-// bit-identical is now a hair apart. 22 of those still collapse to the same float once projected; the
-// other 12 separate by at most 8e-5 px, which is the "misoriented join instead of nothing" case that
-// note describes. If that ever shows up, the fix is to compare l_AB against a small epsilon in the
-// vertex shaders instead of relying on an exact zero - the old code was equally exposed to it.
-void ToPowerBasis(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOAT3& p2, const XMFLOAT3& p3,
-	XMFLOAT3& k0, XMFLOAT3& k1, XMFLOAT3& k2, XMFLOAT3& k3) {
-	const XMVECTOR v0 = XMLoadFloat3(&p0);
-	const XMVECTOR v1 = XMLoadFloat3(&p1);
-	const XMVECTOR v2 = XMLoadFloat3(&p2);
-	const XMVECTOR v3 = XMLoadFloat3(&p3);
-
-	const XMVECTOR three = XMVectorReplicate(3.0f);
-
-	const XMVECTOR d10 = v1 - v0;   // first differences of the control polygon
-	const XMVECTOR d21 = v2 - v1;
-	const XMVECTOR d32 = v3 - v2;
-
-	const XMVECTOR dd0 = d21 - d10; // second differences
-	const XMVECTOR dd1 = d32 - d21;
-
-	XMStoreFloat3(&k0, v0);
-	XMStoreFloat3(&k1, three * d10);
-	XMStoreFloat3(&k2, three * dd0);
-	XMStoreFloat3(&k3, dd1 - dd0); // the third difference
-}
-
 constexpr uint32_t computeSrvSlots = 5u;
 constexpr uint32_t computeUavSlots = 5u;
 void ClearComputeBindings(GraphicsDeviceContext* context) {
@@ -146,10 +99,12 @@ void ClearComputeBindings(GraphicsDeviceContext* context) {
 		context->BindUnorderedAccessView(nullptr, slot);
 }
 
-constexpr uint32_t vertexSrvSlots = 8u;
-// t1 pattern positions, t2 pattern offsets. Slot 0 is never bound to the pixel stage by any of the
-// three renderers, so the loop starts at 1.
-constexpr uint32_t pixelSrvSlots = 3u;
+// t0..t9: the patterned renderer's curve_vs binds ten (see BezierRenderer::Draw).
+constexpr uint32_t vertexSrvSlots = 10u;
+// t1 pattern positions - the only pixel-stage SRV any renderer binds now (pattern offsets left the
+// pixel stage when the chain's slot range became an interpolant). Slot 0 is never bound to the pixel
+// stage, so the loop starts at 1.
+constexpr uint32_t pixelSrvSlots = 2u;
 void ClearDrawBindings(GraphicsDeviceContext* context) {
 	for (uint32_t slot = 0; slot < vertexSrvSlots; ++slot)
 		context->BindShaderResourceView(nullptr, ShaderStage::Vertex, slot);
@@ -260,6 +215,18 @@ void BezierCurve::Remove() {
 	++renderer->removed_count;
 	renderer->need_resize = true;
 	renderer = nullptr;
+}
+
+uint64_t PatternCenterBound(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOAT3& p2, const XMFLOAT3& p3, float spacing) {
+	if (!(spacing > 0.f)) return 0;
+
+	const float polygon =
+		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p1) - XMLoadFloat3(&p0))) +
+		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p2) - XMLoadFloat3(&p1))) +
+		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p3) - XMLoadFloat3(&p2)));
+
+	const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(spacing)) + 1.0;
+	return static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
 }
 
 bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
@@ -404,30 +371,18 @@ void BezierRendererBase::UploadCurveData(GraphicsDeviceContext* context) {
 		// The control polygon bounds the arc length, which bounds the chord sum the point pass
 		// measures, so this can only ever over-count. See PatternBound() in bezier_common.h - this
 		// loop already has the cubic form in hand, which is why the bound is computed here.
-		if (bez.spacing > 0.f) {
-			const float polygon =
-				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p1) - XMLoadFloat3(&p0))) +
-				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p2) - XMLoadFloat3(&p1))) +
-				XMVectorGetX(XMVector3Length(XMLoadFloat3(&p3) - XMLoadFloat3(&p2)));
-
-			const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(bez.spacing)) + 1.0;
-			bound += static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
-		}
+		bound += PatternCenterBound(p0, p1, p2, p3, bez.spacing);
 
 		// A merged curve starts ON the previous curve's last sample - see AllocateBuffers.
 		const int32_t first = chain_start ? current : current - 1;
 		const int32_t last = first + static_cast<int32_t>(bez.resolution) - 1;
 
-		// Converted AFTER the bound above, which needs the control polygon itself. The shaders get the
-		// monomial coefficients - see UploadBezierData in bezier_common.h.
-		XMFLOAT3 k0, k1, k2, k3;
-		ToPowerBasis(p0, p1, p2, p3, k0, k1, k2, k3);
-
+		// The shaders get the control points as they are - see UploadBezierData in bezier_common.h.
 		upload_data.push_back(UploadBezierData{
-			k0, first,
-			k1, last,
-			k2, PackFloat3ToR8G8B8A8(bez.C0),
-			k3, PackFloat3ToR8G8B8A8(bez.C1),
+			p0, first,
+			p1, last,
+			p2, PackFloat3ToR8G8B8A8(bez.C0),
+			p3, PackFloat3ToR8G8B8A8(bez.C1),
 			bez.min_height, bez.max_height,
 			chain_first_sample, last // chain_last_index is patched by close_chain()
 		});
@@ -475,4 +430,74 @@ void BezierRendererBase::UploadCameraData(const XMMATRIX& view_proj, GraphicsDev
 	camera_cb_data.TotalPointCount = total_points;
 	camera_cb_data.TotalCurveCount = static_cast<uint32_t>(curves.size());
 	viewport_data->Upload(camera_cb_data, context);
+}
+
+// --- BezierSplitRendererBase ----------------------------------------------------------------------
+
+void BezierSplitRendererBase::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
+	curve_control_points.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT3>(curves_required * 4u)));
+	curve_colors.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<SplitColorData>(curves_required)));
+	curve_indices.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<SplitIndices>(curves_required)));
+}
+
+// Each buffer is rewritten whole when its part is dirty - StructuredBuffer::Upload maps with
+// WRITE_DISCARD, which leaves anything not written undefined, so a buffer is either skipped entirely
+// or refilled for every live curve. The split is per buffer, not per curve.
+void BezierSplitRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t parts) {
+	if (curves.empty() || !curve_control_points) return;
+
+	// Same as UploadCurveData: raise to cubic and upload the four control points as they are - the
+	// shaders evaluate them in Bernstein form (see UploadBezierData in bezier_common.h).
+	if (parts & DirtyPositions) {
+		control_point_scratch.resize(curves.size() * 4u);
+
+		[[maybe_unused]] XMFLOAT3 previous_end = {}; // P3 of the curve before, for the shared-endpoint check
+		for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
+			XMFLOAT3* p = &control_point_scratch[curveIndex * 4u];
+			ToCubic(curves[curveIndex], p[0], p[1], p[2], p[3]);
+
+			assert((IsChainStart(curveIndex) || EndpointsMeet(previous_end, p[0])) &&
+				"merge_with_previous on a curve that does not start where the previous one ends");
+			previous_end = p[3];
+		}
+		curve_control_points->Upload(std::span<const XMFLOAT3>{ control_point_scratch }, context);
+	}
+
+	if (parts & DirtyColors) {
+		color_scratch.resize(curves.size());
+		for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
+			const BezierData& bez = curves[curveIndex];
+			color_scratch[curveIndex] = SplitColorData{
+				PackFloat3ToR8G8B8A8(bez.C0), PackFloat3ToR8G8B8A8(bez.C1),
+				bez.min_height, bez.max_height
+			};
+		}
+		curve_colors->Upload(std::span<const SplitColorData>{ color_scratch }, context);
+	}
+
+	// Same sample ranges UploadCurveData writes into first_index / last_index: a merged curve starts ON
+	// the previous curve's last sample (see BezierData::merge_with_previous).
+	if (parts & DirtyLayout) {
+		index_scratch.resize(curves.size());
+		uint32_t current = 0;
+		for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
+			const uint32_t first = IsChainStart(curveIndex) ? current : current - 1u;
+			const uint32_t last = first + curves[curveIndex].resolution - 1u;
+			index_scratch[curveIndex] = SplitIndices{ first, last };
+			current = last + 1u;
+		}
+		assert(current == total_points);
+		curve_indices->Upload(std::span<const SplitIndices>{ index_scratch }, context);
+	}
+
+	// The renderer's own per-curve style, if it has one (the line has none - its UploadStyles is empty).
+	if (parts & DirtyStyles)
+		UploadStyles(context);
+}
+
+void BezierSplitRendererBase::BindCurveData(GraphicsDeviceContext* context,
+	uint32_t control_point_slot, uint32_t color_slot, uint32_t index_slot) {
+	curve_control_points->Bind(ShaderStage::Vertex, control_point_slot, context);
+	curve_colors->Bind(ShaderStage::Vertex, color_slot, context);
+	curve_indices->Bind(ShaderStage::Vertex, index_slot, context);
 }

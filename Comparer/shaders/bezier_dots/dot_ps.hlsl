@@ -1,46 +1,39 @@
 #include "dot_common.hlsli"
 
-float CurveCapSDF(float2 coord, float spanLength, float halfWidth, uint cap)
-{
-    const float body = coord.x - halfWidth;
-    const float overshoot = max(-coord.y, coord.y - spanLength);
-
-    if (cap == CurveCapButt)
-    {
-        return max(body, overshoot);
+float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap) {
+    float d;
+    switch (cap) {
+        case CurveCapButt:
+            d = overshoot;
+            break;
+        case CurveCapSquare:
+            d = overshoot - halfWidth;
+            break;
+        case CurveCapTriangleOut:
+            d = (coord.x + overshoot - halfWidth) * rsqrt(2.0);
+            break;
+        case CurveCapTriangleIn:
+            d = (overshoot - coord.x) * rsqrt(2.0);
+            break;
     }
-    if (cap == CurveCapSquare)
-    {
-        return max(body, overshoot - halfWidth);
-    }
-    if (cap == CurveCapTriangleOut)
-    {
-        return max(body, (coord.x + overshoot - halfWidth) * 0.70710678118);
-    }
-    if (cap == CurveCapTriangleIn)
-    {
-        return max(body, (overshoot - coord.x) * 0.70710678118);
-    }
-    // CurveCapRound
-    return length(float2(coord.x, overshoot)) - halfWidth;
+    return d;
 }
 
-struct DotVSOutput {
-    float4 Position : SV_Position;
-    noperspective float4 Color : COLOR0;
-    noperspective float2 Local : TEXCOORD0;
-    nointerpolation float HalfWidth : TEXCOORD1;
-    nointerpolation uint CapCapJoin : TEXCOORD2;
-};
+// A dot is a zero-length dash: the front cap shapes the half facing the curve's start, the back cap
+// the half facing its end.
+float4 main(DotVSOutput input) : SV_Target {
+    float lateral = input.SDF.x;
+    float along = input.SDF.y;
+    float halfWidth = input.SDF.z;
 
-float4 main(DotVSOutput input) : SV_Target
-{
-    const float lateral   = abs(input.Local.x);
-    const float along     = input.Local.y;
-    const float halfWidth = input.HalfWidth;
+    float2 coord = float2(abs(lateral), along);
+    uint cap = (along < 0.0) ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
 
-    const uint cap = along >= 0.0 ? BackCap(input.CapCapJoin) : FrontCap(input.CapCapJoin);
-    const float sdf = CurveCapSDF(float2(lateral, along), 0.0, halfWidth, cap);
+    float sdf;
+    if (cap == CurveCapRound)
+        sdf = length(coord) - halfWidth;
+    else
+        sdf = max(coord.x - halfWidth, CurveCapSDF(coord, abs(along), halfWidth, cap));
 
     if (sdf > 0.5) discard;
     return float4(input.Color.rgb, saturate(0.5 - sdf));

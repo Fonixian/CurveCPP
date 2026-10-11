@@ -20,27 +20,25 @@ float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap) {
 }
 
 float4 main(SolidVSOutput input) : SV_Target {
-    const float lateral = input.SDF.x;
-    const float localArc = input.SDF.y;
-    const float halfWidth = input.SDF.z;
-    const float segmentLength = input.SDF.w;
+    float lateral = input.SDF.x;
+    float localArc = input.SDF.y;
+    float halfWidth = input.SDF.z;
+    float segmentLength = input.SDF.w;
 
-    const float2 coord = float2(abs(lateral), localArc);
-    
-    
-    const bool2 past_end = bool2(localArc < 0.0, localArc > segmentLength);
-    const bool atEndcap = any((input.Neighbors.xy == 0U) && past_end);
-    
-    const uint endcap = past_end.x ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
+    float2 coord = float2(abs(lateral), localArc);
+
+    bool2 pastEnd = bool2(localArc < 0.0, localArc > segmentLength);
+    uint endCap = pastEnd.x ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
+    bool atEndCap = any(pastEnd) && endCap != CurveEndJoined;
 
     float sdf = coord.x - halfWidth;
-    const float overshoot = max(-coord.y, coord.y - segmentLength);
-    
-    if ((atEndcap && endcap == CurveCapRound) || (!atEndcap && Join(input.CapCapJoin) == CurveJoinRound))
-        sdf = (overshoot > 0.0) ? length(float2(coord.x, overshoot)) - halfWidth : sdf; else if (atEndcap)
-        sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endcap));
-    
-    if (sdf > 0.5)
-        discard;
+    float overshoot = max(-coord.y, coord.y - segmentLength);
+
+    if ((atEndCap && endCap == CurveCapRound) || (!atEndCap && Join(input.CapCapJoin) == CurveJoinRound))
+        sdf = (overshoot > 0.0) ? length(float2(coord.x, overshoot)) - halfWidth : sdf;
+    else if (atEndCap)
+        sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endCap));
+
+    if (sdf > 0.5) discard;
     return float4(input.Color.rgb, saturate(0.5 - sdf));
 }

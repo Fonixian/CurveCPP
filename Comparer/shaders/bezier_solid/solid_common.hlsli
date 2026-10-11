@@ -1,40 +1,6 @@
 #ifndef SOLID_COMMON_HLSLI
 #define SOLID_COMMON_HLSLI
 
-struct BezierCurveData {
-    float3 K0; //
-    int    FirstIndex;
-    float3 K1; //
-    int    LastIndex;
-    float3 K2; //
-    uint ColorBegin; //
-    float3 K3; //
-    uint ColorEnd; //
-    float MinHeight; //
-    float MaxHeight;//
-    // First / last sample of the whole merged chain (== FirstIndex / LastIndex when unmerged).
-    int    ChainFirstIndex;
-    int    ChainLastIndex;
-};
-
-//struct BezierData {
-//    uint4 c0_c1_heights_width;
-//};
-//StructuredBuffer<float3> control_points;
-//struct ColorData {
-//    uint4 c0_c1_height0_height1;
-//};
-//struct Indices {
-//    uint2 first_last;
-//};
-
-
-
-struct SolidCurveStyle {
-    float Width;
-    uint CapCapJoin;
-};
-
 static const uint CurveCapButt        = 0u;
 static const uint CurveCapSquare      = 1u;
 static const uint CurveCapRound       = 2u;
@@ -44,32 +10,26 @@ static const uint CurveCapTriangleIn  = 4u;
 static const uint CurveJoinRound  = 0u;
 static const uint CurveJoinSquare = 1u;
 
+static const uint CurveEndJoined = 0xFFu;
+
 struct SolidVSOutput {
     float4 Position : SV_Position;
     noperspective float4 SDF : TEXCOORD0;
     noperspective float4 Color : COLOR0;
     nointerpolation uint CapCapJoin : TEXCOORD1;
-    nointerpolation uint2 Neighbors : TEXCOORD2;
 };
 
 float4 UnpackColorBits(uint packed) {
-    return float4(
-        float( packed        & 0xFF) / 255.0,
-        float((packed >>  8) & 0xFF) / 255.0,
-        float((packed >> 16) & 0xFF) / 255.0,
-        float((packed >> 24) & 0xFF) / 255.0);
+    uint4 unpacked = uint4(packed, packed, packed, packed);
+    unpacked >>= uint4(0, 8, 16, 24);
+    unpacked &= 0xFF;
+    return float4(unpacked) / 255.0;
 }
 
-uint PackColorBits(float4 color) {
-    uint r = uint(saturate(color.r) * 255.0 + 0.5);
-    uint g = uint(saturate(color.g) * 255.0 + 0.5);
-    uint b = uint(saturate(color.b) * 255.0 + 0.5);
-    uint a = uint(saturate(color.a) * 255.0 + 0.5);
-    return (a << 24) | (b << 16) | (g << 8) | r;
-}
-
-uint FrontCap(uint capcapjoin) { return (capcapjoin >> 16) & 0xFF; }
-uint BackCap(uint capcapjoin) { return (capcapjoin >> 8) & 0xFF; }
-uint Join(uint capcapjoin) { return capcapjoin & 0xFF; }
+// style: half_width << 24 | front_cap << 16 | back_cap << 8 | join
+float HalfWidth(uint style) { return float(style >> 24); }
+uint FrontCap(uint capCapJoin) { return (capCapJoin >> 16) & 0xFF; }
+uint BackCap(uint capCapJoin) { return (capCapJoin >> 8) & 0xFF; }
+uint Join(uint capCapJoin) { return capCapJoin & 0xFF; }
 
 #endif

@@ -73,19 +73,14 @@ struct CameraDataBuffer {
 	uint32_t TotalCurveCount;
 };
 
-// The four float3 slots hold the curve in the MONOMIAL (power) basis, not its control points:
+// The four float3 slots hold the curve's cubic control points P0..P3 (ToCubic's output - lower degrees
+// raised to cubic, nothing else converted). The shaders evaluate them in Bernstein form,
 //
-//     P(t) = K0 + t * (K1 + t * (K2 + t * K3))
+//     P(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
 //
-// Same cubic, same 80 bytes, same slots - only what the numbers mean changed. The GPU never wants
-// the control points themselves, only something it can evaluate, and Horner does that in three
-// fused multiply-adds per component where the Bernstein form needs three weight products and four
-// scale-adds. ToPowerBasis in bezier_common.cpp does the conversion once per upload; the control
-// points stay in BezierData on the CPU side, which is what PatternBound() and ToCubic() read.
-//
-// Whoever adds a GPU pass that genuinely needs P0..P3 (subdivision, a control-polygon bound on the
-// GPU, hull rendering) has to convert back or carry them separately - the conversion is not
-// invertible in-place without the Bernstein matrix.
+// whose weights are exactly 0 / 1 at the two ends, so P(0) == P0 and P(1) == P3 bit-for-bit and a
+// merged joint is exact from both sides. (Until 2026-10 these slots held the monomial coefficients
+// K0..K3 for Horner, which reached P3 only to within a few ulps.)
 //
 // first_index / last_index are the curve's first and last SAMPLE indices. Inside a chain they overlap
 // by one: a merged curve's first_index is the previous curve's last_index (the shared joint sample,
@@ -96,13 +91,13 @@ struct CameraDataBuffer {
 // curve belongs to. For an unmerged curve they equal first_index / last_index. curve_vs.hlsl reads
 // ChainLastIndex for the back-terminus test, so interior joints of a chain get no caps.
 struct UploadBezierData {
-	DirectX::XMFLOAT3 K0;
+	DirectX::XMFLOAT3 P0;
 	int32_t  first_index;
-	DirectX::XMFLOAT3 K1;
+	DirectX::XMFLOAT3 P1;
 	int32_t  last_index;
-	DirectX::XMFLOAT3 K2;
+	DirectX::XMFLOAT3 P2;
 	uint32_t color_begin;
-	DirectX::XMFLOAT3 K3;
+	DirectX::XMFLOAT3 P3;
 	uint32_t color_end;
 	float    min_height;
 	float    max_height;
@@ -110,13 +105,6 @@ struct UploadBezierData {
 	int32_t  chain_last_index;
 };
 static_assert(sizeof(UploadBezierData) == 80, "UploadBezierData must match BezierCurveData in the shaders");
-
-// Compute-stage b1 for the pattern/dot calc passes: how many entries the pattern buffer actually
-// holds, so a shader can clamp instead of writing past the end. See PatternBound() below.
-struct PatternCapacityBuffer {
-	uint32_t capacity;
-	uint32_t padding[3];
-};
 
 // Ceiling on the CPU-side pattern bound, so a curve with a near-zero spacing asks for a buffer of a
 // sane size rather than one of a few billion entries. Past this the calc shaders clamp and the tail
@@ -136,10 +124,11 @@ uint32_t FitCapacity(uint32_t allocated, uint32_t required);
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
 void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3& p3);
-// Cubic control points -> the monomial coefficients UploadBezierData carries. Call it on ToCubic's
-// output, and only after anything that needs the control polygon itself (the pattern bound) is done.
-void ToPowerBasis(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3,
-	DirectX::XMFLOAT3& k0, DirectX::XMFLOAT3& k1, DirectX::XMFLOAT3& k2, DirectX::XMFLOAT3& k3);
+
+// One curve's share of PatternBound(): floor(control polygon / spacing) + 1, clamped to
+// maxPatternCount, or 0 when spacing <= 0. Takes the CUBIC control points (ToCubic's output), since
+// the polygon of a raised curve is what bounds the arc length the point pass measures.
+uint64_t PatternCenterBound(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3, float spacing);
 
 // Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scene
 // scale; only used by the merge asserts in the curve uploads.
@@ -387,4 +376,63 @@ public:
 	// value it already has does nothing, so this is safe to call every frame.
 	inline bool Merged() const { return data().merge_with_previous; }
 	inline void Merged(bool value) { if (data().merge_with_previous != value) { data().merge_with_previous = value; touch_layout(); } }
+};
+
+// The per-curve upload shared by all four renderers (line, solid, dots, patterned). Instead of one 80-byte UploadBezierData
+// re-sent on any change, the curve data is split by how often it changes into three buffers, each
+// re-uploaded only when its part is dirty (see CurveDirtyBits):
+//
+//   curve_control_points   4 x float3 per curve, the cubic control points P0..P3 (ToCubic's
+//                          output, as in UploadBezierData) at curveIndex * 4   (48 B)  when re-posed
+//   curve_colors           SplitColorData                 (16 B)  when colours / height band change
+//   curve_indices          SplitIndices                   ( 8 B)  only when the layout changes
+//
+// plus the renderer's own style buffer, which is re-sent through UploadStyles() only when a style
+// setter fired. The control points sit at a fixed stride, so a shader finds them from the curve index
+// alone and never waits on curve_indices to know where to read. The HLSL side of the structs is
+// duplicated in line_common.hlsli and solid_common.hlsli - keep all three in step.
+class BezierSplitRendererBase : public BezierRendererBase {
+public:
+	using BezierRendererBase::BezierRendererBase;
+
+protected:
+	// Matches ColorData: uint4 c0_c1_height0_height1, the heights as raw float bits.
+	struct SplitColorData {
+		uint32_t color_begin;
+		uint32_t color_end;
+		float    min_height;
+		float    max_height;
+	};
+	static_assert(sizeof(SplitColorData) == 16, "SplitColorData must match ColorData in the shaders");
+
+	// Matches Indices: uint2 first_last - the curve's first and last SAMPLE index, both inclusive.
+	struct SplitIndices {
+		uint32_t first_index;
+		uint32_t last_index;
+	};
+	static_assert(sizeof(SplitIndices) == 8, "SplitIndices must match Indices in the shaders");
+
+	// None of them reads bezier_data, and none keeps per-sample positions (the dots' and the
+	// patterned renderer's point passes measure chord lengths and drop the positions).
+	bool NeedsCalculatedPoints() const override { return false; }
+	bool NeedsBezierData() const override { return false; }
+
+	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
+	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
+
+	// Whether the three buffers exist yet - the Draw() early-out test in place of `!bezier_data`.
+	// A derived renderer that also overrides AllocateCurveBuffers must call this class's version.
+	bool HasCurveData() const { return curve_control_points != nullptr; }
+	void BindCurveData(Axodox::Graphics::GraphicsDeviceContext* context,
+		uint32_t control_point_slot, uint32_t color_slot, uint32_t index_slot);
+
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_control_points;
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_colors;
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_indices;
+
+private:
+	// Staging vectors, kept between uploads so a per-frame re-pose does not allocate.
+	std::vector<DirectX::XMFLOAT3> control_point_scratch;
+	std::vector<SplitColorData>    color_scratch;
+	std::vector<SplitIndices>      index_scratch;
 };

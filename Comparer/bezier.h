@@ -5,8 +5,8 @@
 
 // The patterned curve renderer. The pattern is described per curve by two numbers rather than an
 // enum: BezierData::spacing (world arc length between dash centres) and BezierData::dash_length
-// (length of one dash, in pixels). A dot is a zero-length dash with round caps; a solid stroke is
-// spacing <= 0, which yields no pattern centres at all and leaves the body untouched.
+// (length of one dash, in pixels). A dot is a zero-length dash with round caps. There is no solid
+// mode: spacing <= 0 draws nothing - solid strokes belong in BezierSolidRenderer.
 //
 // Everything here exists because a dash is spaced along the curve by WORLD arc length but drawn at a
 // fixed size in PIXELS, so the pixel shader has to be told where each pattern centre landed in
@@ -18,18 +18,35 @@
 //   offset_scan      an exclusive prefix sum turning those counts into each curve's slice
 //   pattern_calc     binary-searches the world sum per centre and samples the screen sum there
 //
-// The pattern is CONTINUOUS ACROSS CURVES. bezier_common marks one segment begin for the whole
-// scene, so the prefix sum runs over the chain and the centres sit on one grid of world distances
-// n * spacing shared by every curve in it. pattern_ini gives each curve the window of that grid
-// lying inside its own arc span rather than restarting at n = 0, pattern_calc places exactly those
-// n, and curve_vs hands the pixel shader the bias that turns a global n back into a slot in the
-// flat array (plus one slot of slack at each end, so a dash centred just past a joint still draws
-// on the near side of it). Two curves joined end to end therefore continue one dash sequence
-// instead of each starting a fresh dash at their shared endpoint. This mirrors what bezier_dots
-// does - dot_ini.hlsl / dot_calc.hlsl take the same window - except that dots need no slack,
-// because each dot is its own quad and owes nothing to the geometry it sits on.
+// The pattern is CONTINUOUS ACROSS THE CURVES OF A MERGED CHAIN, and only across those.
+// bezier_common marks one segment begin per CHAIN, so each prefix sum runs over one chain, restarts
+// at 0 at the next, and the centres of a chain sit on one grid of world distances n * spacing shared
+// by every curve in it. pattern_ini gives each curve the window of that grid lying inside its own
+// arc span rather than restarting at n = 0, pattern_calc places exactly those n, and curve_vs hands
+// the pixel shader the bias that turns a grid n back into a slot in the flat array. Two curves
+// merged end to end therefore continue one dash sequence instead of each starting a fresh dash at
+// their shared endpoint. This mirrors what bezier_dots does - dot_ini.hlsl / dot_calc.hlsl take the
+// same window.
+//
+// The flat array is therefore one sorted run PER CHAIN, laid end to end in curve order - NOT one
+// sorted run for the scene: the screen arc of the next chain's first centre is 0 again. A pixel may
+// look at any centre of its own chain (a dash centred just past a joint still draws on the near side
+// of it) and at nothing outside it, so curve_vs hands the pixel shader the chain's slot range,
+// [PatternOffsets[first curve], PatternOffsets[last curve + 1]), built from curve_chains below. Before
+// that range existed the pixel shader clamped to the whole SCENE's slots, and a curve's last dash
+// measured its neighbour gap against the next, unrelated curve's first centre - so adding a curve
+// changed how the curve before it was drawn.
 //
 // If every curve in the scene is solid, use BezierSolidRenderer instead - it skips all of it.
+//
+// Curve data is BezierSplitRendererBase's split upload, like the other three renderers: control
+// points (P0..P3), colours and sample ranges in three buffers, each re-sent only when its part
+// changes, plus one PatternStyle (width_capcapjoin, spacing, dash_length) per curve re-sent only when
+// a style setter fired. curve_vs builds the strip the way solid_vert does - B, C and both neighbours
+// evaluated straight from the control points, a neighbour across a merged joint taken from the
+// adjacent curve - so there is no CalculatedPoints buffer; the point pass keeps only the two arc
+// lengths. The chain range is gone from the per-curve data with the 80-byte struct: the terminus test
+// is per segment (Neighbors, from the begin bits), as in the solid renderer.
 //
 // The centre count used to come back from pattern_ini through a blocking Download(), which drains the
 // whole GPU queue in the middle of the frame just to size one buffer. It does not any more: the
@@ -54,7 +71,7 @@
 // per curve (pattern_offsets) plus ParalellScan's block-sum buffers, and two dispatches where there
 // was one; an atomic needs no room to work in, a scan does.
 
-class BezierRenderer : public BezierRendererBase {
+class BezierRenderer : public BezierSplitRendererBase {
 public:
 	explicit BezierRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
@@ -67,16 +84,51 @@ protected:
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
+	// The base upload, plus what the pattern passes need on top of it: the CPU-side pattern bound
+	// (the split base does not compute it) and need_recount - raised only when something the centre
+	// count depends on changed, so a colour-only change no longer recounts.
+	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
 
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
-	void AllocatePatternBuffer(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
+	void AllocatePatternBuffer(const Axodox::Graphics::GraphicsDevice& device);
 	void CountPatternCenters(Axodox::Graphics::GraphicsDeviceContext* context);
 	void RunPatternPass(Axodox::Graphics::GraphicsDeviceContext* context);
 
-	// Set whenever the curve data changed, so the centre count is recomputed once rather than every
-	// frame. The count depends on world arc length only, which the camera does not move.
+	// Set whenever positions, sample layout or styles changed, so the centre count is recomputed once
+	// rather than every frame. The count depends on world arc length and spacing only, which the
+	// camera does not move. Colours never raise it. See UploadCurves.
 	bool need_recount = false;
+
+	// PatternBound() over the live curves, from the cubic control polygons and spacings.
+	void UpdatePatternBound();
+
+	// Matches PatternStyle in curve_common.hlsli: width << 24 | cap_front << 16 | cap_back << 8 |
+	// join, then spacing and dash length. The low three bytes are the solid renderer's CapCapJoin; the
+	// width takes the top byte, so it is rounded to a WHOLE pixel and clamped to [0, 255] like the
+	// solid renderer's.
+	struct UploadPatternStyle {
+		uint32_t width_capcapjoin;
+		float    spacing;
+		float    dash_length;
+	};
+	static_assert(sizeof(UploadPatternStyle) == 12, "UploadPatternStyle must match PatternStyle in the shaders");
+
+	std::vector<UploadPatternStyle> style_scratch;
+
+	// Matches StructuredBuffer<uint2> CurveChains in curve_vs.hlsl: the first and last CURVE index of
+	// the merged chain a curve belongs to (both itself for an unmerged curve). Changes only with the
+	// layout (Add / remove / Merged / Resolution), so it is re-sent on DirtyLayout alone.
+	struct UploadChainCurves {
+		uint32_t first_curve;
+		uint32_t last_curve;
+	};
+	static_assert(sizeof(UploadChainCurves) == 8, "UploadChainCurves must match CurveChains in curve_vs.hlsl");
+
+	std::vector<UploadChainCurves> chain_scratch;
+	// One UploadChainCurves per curve. curve_vs turns it into the chain's slot range in the pattern
+	// array, which is all the pixel shader is allowed to read.
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_chains;
 
 	uint32_t patterns_allocated = 0;
 
@@ -93,10 +145,6 @@ private:
 	// Allocated one element longer than the curve count for it.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_offsets;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> patterns;        // One float per pattern: screen arc length of the center
-
-	// patterns_allocated, so pattern_calc can clamp rather than run off the end of the buffer.
-	PatternCapacityBuffer capacity_cb_data{};
-	std::unique_ptr<Axodox::Graphics::ConstantBuffer> pattern_capacity;
 
 	Axodox::Graphics::ComputeShader* pattern_ini;
 	Axodox::Graphics::ComputeShader* pattern_calc;

@@ -445,7 +445,7 @@ SDL_AppResult App::Init()
 	PoseScene(solid_scene);
 	PoseScene(dot_scene);
 	PoseScene(line_scene);
-	ApplyStyle(patterned_scene);
+	ApplyStyle(patterned_scene, true);
 	ApplyStyle(solid_scene);
 	ApplyStyle(dot_scene, true);
 	ApplyStyle(line_scene);
@@ -510,7 +510,7 @@ void App::Update(float delta)
 
 	if (style_dirty)
 	{
-		ApplyStyle(patterned_scene);
+		ApplyStyle(patterned_scene, true);
 		ApplyStyle(solid_scene);
 		ApplyStyle(dot_scene, true);
 		ApplyStyle(line_scene);
@@ -647,7 +647,7 @@ void App::TestGui()
 
 	ImGui::SeparatorText("Add");
 	if (ImGui::Button("Add to Patterned"))
-		AddTestCurves(*patterned_renderer, patterned_scene, false);
+		AddTestCurves(*patterned_renderer, patterned_scene, true);
 	ImGui::SameLine();
 	if (ImGui::Button("Add to Solid"))
 		AddTestCurves(*solid_renderer, solid_scene, false);
@@ -663,7 +663,7 @@ void App::TestGui()
 	if (ImGui::Button("Add to all four (identical curves)"))
 	{
 		const std::mt19937 batch_start = test_rng;
-		AddTestCurves(*patterned_renderer, patterned_scene, false);
+		AddTestCurves(*patterned_renderer, patterned_scene, true);
 		test_rng = batch_start;
 		AddTestCurves(*solid_renderer, solid_scene, false);
 		test_rng = batch_start;
