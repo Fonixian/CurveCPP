@@ -4,23 +4,12 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
-constexpr uint32_t maxElementCount = 1'200'000u;
-
-// Same packing as the solid renderer's style word - see UploadPatternStyle in bezier.h.
-static uint32_t PackWidthCapCapJoin(const BezierData& bez) {
-	const uint32_t width = static_cast<uint32_t>(std::clamp(bez.width, 0.f, 255.f) + 0.5f);
-	return (width << 24) |
-		(uint32_t(bez.cap_front) << 16) |
-		(uint32_t(bez.cap_back) << 8) |
-		uint32_t(bez.join);
-}
-
 // --- BezierRenderer ----------------------------------------------------------------------------
 
 BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 	// offset_scan runs over curve counts, and a curve is worth at least one point, so maxElementCount
 	// bounds the curve count too - no separate cap, and its buffers cost a few KB at that size.
-	: BezierSplitRendererBase(device),
+	: BezierRendererBase(device),
 	  world_scan{ device, maxElementCount }, screen_scan{ device, maxElementCount },
 	  offset_scan{ device, maxElementCount }
 {
@@ -40,16 +29,13 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 }
 
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
-	// Two float buffers rather than one of float2: same bytes, but each pass loads only the channel
-	// it actually reads, and each is scanned by its own SegmentedScan. See the note in bezier.h.
+	// Two float buffers, each scanned by its own SegmentedScan, so each pass loads only the channel it
+	// reads. See the note in bezier.h.
 	world_distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
 	screen_distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
 }
 
 void BezierRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
-	// Control points, colours and sample ranges.
-	BezierSplitRendererBase::AllocateCurveBuffers(device, curves_required);
-
 	// One element longer than the curve count on purpose: the scan parks the grand total in the slot
 	// just past the last curve, and a structured-buffer UAV drops an out-of-range store without
 	// complaining, so a buffer sized exactly to curves_required would lose the total silently rather
@@ -74,20 +60,8 @@ void BezierRenderer::UploadStyles(GraphicsDeviceContext* context) {
 	curve_styles->Upload(std::span<const UploadPatternStyle>{ style_scratch }, context);
 }
 
-// Same sum UploadCurveData forms, over the same cubic control polygons - see PatternBound(). It
-// needs positions AND spacings, so it is redone when either changed.
-void BezierRenderer::UpdatePatternBound() {
-	uint64_t bound = 0;
-	for (const BezierData& bez : curves) {
-		XMFLOAT3 p0, p1, p2, p3;
-		ToCubic(bez, p0, p1, p2, p3);
-		bound += PatternCenterBound(p0, p1, p2, p3, bez.spacing);
-	}
-	pattern_upper_bound = static_cast<uint32_t>(std::min<uint64_t>(bound, maxPatternCount));
-}
-
 void BezierRenderer::UploadCurves(GraphicsDeviceContext* context, uint8_t parts) {
-	BezierSplitRendererBase::UploadCurves(context, parts);
+	BezierRendererBase::UploadCurves(context, parts);
 
 	// Width, caps and join are styles too, so changing only those still recounts; harmless, not free.
 	if (parts & (DirtyPositions | DirtyStyles))
@@ -114,8 +88,8 @@ void BezierRenderer::UploadCurves(GraphicsDeviceContext* context, uint8_t parts)
 void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	ClearComputeBindings(context);
 
-	// No CalculatedPoints: the point pass measures the two chord lengths and drops the positions -
-	// curve_vs evaluates the ones it draws itself (NeedsCalculatedPoints is false).
+	// The point pass measures the two chord lengths and drops the positions - curve_vs evaluates the
+	// ones it draws itself.
 	viewport_data->Bind(ShaderStage::Compute, 0, context);        // b0
 	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: P0..P3 per curve
 	bezier_data_map->Bind(ShaderStage::Compute, 1, context);      // t1: owning curve per sample
@@ -124,7 +98,7 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	screen_distances->BindUnordered(1, context);                  // u1
 
 	profiler.begin_gpu("calc");
-	calc_points->Run({ (total_points + 256u - 1u) / 256u, 1u, 1u }, context);
+	calc_points->Run({ GroupCount(total_points, 256u), 1u, 1u }, context);
 	profiler.end_gpu("calc");
 
 	ClearComputeBindings(context);
@@ -142,11 +116,10 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 }
 
 // Sized from the CPU-side upper bound, so this runs before any compute pass and never waits on one.
-// Rounded up by next_pow2 on top of a bound that already over-counts, and shrunk only at a quarter,
-// so a scene edit usually costs no reallocation at all.
+// Grows when the bound no longer fits and shrinks once it has fallen to a quarter of the allocation
+// (removed curves, a larger spacing) - see FitCapacity() - so a scene edit usually costs no
+// reallocation at all.
 void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device) {
-	// Grow when the bound no longer fits, shrink once it has fallen to a quarter of the allocation
-	// (removed curves, a larger spacing) - see FitCapacity() in bezier_common.
 	const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
 	if (patterns && patterns_allocated == required) return;
 
@@ -155,11 +128,8 @@ void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device) {
 }
 
 // Count, then scan. No atomic anywhere in here, so curve i's slice of the pattern array is a
-// function of the curve data alone - reproducible frame to frame, run to run, and across GPUs.
-//
-// There used to be a third dispatch after the scan - curve_pattern_resolve - to fold the offsets
-// back into a uint2's .x and to publish the grand total. Neither survives: the counts are read as
-// the gap between neighbouring offsets, and ParalellScan appends the total itself.
+// function of the curve data alone - reproducible frame to frame, run to run, and across GPUs. The
+// counts are read as the gap between neighbouring offsets, and ParalellScan appends the total itself.
 void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
 	const auto curve_count = static_cast<uint32_t>(curves.size());
 
@@ -167,15 +137,15 @@ void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
 
 	ClearComputeBindings(context);
 
-	// 1. Per curve, how many centres it has. Each thread writes only its own element now.
-	viewport_data->Bind(ShaderStage::Compute, 0, context);      // b0
+	// 1. Per curve, how many centres it has. Each thread writes only its own element.
+	viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
 	curve_indices->Bind(ShaderStage::Compute, 0, context);            // t0: sample range per curve
 	// World only - the count depends on world arc length alone, so screen_distances is not bound.
 	world_distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1
 	curve_styles->Bind(ShaderStage::Compute, 2, context);             // t2
-	pattern_offsets->BindUnordered(0, context);                 // u0
+	pattern_offsets->BindUnordered(0, context);                       // u0
 
-	pattern_ini->Run({ (curve_count + 256u - 1u) / 256u, 1u, 1u }, context);
+	pattern_ini->Run({ GroupCount(curve_count, 256u), 1u, 1u }, context);
 
 	ClearComputeBindings(context);
 
@@ -207,7 +177,7 @@ void BezierRenderer::RunPatternPass(GraphicsDeviceContext* context) {
 	patterns->BindUnordered(0, context);                              // u0
 
 	// 8 threads per curve on x, 8 curves per group on y.
-	pattern_calc->Run({ 1u, (curve_count + 8u - 1u) / 8u, 1u }, context);
+	pattern_calc->Run({ 1u, GroupCount(curve_count, 8u), 1u }, context);
 
 	ClearComputeBindings(context);
 }
@@ -234,8 +204,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	RunPointPass(context);
 
 	// ini + scan + calc under one metric. On a steady frame need_recount is false and this is calc
-	// alone; the frames that recount add the count/scan pair on top. It still carries no readback
-	// stall, so this row should stay flat across a scene change instead of spiking.
+	// alone; the frames that recount add the count/scan pair on top.
 	profiler.begin_gpu("pattern");
 
 	if (need_recount) {
@@ -263,10 +232,9 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	pattern_offsets->BindOrdered(ShaderStage::Vertex, 8, context);     // t8: pattern base per curve
 	curve_chains->Bind(ShaderStage::Vertex, 9, context);               // t9: first/last curve of the chain
 
-	// t1: screen arc length per pattern center. Its clamp bound used to be read here too, from
-	// pattern_offsets[TotalCurveCount] - the SCENE's centre total, which let a curve read the next
-	// chain's centres. The bound is the chain's slot range now, and it arrives as an interpolant
-	// (PatternSlots) from curve_vs, so pattern_offsets is no longer bound to the pixel stage.
+	// t1: screen arc length per pattern center. The clamp bound is the chain's slot range, which
+	// arrives as an interpolant (PatternSlots) from curve_vs, so pattern_offsets is not bound to the
+	// pixel stage.
 	if (patterns) patterns->BindOrdered(ShaderStage::Pixel, 1, context);
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context); // b1

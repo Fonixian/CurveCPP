@@ -9,7 +9,7 @@ using namespace Axodox::Graphics;
     uint32_t IsTopLevel = 0u;
  };
 
- uint32_t DivRoundUp(uint32_t value, uint32_t divisor) {
+ static uint32_t DivRoundUp(uint32_t value, uint32_t divisor) {
    return (value + divisor - 1u) / divisor;
  }
 

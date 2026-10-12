@@ -161,7 +161,6 @@
     <ClCompile Include="gpu_buffers.cpp" />
     <ClCompile Include="CurveApp.cpp" />
     <ClCompile Include="orbital_camera.cpp" />
-    <Text Include="paralell_scan.cpp" />
     <ClCompile Include="pipeline.cpp" />
     <ClCompile Include="profiler.cpp" />
     <ClCompile Include="SegmentedScan.cpp" />
@@ -183,7 +182,6 @@
     <ClInclude Include="catmull_rom.h" />
     <ClInclude Include="gpu_buffers.h" />
     <ClInclude Include="orbital_camera.h" />
-    <Text Include="paralell_scan.h" />
     <ClInclude Include="pipeline.h" />
     <ClInclude Include="profiler.h" />
     <ClInclude Include="SegmentedScan.h" />

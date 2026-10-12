@@ -10,36 +10,31 @@
 //
 // BezierRenderer places a dash/dot by finding the SCREEN arc length of its centre and letting the
 // pixel shader carve a cap shape out of the line-strip's already-rasterised quad - that is what needs
-// the segmented scan of world AND screen arc length, the bisector arc shear, and the shrink-to-fit
-// sizing documented in pattern_seam.md. This renderer instead finds each dot's WORLD position and
-// tangent DIRECTION directly (still via a segmented scan + binary search over WORLD arc length only -
-// screen arc length is never computed) and draws its own small instanced quad there: screen-aligned,
-// sized by width in pixels, oriented by the projected tangent. That is the DX11 stand-in for
-// GL_POINTS with gl_PointSize. There is no shared strip geometry, so there is nothing to kink at a
-// seam - every dot is a self-contained draw.
+// the segmented scan of world AND screen arc length. This renderer instead finds each dot's WORLD
+// position and tangent DIRECTION directly (a segmented scan + binary search over WORLD arc length
+// only - screen arc length is never computed) and draws its own small instanced quad there:
+// screen-aligned, sized by width in pixels, oriented by the projected tangent. That is the DX11
+// stand-in for GL_POINTS with gl_PointSize. There is no shared strip geometry, so there is nothing to
+// kink at a seam - every dot is a self-contained draw.
 //
 // A dot's shape is cap_front/cap_back exactly like BezierRenderer's dash_length == 0 case: the half of
 // the quad facing back toward the curve's start (P0) is shaped by cap_front, the half facing forward
 // toward its end (P3) by cap_back, split along the projected tangent (dot_ps.hlsl). The FRONT/BACK
 // choice is decided from the tangent's sign, which is exact - unlike curve_ps.hlsl's version of this
-// same split, which compares a world arc length against a pixel offset (see the "Unrelated thing
-// spotted" note in pattern_seam.md) and is a known bug there. Not replicating that bug is deliberate.
+// same split, which compares a world arc length against a pixel offset. Not replicating that is
+// deliberate.
 //
-// This renderer has one CPU dependency on the dot count that the patterned one does not: the count IS
-// the instance count of the draw. A count read back late cannot serve that - drawing more instances
-// than the current frame's dot_calc wrote would resurrect dots from the previous scene - so the count
-// never comes back to the CPU at all: dot_args writes it straight into a DrawInstancedIndirect
-// argument buffer on the GPU. Nothing mirrors it back to the CPU either - the exact count is a
-// diagnostic neither this renderer nor the patterned one pays for any more.
+// The dot count IS the instance count of the draw, so it must be the current frame's: it never comes
+// back to the CPU, dot_args writes it straight into a DrawInstancedIndirect argument buffer on the
+// GPU. The dot buffer itself is sized from BezierRendererBase::PatternBound().
 //
-// Curve data is BezierSplitRendererBase's split upload, like the line and solid renderers: control
-// points (P0..P3), colours and sample ranges in three buffers, each re-sent only when its part
-// changes, plus one DotStyle (width_capcap + spacing) per curve re-sent only when a style setter
-// fired. None of the solid renderer's merged-joint handling is needed here: a dot's two bracketing
-// samples always belong to one curve, so the draw binds no curve_begins and no index map. The point
-// pass still reads the index map, which is what hands a joint sample to the curve leaving it.
+// Curve data is the base class's split upload (control points, colours and sample ranges), plus one
+// DotStyle (width_capcap + spacing) per curve re-sent only when a style setter fired. None of the
+// solid renderer's merged-joint handling is needed here: a dot's two bracketing samples always belong
+// to one curve, so the draw binds no curve_begins and no index map. The point pass still reads the
+// index map, which is what hands a joint sample to the curve leaving it.
 
-class BezierDotRenderer : public BezierSplitRendererBase {
+class BezierDotRenderer : public BezierRendererBase {
 public:
 	explicit BezierDotRenderer(const Axodox::Graphics::GraphicsDevice& device);
 
@@ -48,17 +43,16 @@ public:
 	uint32_t PatternCapacity() const override { return dots_allocated; }
 
 protected:
-	// NeedsCalculatedPoints / NeedsBezierData are false through BezierSplitRendererBase: dot_vert
-	// evaluates the two samples bracketing each dot straight from the control points, so nothing in
-	// this renderer reads a stored sample position or colour. See dot_calc_points.hlsl.
+	// dot_vert evaluates the two samples bracketing each dot straight from the control points, so
+	// nothing in this renderer stores a sample position or colour. See dot_calc_points.hlsl.
 
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
-	// The base upload, plus the two things the dot passes need on top of it: the CPU-side
-	// pattern bound (the split base does not compute it) and need_recount - raised only when
-	// something the dot count depends on changed, so a colour-only change no longer recounts.
+	// The base upload, plus what the dot passes need on top of it: the CPU-side pattern bound and
+	// need_recount - raised only when something the dot count depends on changed, so a colour-only
+	// change does not recount.
 	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
 
 private:
@@ -72,12 +66,7 @@ private:
 	// camera does not move. Colours never raise it. See UploadCurves.
 	bool need_recount = false;
 
-	// PatternBound() over the live curves, from the cubic control polygons and spacings.
-	void UpdatePatternBound();
-
-	// Matches DotStyle in dot_common.hlsli: width << 24 | cap_front << 16 | cap_back << 8, then the
-	// spacing. The caps sit where the solid renderer's CapCapJoin keeps them; the width takes the top
-	// byte, so it is rounded to a WHOLE pixel and clamped to [0, 255], like the solid renderer's.
+	// Matches DotStyle in dot_common.hlsli: PackWidthCapCapJoin with the join byte 0, then the spacing.
 	struct UploadDotStyle {
 		uint32_t width_capcap;
 		float    spacing;
@@ -89,10 +78,7 @@ private:
 	uint32_t dots_allocated = 0;
 
 	// --- per-frame compute results -------------------------------------------------
-	// World arc length, one float per point, prefix-summed per curve. It used to be a float2 whose
-	// second channel was always 0, because SegmentedScan's element type was fixed at float2 for the
-	// patterned renderer's benefit; that renderer keeps its world and screen channels in separate
-	// buffers now and the scan is scalar, so this renderer stops storing and summing a dead channel.
+	// World arc length, one float per point, prefix-summed per curve.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;
 
 	// Per curve: written as the dot count by dot_ini, then scanned IN PLACE into that curve's base

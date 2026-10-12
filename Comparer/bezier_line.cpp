@@ -4,7 +4,7 @@ using namespace Axodox::Graphics;
 using namespace DirectX;
 
 BezierLineRenderer::BezierLineRenderer(const GraphicsDevice& device)
-	: BezierSplitRendererBase(device) {
+	: BezierRendererBase(device) {
 	curve_draw.vs = Pipeline::getVS(device, "line_vert.cso");
 	curve_draw.ps = Pipeline::getPS(device, "line_ps.cso");
 	curve_draw.states = std::make_shared<PipelineState>(PipelineState{
