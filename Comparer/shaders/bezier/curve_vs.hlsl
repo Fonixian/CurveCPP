@@ -8,9 +8,9 @@ cbuffer CameraData : register(b1) {
 };
 
 
-StructuredBuffer<float>        WorldDistances     : register(t0); // arc length from the chain's start, per sample
+StructuredBuffer<float2>       Distances          : register(t0); // arc length from the chain's start, per sample: x world, y screen (px)
 StructuredBuffer<uint>         CurveBegins        : register(t1);
-StructuredBuffer<float>        ScreenDistances    : register(t2); // same in pixels
+// t2 is unused (the screen arc length used to have its own buffer); the slot numbers match the solid renderer's.
 StructuredBuffer<float3>       CurveControlPoints : register(t3);
 StructuredBuffer<uint>         BezierIndexMap     : register(t4);
 StructuredBuffer<uint4>        CurveColors        : register(t5);
@@ -191,14 +191,15 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     float halfWidth = HalfWidth(style.width_capcapjoin);
     float cornerT = nearSide ? t0 : t1;
 
-    float startWorldDistance = WorldDistances[sampleIndex];
-    float endWorldDistance = WorldDistances[sampleIndex + 1u];
+    float2 startDistances = Distances[sampleIndex];
+    float startWorldDistance = startDistances.x;
+    float endWorldDistance = Distances[sampleIndex + 1u].x;
 
     o.Neighbors = uint2((hasPrev || t0 > 0.0) ? 1u : 0u, (hasNext || t1 < 1.0) ? 1u : 0u);
     o.DashLength = style.dash_length;
     o.CapCapJoin = style.width_capcapjoin; // FrontCap/BackCap/Join ignore the width byte
 
-    // Pattern coordinate. WorldDistances restarts at 0 at each chain, and the chain's centers sit on
+    // Pattern coordinate. Distances.x restarts at 0 at each chain, and the chain's centers sit on
     // one grid, n * spacing from its start, so world arc maps to a slot of PatternPosition by
     //
     //     slot = floor(arc / spacing) + (PatternOffsets[curve] - first grid index the curve owns)
@@ -206,7 +207,7 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     // The divide and the bias are both linear, so they commute with the rasterizer's interpolation
     // and the pixel shader only has to floor() it. The bias is 0 while every curve of the chain has
     // the same spacing; it is there for mixed spacing.
-    float curveArcStart = WorldDistances[currentRange.x];
+    float curveArcStart = Distances[currentRange.x].x;
     float patternBase = (curveArcStart > 0.0) ? floor(curveArcStart / style.spacing) + 1.0 : 0.0;
     float patternCoord = lerp(startWorldDistance, endWorldDistance, cornerT) / style.spacing
                        + (float(PatternOffsets[currentCurve]) - patternBase);
@@ -233,7 +234,7 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
 
     // The screen arc at the (clipped) start, measured along the screen line from where
     // curve_calc_points started measuring - never lerped by t0, which is not linear on screen.
-    o.ScreenArcBegin = ScreenDistances[sampleIndex] + distance(mad(measuredStartClip.xy / measuredStartClip.w, 0.5, 0.5) * WH, startPx);
+    o.ScreenArcBegin = startDistances.y + distance(mad(measuredStartClip.xy / measuredStartClip.w, 0.5, 0.5) * WH, startPx);
 
     // From the segment's own points, not the per-vertex corner frame below, so all five vertices agree.
     {

@@ -9,8 +9,7 @@ cbuffer CameraData : register(b0)
 };
 
 StructuredBuffer<uint2>           CurveIndices    : register(t0);
-StructuredBuffer<float>           WorldDistances  : register(t1);
-StructuredBuffer<float>           ScreenDistances : register(t2);
+StructuredBuffer<float2>          Distances       : register(t1); // x: cumulative world arc, y: cumulative screen arc
 StructuredBuffer<PatternStyle>    CurveStyles     : register(t3);
 StructuredBuffer<uint>            PatternOffsets  : register(t4);
 
@@ -36,7 +35,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint  sampleEndIdx   = range.y;
     float worldSpacing   = CurveStyles[curveIndex].spacing;
 
-    float arcBegin = WorldDistances[sampleStartIdx];
+    float arcBegin = Distances[sampleStartIdx].x;
 
     uint patternBase = (arcBegin > 0.0 && worldSpacing > 0.0)
         ? (uint) floor(arcBegin / worldSpacing) + 1u
@@ -54,7 +53,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         while (low <= high) {
             uint mid = (low + high) / 2;
-            if (WorldDistances[mid] <= targetWorldDist) {
+            if (Distances[mid].x <= targetWorldDist) {
                 sampleA = mid;
                 low     = mid + 1;
             } else {
@@ -65,17 +64,15 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
         uint sampleB = min(sampleA + 1, sampleEndIdx);
 
-        float distA = WorldDistances[sampleA];
-        float distB = WorldDistances[sampleB];
-        float segmentLength = distB - distA;
+        // One 8-byte load per end gives both channels.
+        float2 distA = Distances[sampleA];
+        float2 distB = Distances[sampleB];
+        float segmentLength = distB.x - distA.x;
 
         float segmentT = (segmentLength > 0.00001f)
-            ? (targetWorldDist - distA) / segmentLength
+            ? (targetWorldDist - distA.x) / segmentLength
             : 0.0f;
 
-        float screenDistA = ScreenDistances[sampleA];
-        float screenDistB = ScreenDistances[sampleB];
-
-        PatternPosition[globalIdx] = lerp(screenDistA, screenDistB, saturate(segmentT));
+        PatternPosition[globalIdx] = lerp(distA.y, distB.y, saturate(segmentT));
     }
 }

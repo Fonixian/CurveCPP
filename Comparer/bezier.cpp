@@ -10,7 +10,7 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 	// offset_scan runs over curve counts, and a curve is worth at least one point, so maxElementCount
 	// bounds the curve count too - no separate cap, and its buffers cost a few KB at that size.
 	: BezierRendererBase(device),
-	  world_scan{ device, maxElementCount }, screen_scan{ device, maxElementCount },
+	  distance_scan{ device, maxElementCount },
 	  offset_scan{ device, maxElementCount }
 {
 	calc_points = Pipeline::getCS(device, "curve_calc_points.cso");
@@ -29,10 +29,8 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 }
 
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
-	// Two float buffers, each scanned by its own SegmentedScan, so each pass loads only the channel it
-	// reads. See the note in bezier.h.
-	world_distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
-	screen_distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
+	// x: world arc length, y: screen arc length. One buffer, one scan. See the note in bezier.h.
+	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
 }
 
 void BezierRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
@@ -94,8 +92,7 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: P0..P3 per curve
 	bezier_data_map->Bind(ShaderStage::Compute, 1, context);      // t1: owning curve per sample
 	curve_indices->Bind(ShaderStage::Compute, 2, context);        // t2: sample range per curve
-	world_distances->BindUnordered(0, context);                   // u0
-	screen_distances->BindUnordered(1, context);                  // u1
+	distances->BindUnordered(0, context);                         // u0: (world, screen) per sample
 
 	profiler.begin_gpu("calc");
 	calc_points->Run({ GroupCount(total_points, 256u), 1u, 1u }, context);
@@ -103,13 +100,9 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 
 	ClearComputeBindings(context);
 
-	// Two independent scans over the same begin-bit flags. `curve_begins` is read-only to the
-	// top-level pass (only the lower levels write their own block flags, and those live inside the
-	// instance), so the two share it safely; they need separate instances only for the block-sum and
-	// carry scratch. Both under one "scan" metric, as the single float2 scan was.
+	// One scan carries both channels; the begin flags are the same for world and screen arc length.
 	profiler.begin_gpu("scan");
-	world_scan.Scan(*world_distances, *curve_begins, total_points, context);
-	screen_scan.Scan(*screen_distances, *curve_begins, total_points, context);
+	distance_scan.Scan(*distances, *curve_begins, total_points, context);
 	profiler.end_gpu("scan");
 
 	ClearComputeBindings(context);
@@ -140,8 +133,8 @@ void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
 	// 1. Per curve, how many centres it has. Each thread writes only its own element.
 	viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
 	curve_indices->Bind(ShaderStage::Compute, 0, context);            // t0: sample range per curve
-	// World only - the count depends on world arc length alone, so screen_distances is not bound.
-	world_distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1
+	// The count depends on the world channel (x) alone; the screen channel rides along in the float2.
+	distances->BindOrdered(ShaderStage::Compute, 1, context);         // t1
 	curve_styles->Bind(ShaderStage::Compute, 2, context);             // t2
 	pattern_offsets->BindUnordered(0, context);                       // u0
 
@@ -170,8 +163,7 @@ void BezierRenderer::RunPatternPass(GraphicsDeviceContext* context) {
 
 	viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
 	curve_indices->Bind(ShaderStage::Compute, 0, context);            // t0: sample range per curve
-	world_distances->BindOrdered(ShaderStage::Compute, 1, context);   // t1: binary-search key
-	screen_distances->BindOrdered(ShaderStage::Compute, 2, context);  // t2: what the hit interpolates
+	distances->BindOrdered(ShaderStage::Compute, 1, context);         // t1: world (x) is the binary-search key, screen (y) is what the hit interpolates
 	curve_styles->Bind(ShaderStage::Compute, 3, context);             // t3
 	pattern_offsets->BindOrdered(ShaderStage::Compute, 4, context);   // t4: base index per curve, total appended
 	patterns->BindUnordered(0, context);                              // u0
@@ -189,7 +181,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	// need_recount is raised inside UploadCurves, only for the parts the count depends on.
 	UpdateBuffers(device, context);
 
-	if (total_points < 2 || !world_distances || !HasCurveData()) {
+	if (total_points < 2 || !distances || !HasCurveData()) {
 		EndDraw();
 		return;
 	}
@@ -221,11 +213,10 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	// t1 and t3..t7 are exactly the solid renderer's bindings; the four buffers only this renderer
-	// has take t0, t2, t8 and t9.
-	world_distances->BindOrdered(ShaderStage::Vertex, 0, context);     // t0: cumulative world arc length
+	// t1 and t3..t7 are exactly the solid renderer's bindings; the three buffers only this renderer
+	// has take t0, t8 and t9. t2 stays free, as in the solid renderer.
+	distances->BindOrdered(ShaderStage::Vertex, 0, context);           // t0: cumulative arc length per sample, float2 (world, screen px)
 	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);        // t1: chain boundary flags
-	screen_distances->BindOrdered(ShaderStage::Vertex, 2, context);    // t2: cumulative screen arc length, px
 	BindCurveData(context, 3, 5, 7);                                   // t3 control points, t5 colours, t7 indices
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: point -> curve index
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width_capcapjoin / spacing / dash length

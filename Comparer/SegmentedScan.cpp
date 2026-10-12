@@ -13,33 +13,46 @@ using namespace Axodox::Graphics;
    return (value + divisor - 1u) / divisor;
  }
 
-SegmentedScan::SegmentedScan(const GraphicsDevice& device, uint32_t maxElementCount) :
+template <>
+struct SegmentedScanShaders<float> {
+    static constexpr const char* Local = "segmented_scan_local_float.cso";
+    static constexpr const char* AddOffsets = "segmented_scan_add_offsets_float.cso";
+};
+
+template <>
+struct SegmentedScanShaders<DirectX::XMFLOAT2> {
+    static constexpr const char* Local = "segmented_scan_local_float2.cso";
+    static constexpr const char* AddOffsets = "segmented_scan_add_offsets_float2.cso";
+};
+
+template <typename T>
+SegmentedScan<T>::SegmentedScan(const GraphicsDevice& device, uint32_t maxElementCount) :
     _device(device),
-    _localScan(Pipeline::getCS(device, "segmented_scan_local.cso")),
-    _addBlockOffsets(Pipeline::getCS(device, "segmented_scan_add_offsets.cso")) {
+    _localScan(Pipeline::getCS(device, SegmentedScanShaders<T>::Local)),
+    _addBlockOffsets(Pipeline::getCS(device, SegmentedScanShaders<T>::AddOffsets)) {
     if (maxElementCount == 0u) throw std::invalid_argument("maxElementCount must be greater than zero.");
 
     uint32_t levelCapacity = maxElementCount;
     for (;;) {
         Level level;
         level.capacity = levelCapacity;
-    
+
         auto blockCount = DivRoundUp(levelCapacity, GroupSize);
-        // One float per block, matching Values' element type - see the note in
-        // segmented_scan_common.hlsli on why this is no longer a float2.
-        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<float>(blockCount));
+        // One T per block, matching Values' element type (BlockSums in segmented_scan_common.hlsli).
+        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<T>(blockCount));
         level.blockFlags = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
         level.needsCarry = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(levelCapacity));
         level.constants = std::make_unique<ConstantBuffer>(device, ScanConstants{});
-    
+
         _levels.push_back(std::move(level));
-    
+
         if (blockCount <= 1u) break;
         levelCapacity = blockCount;
     }
 }
 
-void SegmentedScan::Scan(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context) {
+template <typename T>
+void SegmentedScan<T>::Scan(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context) {
     if (_levels.empty() || count > _levels.front().capacity) {
         throw std::out_of_range("count exceeds the maxElementCount this SegmentedScan was constructed with.");
     }
@@ -56,7 +69,8 @@ void SegmentedScan::Scan(RWStructuredBuffer& values, RWStructuredBuffer& flags, 
     context->BindUnorderedAccessView(nullptr, 4);
 }
 
-void SegmentedScan::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context) {
+template <typename T>
+void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context) {
     if (levelIndex >= _levels.size()) {
         throw std::logic_error("SegmentedScan: not enough recursion levels were preallocated for this element count.");
     }
@@ -84,7 +98,7 @@ void SegmentedScan::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer& fl
         values.BindUnordered(0u, context);
         level.blockSums->BindUnordered(2u, context);
         level.needsCarry->BindUnordered(4u, context);
-    
+
         _addBlockOffsets->Run({ blockCount, 1u, 1u }, context);
     }
     context->BindUnorderedAccessView(nullptr, 0u);
@@ -93,4 +107,9 @@ void SegmentedScan::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer& fl
     context->BindUnorderedAccessView(nullptr, 3u);
     context->BindUnorderedAccessView(nullptr, 4u);
 }
+
+// The element types the shaders exist for. A new T also needs its SegmentedScanShaders specialisation
+// above and the two wrapper .hlsl files.
+template class SegmentedScan<float>;
+template class SegmentedScan<DirectX::XMFLOAT2>;
 #endif

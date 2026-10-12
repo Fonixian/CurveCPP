@@ -1,3 +1,5 @@
+// Local (per-block) pass of the segmented exclusive prefix sum. Define SCAN_VALUE_TYPE, then include
+// this - see segmented_scan_local_float.hlsl and segmented_scan_local_float2.hlsl.
 #include "segmented_scan_common.hlsli"
 
 uint ReadFlag(uint index) {
@@ -9,11 +11,13 @@ uint ReadFlag(uint index) {
     }
 }
 
-groupshared float gValue[2][GROUP_SIZE];
-groupshared uint  gFlag[2][GROUP_SIZE];
+groupshared SCAN_VALUE_TYPE gValue[2][GROUP_SIZE];
+groupshared uint            gFlag[2][GROUP_SIZE];
 
 [numthreads(GROUP_SIZE, 1, 1)]
 void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
+    const SCAN_VALUE_TYPE zero = (SCAN_VALUE_TYPE)0;
+
     uint blockIndex = groupId.x;
     uint localIndex = groupThreadId.x;
     uint globalIndex = blockIndex * GROUP_SIZE + localIndex;
@@ -21,7 +25,7 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
 
     uint blockCount = min(GROUP_SIZE, ElementCount - blockIndex * GROUP_SIZE);
 
-    float originalValue = active ? Values[globalIndex] : 0.0f;
+    SCAN_VALUE_TYPE originalValue = active ? Values[globalIndex] : zero;
     uint originalFlag = active ? ReadFlag(globalIndex) : 0u;
 
     uint src = 0u;
@@ -32,11 +36,11 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
     for (uint offset = 1u; offset < GROUP_SIZE; offset <<= 1u) {
         uint dst = 1u - src;
 
-        float value = gValue[src][localIndex];
+        SCAN_VALUE_TYPE value = gValue[src][localIndex];
         uint flag = gFlag[src][localIndex];
 
         if (localIndex >= offset) {
-            float leftValue = gValue[src][localIndex - offset];
+            SCAN_VALUE_TYPE leftValue = gValue[src][localIndex - offset];
             uint leftFlag = gFlag[src][localIndex - offset];
 
             value = (flag != 0u) ? value : (leftValue + value);
@@ -49,14 +53,14 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID) {
 
         GroupMemoryBarrierWithGroupSync();
     }
-    
-    float finalValue;
+
+    SCAN_VALUE_TYPE finalValue;
     bool needsCarry;
     if (IsTopLevel != 0u) {
-        finalValue = (localIndex == 0u || originalFlag != 0u) ? 0.0f : gValue[src][localIndex - 1u];
+        finalValue = (localIndex == 0u || originalFlag != 0u) ? zero : gValue[src][localIndex - 1u];
         needsCarry = gFlag[src][localIndex] == 0u;
     } else {
-        finalValue = (localIndex == 0u) ? 0.0f : gValue[src][localIndex - 1u];
+        finalValue = (localIndex == 0u) ? zero : gValue[src][localIndex - 1u];
         needsCarry = (localIndex == 0u) ? true : (gFlag[src][localIndex - 1u] == 0u);
     }
 

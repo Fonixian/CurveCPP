@@ -3,17 +3,25 @@
 
 using namespace Axodox::Graphics;
 
-// An in-place EXCLUSIVE segmented prefix sum over a buffer of FLOATs, with the segment begins packed
-// one bit per element into `flags`.
+// Names the two compute shaders a SegmentedScan<T> runs. Specialised in SegmentedScan.cpp, one per
+// supported element type: add a specialisation, a pair of one-line wrappers in shaders\ that define
+// SCAN_VALUE_TYPE (segmented_scan_local_<t>.hlsl, segmented_scan_add_offsets_<t>.hlsl), both vcxproj
+// entries, and an explicit instantiation at the bottom of SegmentedScan.cpp.
 //
-// The element type used to be float2, purely so BezierRenderer could scan its (world, screen) arc
-// length pair in a single pass. It does not any more: it keeps the two channels in separate float
-// buffers and owns two SegmentedScan instances, one per channel. Same total elements scanned, same
-// bandwidth, but the scan itself is now a scalar merge - and bezier_dots, which only ever wanted
-// world arc length, stops allocating and summing a second channel it filled with zeroes.
+// The names are string LITERALS on purpose: Pipeline::getCS caches by the const char* itself, not by
+// its contents.
+template <typename T>
+struct SegmentedScanShaders;
+
+// An in-place EXCLUSIVE segmented prefix sum over a buffer of T, with the segment begins packed one bit
+// per element into `flags`. T is the element type of `values`, of the per-block sums, and of the
+// SCAN_VALUE_TYPE the shaders were compiled with - float and DirectX::XMFLOAT2 are instantiated.
+// BezierRenderer scans its (world, screen) arc lengths together as one XMFLOAT2 buffer, the dots
+// renderer scans world arc length alone as float.
 //
-// An instance owns its block-sum / block-flag / carry-flag scratch, so scanning two buffers means
-// two instances; one instance cannot be used for two concurrent scans.
+// An instance owns its block-sum / block-flag / carry-flag scratch, so one instance cannot be used for
+// two concurrent scans.
+template <typename T>
 class SegmentedScan
 {
 public:

@@ -12,9 +12,9 @@
 // fixed size in PIXELS, so the pixel shader has to be told where each pattern centre landed in
 // screen arc length. Getting there costs four things the solid renderer does without:
 //
-//   world_distances / screen_distances   per-point float buffers, segment length in world / screen
-//   world_scan / screen_scan             a segmented prefix sum per buffer, turning each into
-//                                        per-curve running totals
+//   distances                            a per-point float2 buffer, segment length in world (x) / screen (y)
+//   distance_scan                        one segmented prefix sum over it, turning both channels into
+//                                        per-chain running totals
 //   pattern_ini                          counts the centres per curve
 //   offset_scan                          an exclusive prefix sum turning those counts into each
 //                                        curve's slice of the pattern array
@@ -47,10 +47,10 @@
 // BezierRendererBase::PatternBound(), a CPU-side upper bound, and the exact centre total stays on the
 // GPU, where curve_vs reads it.
 //
-// World and screen arc length are separate float buffers with their own SegmentedScan each, so every
-// consumer loads only the channel it reads: pattern_ini and the binary search in pattern_calc touch
-// world only, the interpolation at the end of pattern_calc and curve_vs's ScreenArcBegin/End touch
-// screen. An instance owns its block-sum/carry scratch, hence two instances.
+// World and screen arc length live in ONE float2 buffer (x world, y screen) and are scanned together by a
+// single SegmentedScan<XMFLOAT2>, so every consumer binds one buffer for both. The cost is that
+// pattern_ini and the binary search in pattern_calc, which only want world arc length, load the screen
+// channel's bytes along with it (8 B per element instead of 4).
 //
 // The slice each curve gets is a prefix sum (offset[i] is the sum of counts[0..i-1] and nothing
 // else), so the layout is reproducible from frame to frame and machine to machine.
@@ -111,11 +111,9 @@ private:
 	uint32_t patterns_allocated = 0;
 
 	// --- per-frame compute results -------------------------------------------------
-	// One float per point each, written as a segment length by curve_calc_points and turned into a
-	// chain-cumulative running total by the matching scan below. Kept apart rather than interleaved
-	// into one float2 so each consumer loads only the channel it reads.
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> world_distances;   // world arc length
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> screen_distances;  // screen arc length, px
+	// One float2 per point (x: world arc length, y: screen arc length in px), written as segment
+	// lengths by curve_calc_points and turned into chain-cumulative running totals by distance_scan.
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;
 	// Per curve: written as the centre count by pattern_ini, then scanned IN PLACE into that curve's
 	// base offset, with the grand total appended one slot past the last curve. That appended slot is
 	// why there is no second buffer of counts and no resolve pass: curve i's count is the gap to
@@ -126,10 +124,8 @@ private:
 
 	Axodox::Graphics::ComputeShader* pattern_ini;
 	Axodox::Graphics::ComputeShader* pattern_calc;
-	// One instance per distance buffer: an instance owns the block-sum and carry scratch a scan runs
-	// through, so the two channels cannot share one.
-	SegmentedScan world_scan;
-	SegmentedScan screen_scan;
+	// Scans both arc lengths at once (segmented_scan_*_float2).
+	SegmentedScan<DirectX::XMFLOAT2> distance_scan;
 	// Over curve counts, not points - at most one element per curve, so its own buffers are tiny.
 	ParalellScan offset_scan;
 };

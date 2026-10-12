@@ -193,6 +193,8 @@
     <None Include="shaders\bezier_line\line_common.hlsli" />
     <None Include="shaders\bezier_dots\dot_common.hlsli" />
     <None Include="shaders\segmented_scan_common.hlsli" />
+    <None Include="shaders\segmented_scan_local.hlsli" />
+    <None Include="shaders\segmented_scan_add_offsets.hlsli" />
     <None Include="shaders\paralell_scan_common.hlsli" />
     <None Include="vcpkg.json" />
   </ItemGroup>
@@ -245,11 +247,19 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_add_offsets.hlsl">
+    <FxCompile Include="shaders\segmented_scan_add_offsets_float.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_local.hlsl">
+    <FxCompile Include="shaders\segmented_scan_add_offsets_float2.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\segmented_scan_local_float.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
+    </FxCompile>
+    <FxCompile Include="shaders\segmented_scan_local_float2.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>

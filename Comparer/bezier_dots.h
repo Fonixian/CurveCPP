@@ -94,7 +94,7 @@ private:
 	Axodox::Graphics::ComputeShader* dot_ini;
 	Axodox::Graphics::ComputeShader* dot_calc;
 	Axodox::Graphics::ComputeShader* dot_args;
-	SegmentedScan scan;
+	SegmentedScan<float> scan;
 	// Over curve counts, not points - at most one element per curve, so its own buffers are tiny.
 	ParalellScan offset_scan;
 };
