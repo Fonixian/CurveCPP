@@ -32,7 +32,14 @@
 #define CURVE_PATTERN_BISECTOR 1
 #endif
 
-StructuredBuffer<float> PatternPosition : register(t1); // screen arc of every dash center, one sorted run per chain
+// Screen arc of every dash center, one sorted run per chain, each starting again at arc 0. The LAST
+// center of each chain has its sign bit set (curve_pattern_calc.hlsl): the slot after a flagged one
+// belongs to the next chain, and so does the slot before a chain's first center. That is how a pixel
+// stays inside its own chain without being handed the chain's slot range.
+StructuredBuffer<float> PatternPosition : register(t1);
+
+bool IsChainLastCenter(float stored) { return (asuint(stored) & 0x80000000u) != 0u; }
+float CenterArc(float stored) { return asfloat(asuint(stored) & 0x7FFFFFFFu); }
 
 float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap) {
     float d;
@@ -82,12 +89,16 @@ float PatternArc(float localArc, float lateral, float segmentLength, float halfW
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
 // Distance between the two centers around this pixel. At the chain's last center there is no next
-// one, so it looks back instead - but never past the chain's first slot, which is another stroke.
-float PatternCenterSpan(int slot0, int slot1, float center0, float center1, int firstSlot) {
-    if (slot1 != slot0)
+// one, so it looks back instead - unless the center before it is another chain's last, i.e. this is
+// the chain's only center (or slot 0), in which case there is nothing to measure against.
+float PatternCenterSpan(int slot0, bool isLast0, float center0, float center1) {
+    if (!isLast0)
         return abs(center1 - center0);
-    if (slot0 > firstSlot)
-        return abs(center0 - PatternPosition[uint(slot0 - 1)]);
+    if (slot0 > 0) {
+        float previous = PatternPosition[uint(slot0 - 1)];
+        if (!IsChainLastCenter(previous))
+            return abs(center0 - previous);
+    }
     return 0.0;
 }
 
@@ -99,20 +110,16 @@ float PatternArcScale(float centerSpan, float dashLength, float halfWidth, uint 
 #endif
 
 // patternArc: the screen arc in the pattern's frame. patternCoord: the slot coordinate from the vertex shader.
-float PatternSDF(float lateral, float patternArc, float patternCoord, float dashLength, float halfWidth, uint capCapJoin, uint2 patternSlots) {
-    int firstSlot = int(patternSlots.x);
-    int lastSlot = int(patternSlots.y) - 1;
+float PatternSDF(float lateral, float patternArc, float patternCoord, float dashLength, float halfWidth, uint capCapJoin) {
+    // The coordinate starts at the chain's first slot (curve_vs.hlsl), so there is no lower bound to
+    // apply; the max() only keeps a stray negative value from wrapping around as an unsigned index.
+    int slot0 = max(int(floor(patternCoord)), 0);
 
-    // The chain has no center at all (too short for one): all gap, so erase the body.
-    if (lastSlot < firstSlot) return 1e30;
-
-    // The clamp only catches rounding at the edges, e.g. a coordinate a hair under the chain's first
-    // slot that would floor into the previous stroke.
-    int slot0 = clamp(int(floor(patternCoord)), firstSlot, lastSlot);
-    int slot1 = min(slot0 + 1, lastSlot);
-
-    float center0 = PatternPosition[uint(slot0)];
-    float center1 = PatternPosition[uint(slot1)];
+    float stored0 = PatternPosition[uint(slot0)];
+    bool isLast0 = IsChainLastCenter(stored0);
+    float center0 = CenterArc(stored0);
+    // After the chain's last center comes another chain's first one: don't read it, pair the center with itself.
+    float center1 = isLast0 ? center0 : CenterArc(PatternPosition[uint(slot0 + 1)]);
 
     float arc0 = patternArc - center0;
     float arc1 = patternArc - center1;
@@ -121,7 +128,7 @@ float PatternSDF(float lateral, float patternArc, float patternCoord, float dash
     uint cap = (arcDist < 0.0) ? FrontCap(capCapJoin) : BackCap(capCapJoin);
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
-    arcDist *= PatternArcScale(PatternCenterSpan(slot0, slot1, center0, center1, firstSlot), dashLength, halfWidth, cap);
+    arcDist *= PatternArcScale(PatternCenterSpan(slot0, isLast0, center0, center1), dashLength, halfWidth, cap);
 #endif
 
     // The dash as a stroke span [0, dashLength] with the cap at both ends.
@@ -173,7 +180,7 @@ float4 main(PatternedVSOutput input) : SV_Target {
         patternArc = clamp(patternArc, arcLo, arcHi);
     }
 #endif
-    sdf = max(sdf, PatternSDF(lateral, patternArc, input.ColorPattern.w, input.DashLength, halfWidth, input.CapCapJoin, input.PatternSlots));
+    sdf = max(sdf, PatternSDF(lateral, patternArc, input.ColorPattern.w, input.DashLength, halfWidth, input.CapCapJoin));
 
     if (sdf > 0.5) discard;
     return float4(input.ColorPattern.rgb, saturate(0.5 - sdf));

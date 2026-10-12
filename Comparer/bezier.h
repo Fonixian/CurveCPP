@@ -33,8 +33,9 @@
 // The flat array is one sorted run PER CHAIN, laid end to end in curve order - NOT one sorted run for
 // the scene: the screen arc of the next chain's first centre is 0 again. A pixel may look at any
 // centre of its own chain (a dash centred just past a joint still draws on the near side of it) and
-// at nothing outside it, so curve_vs hands the pixel shader the chain's slot range,
-// [PatternOffsets[first curve], PatternOffsets[last curve + 1]), built from curve_chains below.
+// at nothing outside it. Spacing is uniform along a chain, so the coordinate curve_vs sends down starts
+// at the chain's first slot and never falls below it, and pattern_calc marks the chain's LAST centre
+// with its sign bit - the pixel shader never reads past a marked centre, so it needs no slot range.
 //
 // Curve data is the base class's split upload: control points, colours and sample ranges in three
 // buffers, plus one PatternStyle (width_capcapjoin, spacing, dash_length) per curve re-sent only
@@ -93,20 +94,6 @@ private:
 	static_assert(sizeof(UploadPatternStyle) == 12, "UploadPatternStyle must match PatternStyle in the shaders");
 
 	std::vector<UploadPatternStyle> style_scratch;
-
-	// Matches StructuredBuffer<uint2> CurveChains in curve_vs.hlsl: the first and last CURVE index of
-	// the merged chain a curve belongs to (both itself for an unmerged curve). Changes only with the
-	// layout (Add / remove / Merged / Resolution), so it is re-sent on DirtyLayout alone.
-	struct UploadChainCurves {
-		uint32_t first_curve;
-		uint32_t last_curve;
-	};
-	static_assert(sizeof(UploadChainCurves) == 8, "UploadChainCurves must match CurveChains in curve_vs.hlsl");
-
-	std::vector<UploadChainCurves> chain_scratch;
-	// One UploadChainCurves per curve. curve_vs turns it into the chain's slot range in the pattern
-	// array, which is all the pixel shader is allowed to read.
-	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_chains;
 
 	uint32_t patterns_allocated = 0;
 

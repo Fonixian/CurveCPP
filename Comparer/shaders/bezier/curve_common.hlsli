@@ -20,7 +20,9 @@ struct PatternedVSOutput {
     float4 Position : SV_Position;
     noperspective float4 SDF : TEXCOORD0;
     // rgb: color. w: the pattern coordinate - the position along the chain's center grid measured
-    // in slots of PatternPosition, so floor() gives the slot directly (see curve_vs.hlsl).
+    // in slots of PatternPosition, so floor() gives the slot directly and the coordinate never falls
+    // below the chain's first slot (see curve_vs.hlsl). The chain's last center is marked in
+    // PatternPosition itself (see curve_pattern_calc.hlsl).
     noperspective float4 ColorPattern : COLOR0;
     nointerpolation float ScreenArcBegin : TEXCOORD1;
     // Whether the segment has a neighbor before its start (x) and after its end (y) - no neighbor = terminus.
@@ -30,10 +32,6 @@ struct PatternedVSOutput {
     // Signed tan(theta/2) of the screen-space turn at the start (x, SDF.y == 0) and the end
     // (y, SDF.y == SDF.w); 0 without a neighbor. See PatternArc in curve_ps.hlsl.
     nointerpolation float2 ArcShear : TEXCOORD5;
-    // [x, y): the slots of PatternPosition owned by this segment's chain. PatternPosition is one
-    // sorted run per chain, each starting again at screen arc 0, so any other slot is another
-    // stroke's center. x == y: patterned, but no center at all (all gap).
-    nointerpolation uint2 PatternSlots : TEXCOORD6;
 };
 
 float4 UnpackColorBits(uint packed) {

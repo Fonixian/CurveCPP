@@ -17,7 +17,6 @@ StructuredBuffer<uint4>        CurveColors        : register(t5);
 StructuredBuffer<PatternStyle> CurveStyles        : register(t6);
 StructuredBuffer<uint2>        CurveIndices       : register(t7);
 StructuredBuffer<uint>         PatternOffsets     : register(t8);
-StructuredBuffer<uint2>        CurveChains        : register(t9);
 
 Cubic LoadCubic(uint curveIndex) {
     uint k = curveIndex << 2u;
@@ -205,17 +204,17 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     //     slot = floor(arc / spacing) + (PatternOffsets[curve] - first grid index the curve owns)
     //
     // The divide and the bias are both linear, so they commute with the rasterizer's interpolation
-    // and the pixel shader only has to floor() it. The bias is 0 while every curve of the chain has
-    // the same spacing; it is there for mixed spacing.
+    // and the pixel shader only has to floor() it.
+    //
+    // Spacing is uniform along a chain, so the bias is the same on every curve of it: the slot of
+    // grid index 0, i.e. the chain's FIRST slot. The coordinate is therefore never below the chain's
+    // first slot, and the pixel shader needs no lower bound. The upper one is marked in the pattern
+    // data itself (the chain's last center is flagged by curve_pattern_calc), so no chain range is
+    // passed down either.
     float curveArcStart = Distances[currentRange.x].x;
     float patternBase = (curveArcStart > 0.0) ? floor(curveArcStart / style.spacing) + 1.0 : 0.0;
     float patternCoord = lerp(startWorldDistance, endWorldDistance, cornerT) / style.spacing
                        + (float(PatternOffsets[currentCurve]) - patternBase);
-
-    // Chains are runs of consecutive curves and their slots are laid out in curve order, so the
-    // chain's slots are one contiguous range.
-    uint2 chain = CurveChains[currentCurve];
-    o.PatternSlots = uint2(PatternOffsets[chain.x], PatternOffsets[chain.y + 1u]);
 
     float3 color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide).rgb;
     o.ColorPattern = float4(color, patternCoord);
