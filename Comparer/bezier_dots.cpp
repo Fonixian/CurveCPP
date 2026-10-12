@@ -9,12 +9,12 @@ static uint32_t PackDotStyle(const BezierData& bez) {
 	return PackWidthCapCapJoin(bez) & ~0xFFu;
 }
 
-// Matches DotSample in dot_common.hlsli.
+// Matches DotSample in dot_common.hlsli: the dot's curve parameter t over the whole curve, and the curve.
 struct DotSample {
-	uint32_t sample;
-	float    segmentT; // sample, sample + 1
+	float    t;
 	uint32_t curve_index;
 };
+static_assert(sizeof(DotSample) == 8, "DotSample must match DotSample in the shaders");
 
 // --- BezierDotRenderer -------------------------------------------------------------------------
 
@@ -220,11 +220,12 @@ void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& vi
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	// Nothing per sample point is bound. dot_vert evaluates the two samples a dot sits between out of
-	// the control points and takes its curve index from the dot itself. The per-curve buffers sit in
-	// solid_vert's slots; the dots take t4, which is the index map there.
-	BindCurveData(context, 3, 5, 7);                                 // t3 control points, t5 colours, t7 indices
-	dots->BindOrdered(ShaderStage::Vertex, 4, context);              // t4: per-dot bracketing samples + t + curve
+	// Nothing per sample point is bound, and no sample ranges either. dot_vert evaluates the curve at
+	// the dot's t out of the control points and takes its curve index from the dot itself. The slots
+	// match solid_vert's; the dots take t4, which is the index map there, and leave t7 (indices) unbound.
+	curve_control_points->Bind(ShaderStage::Vertex, 3, context);     // t3: control points
+	dots->BindOrdered(ShaderStage::Vertex, 4, context);              // t4: per-dot curve t + curve index
+	curve_colors->Bind(ShaderStage::Vertex, 5, context);             // t5: colours
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);             // t6: width_capcap + spacing
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context); // b1

@@ -1,21 +1,18 @@
 #include "dot_common.hlsli"
 
-#ifndef DOT_QUAD_MARGIN
-#define DOT_QUAD_MARGIN 1.5
-#endif
-
 // Drawn as DrawInstancedIndirect(4, dot count) with a TRIANGLESTRIP, one quad per dot:
 //
 //                 2 ------- 3
 //                 |    ^    |
-//                 |    *    |    * : the dot's center, between sample and sample + 1
+//                 |    *    |    * : the dot's center, the curve point at the dot's t
 //                 |         |    ^ : the screen tangent, towards the curve's end
 //                 0 ------- 1
 //
-// The quad reaches halfWidth + DOT_QUAD_MARGIN from the center, so the antialiased edge fits.
-// The two samples around the dot are evaluated here rather than read back from a point buffer, and
-// the tangent is taken between their projections, not from the curve's derivative, so it matches
-// the frame the stroke renderers build their segments in.
+// The quad reaches QuadExtent (the half-width plus the antialiasing radius) from the center, so the
+// antialiased edge fits. The pixel shader gets the position in pixels from the center.
+// Everything comes from the dot's curve parameter t: the position is the curve evaluated there, the
+// direction is the curve's derivative there projected to the screen. A degenerate derivative (a cusp,
+// or a curve seen end-on) falls back to the screen's x axis.
 
 cbuffer CameraData : register(b1) {
     float4x4 VP;
@@ -28,7 +25,6 @@ StructuredBuffer<float3>    CurveControlPoints : register(t3);
 StructuredBuffer<DotSample> Dots               : register(t4); // where solid_vert has the index map
 StructuredBuffer<uint4>     CurveColors        : register(t5);
 StructuredBuffer<DotStyle>  CurveStyles        : register(t6);
-StructuredBuffer<uint2>     CurveIndices       : register(t7);
 
 Cubic LoadCubic(uint curveIndex) {
     uint k = curveIndex << 2u;
@@ -40,13 +36,12 @@ Cubic LoadCubic(uint curveIndex) {
     return c;
 }
 
-float4 CalculateColor(uint4 colorData, float2 height, float2 t, float segmentT) {
+float4 CalculateColor(uint4 colorData, float height, float t) {
     float minHeight = asfloat(colorData.z);
     float maxHeight = asfloat(colorData.w);
     float3 colorA = UnpackColorBits(colorData.x).rgb;
     float3 colorB = UnpackColorBits(colorData.y).rgb;
-    float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
-    float blend = lerp(blendAtEnds.x, blendAtEnds.y, segmentT);
+    float blend = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
     return float4(lerp(colorA, colorB, blend), 1.0);
 }
 
@@ -55,58 +50,37 @@ DotVSOutput main(uint vertexId : SV_VertexID, uint dotIndex : SV_InstanceID) {
 
     DotSample dotSample = Dots[dotIndex];
     uint curveIndex = dotSample.CurveIndex;
+    float t = dotSample.T;
 
     Cubic cubic = LoadCubic(curveIndex);
-    uint2 range = CurveIndices[curveIndex];
 
-    float tStart = SampleT(range, dotSample.Sample);
-    float tEnd = SampleT(range, dotSample.Sample + 1u);
-    float3 startWorld = EvaluateBezier(cubic, tStart);
-    float3 endWorld = EvaluateBezier(cubic, tEnd);
-
-    float4 startClip = mul(float4(startWorld, 1.0), VP);
-    float4 endClip = mul(float4(endWorld, 1.0), VP);
+    float3 world = EvaluateBezier(cubic, t);
+    float4 clip = mul(float4(world, 1.0), VP);
 
     // Behind the camera: drop the dot. Unlike a strip there is no continuity to keep, so no clipping.
-    if (startClip.w <= 1e-5 || endClip.w <= 1e-5) {
+    if (clip.w <= 0.0) {
         o.Position = 0.0 / 0.0;
         return o;
     }
 
-    float3 startNdc = startClip.xyz / startClip.w;
-    float3 endNdc = endClip.xyz / endClip.w;
-
-    float2 startPx = mad(startNdc.xy, 0.5, 0.5) * WH;
-    float2 endPx = mad(endNdc.xy, 0.5, 0.5) * WH;
-
-    float2 dir = endPx - startPx;
+    float4 dClip = mul(float4(EvaluateBezierDerivative(cubic, t), 0.0), VP);
+    float2 dir = (dClip.xy * clip.w - clip.xy * dClip.w) / (clip.w * clip.w) * (0.5 * WH);
     float dirLength = length(dir);
 
-    // Both samples land on the same pixel (seen end-on): take the direction from the sample before.
-    if (dirLength < 1e-5) {
-        uint prevSample = dotSample.Sample > 0 ? dotSample.Sample - 1 : dotSample.Sample;
-        float4 prevClip = mul(float4(EvaluateBezier(cubic, SampleT(range, prevSample)), 1.0), VP);
-        if (prevClip.w > 1e-5) {
-            float2 prevPx = mad(prevClip.xy / prevClip.w, 0.5, 0.5) * WH;
-            dir = startPx - prevPx;
-            dirLength = length(dir);
-        }
-    }
     dir = (dirLength > 1e-5) ? (dir / dirLength) : float2(1.0, 0.0);
     float2 right = float2(dir.y, -dir.x);
 
     uint style = CurveStyles[curveIndex].width_capcap;
-    float halfWidth = HalfWidth(style);
-    float extent = halfWidth + DOT_QUAD_MARGIN;
+    float extent = HalfWidth(style) + DOT_AA_RADIUS;
 
-    o.Color = CalculateColor(CurveColors[curveIndex], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), dotSample.SegmentT);
-    o.CapCapJoin = style; // FrontCap/BackCap ignore the width byte
+    o.Color = CalculateColor(CurveColors[curveIndex], world.y, t);
+    o.CapCapJoin = style; // the pixel shader reads the half-width from the width byte; FrontCap/BackCap mask it out
 
-    float2 local = extent * float2((vertexId & 1u) ? 1.0 : -1.0, (vertexId & 2u) ? 1.0 : -1.0);
-    o.SDF = float3(local, halfWidth);
+    float2 corner = float2((vertexId & 1u) ? 1.0 : -1.0, (vertexId & 2u) ? 1.0 : -1.0);
+    o.Offset = corner * extent;
 
-    o.Position = float4(lerp(startNdc, endNdc, dotSample.SegmentT), 1.0);
-    o.Position.xy = mad(2.0 / WH, local.x * right + local.y * dir, o.Position.xy);
+    o.Position = float4(clip.xyz / clip.w, 1.0);
+    o.Position.xy = mad(2.0 / WH, extent * (corner.x * right + corner.y * dir), o.Position.xy);
 
     return o;
 }

@@ -72,9 +72,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
             ? (targetWorldDist - distA) / segmentLength
             : 0.0f;
 
+        // The dot's curve parameter: the sample's own t plus the fraction of the way to the next one.
+        // Samples are evenly spaced in t, so this is exact. At the curve's last sample sampleB ==
+        // sampleA, segmentT is 0 and t is 1.
         DotSample dotSample;
-        dotSample.Sample = sampleA;
-        dotSample.SegmentT = saturate(segmentT);
+        dotSample.T = (float(sampleA - sampleStartIdx) + saturate(segmentT)) / float(sampleEndIdx - sampleStartIdx);
         dotSample.CurveIndex = curveIndex;
         Dots[globalIdx] = dotSample;
     }

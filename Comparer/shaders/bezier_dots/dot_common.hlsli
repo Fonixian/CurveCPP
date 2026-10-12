@@ -12,17 +12,18 @@ struct DotStyle {
     float spacing;      // world arc length between dot centers; <= 0 means no dots on this curve
 };
 
-// One dot: the sample it sits after, how far it is towards the next one, and the curve both belong to.
+// One dot: where it sits on its curve, as the curve parameter t in [0, 1] over the WHOLE curve (not
+// within one segment), and the curve it belongs to.
 struct DotSample {
-    uint Sample;
-    float SegmentT;
+    float T;
     uint CurveIndex;
 };
 
 struct DotVSOutput {
     float4 Position : SV_Position;
-    // x: lateral distance from the dot's center, y: distance along the tangent, z: half-width. All px.
-    noperspective float3 SDF : TEXCOORD0;
+    // Where the pixel is inside the dot's quad, in pixels from the dot's center: x across the tangent,
+    // y along it, (+-QuadExtent, +-QuadExtent) at the corners.
+    noperspective float2 Offset : TEXCOORD0;
     noperspective float4 Color : COLOR0;
     nointerpolation uint CapCapJoin : TEXCOORD1;
 };
@@ -44,9 +45,18 @@ float3 EvaluateBezier(Cubic c, float t) {
     return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
 }
 
+float3 EvaluateBezierDerivative(Cubic c, float t) {
+    float s = 1.0 - t;
+    return 3.0 * (s * s * (c.P1 - c.P0) + 2.0 * s * t * (c.P2 - c.P1) + t * t * (c.P3 - c.P2));
+}
+
 float SampleT(uint2 range, uint sampleIndex) {
     return float(sampleIndex - range.x) / float(range.y - range.x);
 }
+
+#ifndef DOT_AA_RADIUS
+#define DOT_AA_RADIUS 1.1
+#endif
 
 float HalfWidth(uint style) { return float(style >> 24); }
 uint FrontCap(uint capCapJoin) { return (capCapJoin >> 16) & 0xFF; }

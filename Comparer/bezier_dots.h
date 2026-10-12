@@ -30,8 +30,8 @@
 //
 // Curve data is the base class's split upload (control points, colours and sample ranges), plus one
 // DotStyle (width_capcap + spacing) per curve re-sent only when a style setter fired. None of the
-// solid renderer's merged-joint handling is needed here: a dot's two bracketing samples always belong
-// to one curve, so the draw binds no curve_begins and no index map. The point pass still reads the
+// solid renderer's merged-joint handling is needed here: a dot is a point on one curve, so the draw
+// binds no curve_begins and no index map. The point pass still reads the
 // index map, which is what hands a joint sample to the curve leaving it.
 
 class BezierDotRenderer : public BezierRendererBase {
@@ -43,8 +43,8 @@ public:
 	uint32_t PatternCapacity() const override { return dots_allocated; }
 
 protected:
-	// dot_vert evaluates the two samples bracketing each dot straight from the control points, so
-	// nothing in this renderer stores a sample position or colour. See dot_calc_points.hlsl.
+	// dot_vert evaluates the curve at each dot's t straight from the control points, so nothing in
+	// this renderer stores a sample position or colour. See dot_calc_points.hlsl.
 
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
@@ -87,7 +87,7 @@ private:
 	// to index i + 1, valid for the last curve too, and dot_args reads the instance count straight
 	// out of [curve count]. Allocated one element longer than the curve count for it.
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dot_indices;
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dots;        // per dot: bracketing sample pair + t between them
+	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> dots;        // per dot: t along its curve + curve index
 
 	IndirectDrawArgs draw_args;
 
