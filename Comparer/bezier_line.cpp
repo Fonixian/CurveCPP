@@ -31,7 +31,7 @@ void BezierLineRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& v
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);
+	curve_begins->Bind(ShaderStage::Vertex, 1, context);
 	BindCurveData(context, 3, 5, 6); // t3 control points, t5 colours, t6 indices
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
 

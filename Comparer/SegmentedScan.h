@@ -14,7 +14,7 @@ template <typename T>
 struct SegmentedScanShaders;
 
 // An in-place EXCLUSIVE segmented prefix sum over a buffer of T, with the segment begins packed one bit
-// per element into `flags`. T is the element type of `values`, of the per-block sums, and of the
+// per element into `flags`, which is only read. T is the element type of `values`, of the per-block sums, and of the
 // SCAN_VALUE_TYPE the shaders were compiled with - float and DirectX::XMFLOAT2 are instantiated.
 // BezierRenderer scans its (world, screen) arc lengths together as one XMFLOAT2 buffer, the dots
 // renderer scans world arc length alone as float.
@@ -27,7 +27,7 @@ class SegmentedScan
 public:
     static constexpr uint32_t GroupSize = 1024u;
     SegmentedScan(const GraphicsDevice&,uint32_t maxElementCount);
-    void Scan(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context = nullptr);
+    void Scan(RWStructuredBuffer& values, StructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context = nullptr);
 
     SegmentedScan(const SegmentedScan&) = delete;
     SegmentedScan& operator=(const SegmentedScan&) = delete;
@@ -47,5 +47,8 @@ private:
     ComputeShader* _addBlockOffsets;
     std::vector<Level> _levels;
 
-    void ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context);
+    // FlagBuffer is StructuredBuffer at the top level (the caller's begin bits) and RWStructuredBuffer
+    // below it (the previous level's blockFlags: written there through a UAV, read here through its SRV).
+    template <typename FlagBuffer>
+    void ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context);
 };

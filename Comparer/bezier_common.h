@@ -22,7 +22,8 @@ enum class CurveJoin : uint8_t {
 };
 
 struct BezierData {
-	// Control points
+	// Control points, always CUBIC: Linear() and Quadratic() raise to cubic when they build the struct,
+	// exactly as the handle's control_points() overloads do, so a degree never travels any further.
 	DirectX::XMFLOAT3 P0 = { 0.f, 0.f, 0.f };
 	DirectX::XMFLOAT3 P1 = { 0.f, 0.f, 0.f };
 	DirectX::XMFLOAT3 P2 = { 0.f, 0.f, 0.f };
@@ -39,7 +40,6 @@ struct BezierData {
 	float dash_length = 0.f;
 	float spacing = 0.f;
 	unsigned resolution = 64u;
-	int bezier_power = 1;
 	// Merged curves: when true, this curve continues the stroke of the curve Added directly before it
 	// in the same renderer, so the two share one arc length, one pattern grid and one pair of end
 	// caps. A CHAIN is a run of consecutive curves in which every curve after the first has this set.
@@ -56,8 +56,6 @@ struct BezierData {
 	// samples, not resolution, and a chain is one polyline with no duplicate point and no zero-length
 	// segment at any joint - the vertex shaders need no merge-specific neighbour lookup.
 	bool merge_with_previous = false;
-
-	int power() const;
 };
 
 BezierData Linear(DirectX::XMFLOAT3 P0, DirectX::XMFLOAT3 P1);
@@ -80,7 +78,6 @@ constexpr uint32_t maxPatternCount = 4'000'000u;
 // per-curve scans (centre / dot offsets) as well as the per-point ones.
 constexpr uint32_t maxElementCount = 1'200'000u;
 
-unsigned next_pow2(unsigned x);
 // Capacity policy shared by every over-allocated GPU buffer (points, curves, pattern / dot slots).
 // Returns the capacity the buffer SHOULD have for `required` live elements, given what it has now:
 //   - grows to next_pow2(required) as soon as it no longer fits,
@@ -96,7 +93,14 @@ constexpr uint32_t GroupCount(uint32_t items, uint32_t group_size) { return (ite
 
 uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
-void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3& p3);
+DirectX::XMFLOAT3 UnpackFloat3FromR8G8B8A8(uint32_t color);
+
+// Raise a line / quadratic to the four cubic control points the renderers store.
+void LinearToCubic(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3 (&cubic)[4]);
+void QuadraticToCubic(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3 (&cubic)[4]);
+
+// A width as the style word's top byte: rounded to a whole pixel and clamped to [0, 255].
+uint32_t PackWidthByte(float width);
 
 // The per-curve style word the patterned, solid and dot shaders read:
 //
@@ -108,8 +112,8 @@ void ToCubic(const BezierData& source, DirectX::XMFLOAT3& p0, DirectX::XMFLOAT3&
 uint32_t PackWidthCapCapJoin(const BezierData& bez);
 
 // One curve's share of PatternBound(): floor(control polygon / spacing) + 1, clamped to
-// maxPatternCount, or 0 when spacing <= 0. Takes the CUBIC control points (ToCubic's output), since
-// the polygon of a raised curve is what bounds the arc length the point pass measures.
+// maxPatternCount, or 0 when spacing <= 0. Takes the CUBIC control points as stored, since the
+// polygon of a raised curve is what bounds the arc length the point pass measures.
 uint64_t PatternCenterBound(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3, float spacing);
 
 // Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scale;
@@ -140,11 +144,17 @@ class BezierCurve;
 // part is dirty (see CurveDirtyBits), plus the renderer's own style buffer:
 //
 //   curve_control_points   4 x float3 per curve at curveIndex * 4, the cubic control points P0..P3
-//                          (ToCubic's output - lower degrees raised to cubic, nothing else converted)
 //                          (48 B)  when re-posed
 //   curve_colors           UploadColorData        (16 B)  when colours / the height band change
 //   curve_indices          UploadSampleRange      ( 8 B)  only when the layout changes
 //   curve_styles           the renderer's own     through UploadStyles(), only when a style setter fired
+//
+// The CPU keeps the curves in exactly that GPU form, one parallel vector per upload (cubic_points,
+// color_data, style_words, ...), all indexed by curve. Setters convert on the way in - a line or
+// quadratic is raised to cubic, a colour is packed to 8 bits per channel, a width is rounded to a
+// whole pixel and merged with the caps and join into one word - so an upload is a plain copy of the
+// vector and nothing is ever converted twice. The getters hand back what is stored (the quantised
+// values), not what was passed in.
 //
 // The control points sit at a fixed stride, so a shader finds them from the curve index alone and
 // never waits on curve_indices to know where to read. The shaders evaluate them in Bernstein form,
@@ -175,9 +185,9 @@ public:
 	// compared row by row; a renderer simply has no entry for a stage it does not have:
 	//
 	//   update   cpu   buffer resize + curve/style upload (UpdateBuffers)
-	//   calc     gpu   the point pass compute shader    (patterned and dots only)
-	//   scan     gpu   the segmented prefix sum          (patterned and dots only)
-	//   pattern  gpu   pattern/dot ini + calc            (patterned and dots only)
+	//   calc     gpu   the point pass compute shader      (patterned and dots only)
+	//   scan     gpu   the segmented prefix sum           (patterned and dots only)
+	//   pattern  gpu   pattern/dot ini + calc             (patterned and dots only)
 	//   draw     gpu   binds + the draw call
 	//   total    cpu   the whole Draw() call
 	//   total    gpu   the whole Draw() call
@@ -190,7 +200,7 @@ public:
 	// Same as curve.Remove(). Does nothing for a handle that is invalid or belongs to another renderer.
 	void Remove(BezierCurve& curve);
 	// Live curves - removed ones are excluded immediately, even before the next compaction.
-	size_t Count() const { return curves.size() - removed_count; }
+	size_t Count() const { return owners.size() - removed_count; }
 
 	void SetViewport(float width, float height);
 
@@ -232,15 +242,25 @@ protected:
 	};
 	static_assert(sizeof(UploadSampleRange) == 8, "UploadSampleRange must match Indices in the shaders");
 
+	// The curves, one parallel vector per kind of data, all indexed by curve (see the class comment).
 	// Dense and in Add order, which is also the chain order (see merge_with_previous). Removal is
 	// lazy: Remove() only nulls the curve's `owners` slot and raises need_resize, and the next
-	// UpdateBuffers compacts both vectors in one pass (CompactRemoved), rewriting the index held by
+	// UpdateBuffers compacts every vector in one pass (CompactRemoved), rewriting the index held by
 	// every surviving handle. Bulk removal is therefore O(n) once, not O(n) per curve, and a handle's
 	// index stays valid right up to that compaction. Everything that runs after UpdateBuffers - every
-	// Draw pass - sees a fully compacted `curves`, so curves.size() is the live count there.
-	std::vector<BezierData> curves;
-	std::vector<BezierCurve*> owners;  // owners[i] is the handle owning curves[i]; nullptr = removed
+	// Draw pass - sees fully compacted vectors, so TotalCurves() is the live count there.
+	std::vector<DirectX::XMFLOAT3> cubic_points;  // 4 per curve: P0..P3, uploaded as curve_control_points
+	std::vector<UploadColorData>   color_data;    // uploaded as curve_colors
+	std::vector<uint32_t>          style_words;   // width << 24 | cap_front << 16 | cap_back << 8 | join
+	std::vector<float>             spacings;
+	std::vector<float>             dash_lengths;
+	std::vector<uint32_t>          resolutions;
+	std::vector<uint8_t>           merged;        // merge_with_previous, see BezierData
+	std::vector<BezierCurve*>      owners;        // owners[i] is the handle owning curve i; nullptr = removed
 	uint32_t removed_count = 0;
+
+	// Curve slots, removed-but-not-yet-compacted ones included.
+	size_t TotalCurves() const { return owners.size(); }
 
 	// See PatternBound(). Recomputed by UpdatePatternBound().
 	uint32_t pattern_upper_bound = 0;
@@ -262,7 +282,7 @@ protected:
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_indices;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_styles;    // The renderer's own, see AllocateStyleBuffer
 
-	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> curve_begins;
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_begins;   // read-only on the GPU: the scan and the vertex shaders only sample it
 
 	Axodox::Graphics::ComputeShader* calc_points = nullptr;
 
@@ -309,9 +329,7 @@ private:
 	void CompactRemoved();
 	void AllocateBuffers(const Axodox::Graphics::GraphicsDevice& device, Axodox::Graphics::GraphicsDeviceContext* context);
 
-	// Staging vectors, kept between uploads so a per-frame re-pose does not allocate.
-	std::vector<DirectX::XMFLOAT3> control_point_scratch;
-	std::vector<UploadColorData>   color_scratch;
+	// Staging vector for the sample ranges, kept between uploads so a relayout does not allocate.
 	std::vector<UploadSampleRange> index_scratch;
 };
 
@@ -331,8 +349,16 @@ protected:
 
 	BezierCurve(BezierRendererBase* owner, size_t index) : curve_index(index), renderer(owner) {}
 
-	BezierData& data() { assert(valid()); return renderer->curves[curve_index]; }
-	const BezierData& data() const { assert(valid()); return renderer->curves[curve_index]; }
+	// This curve's slot in each of the renderer's vectors.
+	DirectX::XMFLOAT3* points() const { assert(valid()); return &renderer->cubic_points[curve_index * 4u]; }
+	BezierRendererBase::UploadColorData& color() const { assert(valid()); return renderer->color_data[curve_index]; }
+	uint32_t& style() const { assert(valid()); return renderer->style_words[curve_index]; }
+
+	void store_points(const DirectX::XMFLOAT3 (&cubic)[4]) {
+		DirectX::XMFLOAT3* p = points();
+		for (int i = 0; i < 4; ++i) p[i] = cubic[i];
+		touch(DirtyPositions);
+	}
 
 	// `parts` is a CurveDirtyBits mask; see there. The default keeps any caller that does not say what
 	// it changed on the safe side.
@@ -357,46 +383,43 @@ public:
 	void Remove();
 
 	inline bool valid() const { return renderer != nullptr; }
-	const BezierData& Data() const { return data(); }
 
-	inline DirectX::XMFLOAT3 P0() const { return data().P0; }
-	inline DirectX::XMFLOAT3 P1() const { return data().P1; }
-	inline DirectX::XMFLOAT3 P2() const { return data().P2; }
-	inline DirectX::XMFLOAT3 P3() const { return data().P3; }
+	// Lines and quadratics are raised to cubic here, so the renderer only ever holds cubic points.
+	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1) { DirectX::XMFLOAT3 c[4]; LinearToCubic(P0, P1, c); store_points(c); }
+	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2) { DirectX::XMFLOAT3 c[4]; QuadraticToCubic(P0, P1, P2, c); store_points(c); }
+	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3) { const DirectX::XMFLOAT3 c[4] = { P0, P1, P2, P3 }; store_points(c); }
 
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1) { data().P0 = P0; data().P1 = P1; data().bezier_power = 1; touch(DirtyPositions); }
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().bezier_power = 2; touch(DirtyPositions); }
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3) { data().P0 = P0; data().P1 = P1; data().P2 = P2; data().P3 = P3; data().bezier_power = 3; touch(DirtyPositions); }
+	// The colours are stored at 8 bits per channel, so these return the quantised values.
+	inline DirectX::XMFLOAT3 C0() const { return UnpackFloat3FromR8G8B8A8(color().color_begin); }
+	inline DirectX::XMFLOAT3 C1() const { return UnpackFloat3FromR8G8B8A8(color().color_end); }
+	inline float MinHeight() const { return color().min_height; }
+	inline float MaxHeight() const { return color().max_height; }
 
-	inline DirectX::XMFLOAT3 C0() const { return data().C0; }
-	inline DirectX::XMFLOAT3 C1() const { return data().C1; }
-	inline float MinHeight() const { return data().min_height; }
-	inline float MaxHeight() const { return data().max_height; }
+	inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { color().color_begin = PackFloat3ToR8G8B8A8(C0); color().color_end = PackFloat3ToR8G8B8A8(C1); touch(DirtyColors); }
+	inline void HeightRange(float min, float max) { color().min_height = min; color().max_height = max; touch(DirtyColors); }
 
-	inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { data().C0 = C0; data().C1 = C1; touch(DirtyColors); }
-	inline void HeightRange(float min, float max) { data().min_height = min; data().max_height = max; touch(DirtyColors); }
+	// Width is stored as the whole pixel the shaders draw (see PackWidthByte).
+	inline float Width() const { return float(style() >> 24); }
+	inline CurveCap CapFront() const { return static_cast<CurveCap>((style() >> 16) & 0xFFu); }
+	inline CurveCap CapBack() const { return static_cast<CurveCap>((style() >> 8) & 0xFFu); }
+	inline CurveJoin Join() const { return static_cast<CurveJoin>(style() & 0xFFu); }
+	inline float DashLength() const { assert(valid()); return renderer->dash_lengths[curve_index]; }
+	inline float Spacing() const { assert(valid()); return renderer->spacings[curve_index]; }
 
-	inline float Width() const { return data().width; }
-	inline CurveCap CapFront() const { return data().cap_front; }
-	inline CurveCap CapBack() const { return data().cap_back; }
-	inline CurveJoin Join() const { return data().join; }
-	inline float DashLength() const { return data().dash_length; }
-	inline float Spacing() const { return data().spacing; }
+	inline void Width(float value) { style() = (style() & 0x00FFFFFFu) | (PackWidthByte(value) << 24); touch(DirtyStyles); }
+	inline void Cap(CurveCap front, CurveCap back) { style() = (style() & 0xFF0000FFu) | (uint32_t(front) << 16) | (uint32_t(back) << 8); touch(DirtyStyles); }
+	inline void Join(CurveJoin value) { style() = (style() & ~0xFFu) | uint32_t(value); touch(DirtyStyles); }
+	inline void DashLength(float value) { assert(valid()); renderer->dash_lengths[curve_index] = value; touch(DirtyStyles); }
+	inline void Spacing(float value) { assert(valid()); renderer->spacings[curve_index] = value; touch(DirtyStyles); }
 
-	inline void Width(float value) { data().width = value; touch(DirtyStyles); }
-	inline void Cap(CurveCap front, CurveCap back) { data().cap_front = front; data().cap_back = back; touch(DirtyStyles); }
-	inline void Join(CurveJoin value) { data().join = value; touch(DirtyStyles); }
-	inline void DashLength(float value) { data().dash_length = value; touch(DirtyStyles); }
-	inline void Spacing(float value) { data().spacing = value; touch(DirtyStyles); }
+	inline void Dot() { Cap(CurveCap::Round, CurveCap::Round); renderer->dash_lengths[curve_index] = 0.f; }
 
-	inline void Dot() { data().cap_front = CurveCap::Round; data().cap_back = CurveCap::Round; data().dash_length = 0.f; touch(DirtyStyles); }
-
-	inline unsigned Resolution() const { return data().resolution; }
-	inline void Resolution(unsigned value) { data().resolution = value; touch_layout(); }
+	inline unsigned Resolution() const { assert(valid()); return renderer->resolutions[curve_index]; }
+	inline void Resolution(unsigned value) { assert(valid()); renderer->resolutions[curve_index] = value; touch_layout(); }
 
 	// See BezierData::merge_with_previous. A layout change, not a plain upload: the chain boundaries
 	// live in the curve_begins bits, which are rebuilt only when the buffers are laid out. Setting the
 	// value it already has does nothing, so this is safe to call every frame.
-	inline bool Merged() const { return data().merge_with_previous; }
-	inline void Merged(bool value) { if (data().merge_with_previous != value) { data().merge_with_previous = value; touch_layout(); } }
+	inline bool Merged() const { assert(valid()); return renderer->merged[curve_index] != 0; }
+	inline void Merged(bool value) { if (Merged() != value) { renderer->merged[curve_index] = value ? 1u : 0u; touch_layout(); } }
 };

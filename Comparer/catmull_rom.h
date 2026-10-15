@@ -55,8 +55,8 @@ public:
 
 	// Adds the links to `renderer` (removing any this spline already had) and poses them. `style`
 	// supplies everything but the geometry: width, caps, join, pattern, resolution (PER LINK), height
-	// band, and C0 -> C1 as a gradient over the whole spline rather than per link. Its control points,
-	// bezier_power and merge_with_previous are ignored.
+	// band, and C0 -> C1 as a gradient over the whole spline rather than per link. Its control points
+	// and merge_with_previous are ignored.
 	void Build(BezierRendererBase& renderer, std::span<const DirectX::XMFLOAT3> knots,
 		const BezierData& style, const CatmullRomOptions& options = {});
 

@@ -4,11 +4,6 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
-// Dots never join, so the join byte of the shared style word is left 0.
-static uint32_t PackDotStyle(const BezierData& bez) {
-	return PackWidthCapCapJoin(bez) & ~0xFFu;
-}
-
 // Matches DotSample in dot_common.hlsli: the dot's curve parameter t over the whole curve, and the curve.
 struct DotSample {
 	float    t;
@@ -57,9 +52,10 @@ void BezierDotRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint32
 }
 
 void BezierDotRenderer::UploadStyles(GraphicsDeviceContext* context) {
-	style_scratch.resize(curves.size());
-	for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex)
-		style_scratch[curveIndex] = UploadDotStyle{ PackDotStyle(curves[curveIndex]), curves[curveIndex].spacing };
+	// Dots never join, so the join byte of the shared style word is left 0.
+	style_scratch.resize(TotalCurves());
+	for (size_t curveIndex = 0; curveIndex < style_scratch.size(); ++curveIndex)
+		style_scratch[curveIndex] = UploadDotStyle{ style_words[curveIndex] & ~0xFFu, spacings[curveIndex] };
 	curve_styles->Upload(std::span<const UploadDotStyle>{ style_scratch }, context);
 }
 
@@ -84,7 +80,7 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	distances->BindUnordered(0, context);                         // u0
 
 	profiler.begin_gpu("calc");
-	calc_points->Run({ GroupCount(total_points, 256u), 1u, 1u }, context);
+	calc_points->Run({ GroupCount(total_points, 512u), 1u, 1u }, context); // 256 threads x 2 points each
 	profiler.end_gpu("calc");
 
 	ClearComputeBindings(context);
@@ -113,7 +109,7 @@ void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device) {
 // GPUs. It matters more here than in the patterned renderer: a dot's index IS its instance id, so a
 // reshuffled layout would be a reshuffled draw.
 void BezierDotRenderer::CountDots(GraphicsDeviceContext* context) {
-	const auto curve_count = static_cast<uint32_t>(curves.size());
+	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 
 	if (curve_count == 0u || !dot_indices) return;
 
@@ -157,7 +153,7 @@ void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context) {
 	// A bound of 0 means no curve in the scene has a positive spacing, which is current and exact.
 	if (pattern_upper_bound == 0 || !dots) return;
 
-	const auto curve_count = static_cast<uint32_t>(curves.size());
+	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 
 	ClearComputeBindings(context);
 

@@ -16,6 +16,4 @@ protected:
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
 
-private:
-	std::vector<uint32_t> style_scratch;
 };

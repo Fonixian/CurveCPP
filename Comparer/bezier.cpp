@@ -47,11 +47,9 @@ void BezierRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint32_t 
 }
 
 void BezierRenderer::UploadStyles(GraphicsDeviceContext* context) {
-	style_scratch.resize(curves.size());
-	for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex) {
-		const BezierData& bez = curves[curveIndex];
-		style_scratch[curveIndex] = UploadPatternStyle{ PackWidthCapCapJoin(bez), bez.spacing, bez.dash_length };
-	}
+	style_scratch.resize(TotalCurves());
+	for (size_t curveIndex = 0; curveIndex < style_scratch.size(); ++curveIndex)
+		style_scratch[curveIndex] = UploadPatternStyle{ style_words[curveIndex], spacings[curveIndex], dash_lengths[curveIndex] };
 	curve_styles->Upload(std::span<const UploadPatternStyle>{ style_scratch }, context);
 }
 
@@ -106,7 +104,7 @@ void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device) {
 // function of the curve data alone - reproducible frame to frame, run to run, and across GPUs. The
 // counts are read as the gap between neighbouring offsets, and ParalellScan appends the total itself.
 void BezierRenderer::CountPatternCenters(GraphicsDeviceContext* context) {
-	const auto curve_count = static_cast<uint32_t>(curves.size());
+	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 
 	if (curve_count == 0u || !pattern_offsets) return;
 
@@ -139,14 +137,14 @@ void BezierRenderer::RunPatternPass(GraphicsDeviceContext* context) {
 	// A bound of 0 means no curve in the scene has a positive spacing, which is current and exact.
 	if (pattern_upper_bound == 0 || !patterns) return;
 
-	const auto curve_count = static_cast<uint32_t>(curves.size());
+	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 
 	ClearComputeBindings(context);
 
 	viewport_data->Bind(ShaderStage::Compute, 0, context);            // b0
 	curve_indices->Bind(ShaderStage::Compute, 0, context);            // t0: sample range per curve
 	distances->BindOrdered(ShaderStage::Compute, 1, context);         // t1: world (x) is the binary-search key, screen (y) is what the hit interpolates
-	curve_begins->BindOrdered(ShaderStage::Compute, 2, context);      // t2: chain begin bits, to find the chain's last centre
+	curve_begins->Bind(ShaderStage::Compute, 2, context);      // t2: chain begin bits, to find the chain's last centre
 	curve_styles->Bind(ShaderStage::Compute, 3, context);             // t3
 	pattern_offsets->BindOrdered(ShaderStage::Compute, 4, context);   // t4: base index per curve, total appended
 	patterns->BindUnordered(0, context);                              // u0
@@ -199,7 +197,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	// t1 and t3..t7 are exactly the solid renderer's bindings; the three buffers only this renderer
 	// has take t0 and t8. t2 stays free, as in the solid renderer.
 	distances->BindOrdered(ShaderStage::Vertex, 0, context);           // t0: cumulative arc length per sample, float2 (world, screen px)
-	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);        // t1: chain boundary flags
+	curve_begins->Bind(ShaderStage::Vertex, 1, context);        // t1: chain boundary flags
 	BindCurveData(context, 3, 5, 7);                                   // t3 control points, t5 colours, t7 indices
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: point -> curve index
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width_capcapjoin / spacing / dash length

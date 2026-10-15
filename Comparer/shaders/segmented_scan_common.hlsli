@@ -21,8 +21,11 @@ cbuffer ScanConstants : register(b0) {
     uint IsTopLevel;
 };
 
+// Flags is read-only: at the top level it is the caller's packed begin bits, below that the previous
+// level's BlockFlags, which that level's pass wrote and this one only reads. Only the local pass binds it.
+StructuredBuffer<uint>              Flags      : register(t0);
+
 RWStructuredBuffer<SCAN_VALUE_TYPE> Values     : register(u0);
-RWStructuredBuffer<uint>            Flags      : register(u1);
 RWStructuredBuffer<SCAN_VALUE_TYPE> BlockSums  : register(u2);
 RWStructuredBuffer<uint>            BlockFlags : register(u3);
 RWStructuredBuffer<uint>            NeedsCarry : register(u4);

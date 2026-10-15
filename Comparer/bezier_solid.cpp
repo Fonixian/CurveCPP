@@ -23,10 +23,8 @@ void BezierSolidRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint
 }
 
 void BezierSolidRenderer::UploadStyles(GraphicsDeviceContext* context) {
-	style_scratch.resize(curves.size());
-	for (size_t curveIndex = 0; curveIndex < curves.size(); ++curveIndex)
-		style_scratch[curveIndex] = PackWidthCapCapJoin(curves[curveIndex]);
-	curve_styles->Upload(std::span<const uint32_t>{ style_scratch }, context);
+	// The style word is already stored in exactly this form.
+	curve_styles->Upload(std::span<const uint32_t>{ style_words }, context);
 }
 
 void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) {
@@ -50,7 +48,7 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 
 	// Same slot numbers as the patterned renderer's curve_vs for t1, t3..t7, so the two vertex shaders
 	// stay easy to diff; t0, t2, t8 and t9 are the patterned renderer's alone and unbound here.
-	curve_begins->BindOrdered(ShaderStage::Vertex, 1, context);
+	curve_begins->Bind(ShaderStage::Vertex, 1, context);
 	BindCurveData(context, 3, 5, 7);                         // t3 control points, t5 colours, t7 indices
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);

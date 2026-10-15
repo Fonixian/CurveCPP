@@ -51,8 +51,11 @@ SegmentedScan<T>::SegmentedScan(const GraphicsDevice& device, uint32_t maxElemen
     }
 }
 
+static void BindFlags(StructuredBuffer& flags, GraphicsDeviceContext* context) { flags.Bind(ShaderStage::Compute, 0u, context); }
+static void BindFlags(RWStructuredBuffer& flags, GraphicsDeviceContext* context) { flags.BindOrdered(ShaderStage::Compute, 0u, context); }
+
 template <typename T>
-void SegmentedScan<T>::Scan(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context) {
+void SegmentedScan<T>::Scan(RWStructuredBuffer& values, StructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context) {
     if (_levels.empty() || count > _levels.front().capacity) {
         throw std::out_of_range("count exceeds the maxElementCount this SegmentedScan was constructed with.");
     }
@@ -62,15 +65,16 @@ void SegmentedScan<T>::Scan(RWStructuredBuffer& values, RWStructuredBuffer& flag
     if (!context) context = _device.ImmediateContext();
 
     ScanLevel(values, flags, count, 0, context);
+    context->BindShaderResourceView(nullptr, ShaderStage::Compute, 0u);
     context->BindUnorderedAccessView(nullptr, 0);
-    context->BindUnorderedAccessView(nullptr, 1);
     context->BindUnorderedAccessView(nullptr, 2);
     context->BindUnorderedAccessView(nullptr, 3);
     context->BindUnorderedAccessView(nullptr, 4);
 }
 
 template <typename T>
-void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context) {
+template <typename FlagBuffer>
+void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context) {
     if (levelIndex >= _levels.size()) {
         throw std::logic_error("SegmentedScan: not enough recursion levels were preallocated for this element count.");
     }
@@ -85,7 +89,7 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer&
     level.constants->Bind(ShaderStage::Compute, 0u, context);
 
     values.BindUnordered(0u, context);
-    flags.BindUnordered(1u, context);
+    BindFlags(flags, context);                      // t0, read-only
     level.blockSums->BindUnordered(2u, context);
     level.blockFlags->BindUnordered(3u, context);
     level.needsCarry->BindUnordered(4u, context);
@@ -93,6 +97,8 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer&
     _localScan->Run({ blockCount, 1u, 1u }, context);
 
     if (blockCount > 1u) {
+        // The next level reads blockFlags through its SRV; drop the UAV it is still bound to here.
+        context->BindUnorderedAccessView(nullptr, 3u);
         ScanLevel(*level.blockSums, *level.blockFlags, blockCount, levelIndex + 1u, context);
         level.constants->Bind(ShaderStage::Compute, 0u, context);
         values.BindUnordered(0u, context);
@@ -101,8 +107,8 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, RWStructuredBuffer&
 
         _addBlockOffsets->Run({ blockCount, 1u, 1u }, context);
     }
+    context->BindShaderResourceView(nullptr, ShaderStage::Compute, 0u);
     context->BindUnorderedAccessView(nullptr, 0u);
-    context->BindUnorderedAccessView(nullptr, 1u);
     context->BindUnorderedAccessView(nullptr, 2u);
     context->BindUnorderedAccessView(nullptr, 3u);
     context->BindUnorderedAccessView(nullptr, 4u);

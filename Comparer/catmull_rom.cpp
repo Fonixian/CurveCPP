@@ -94,7 +94,6 @@ void CatmullRomSpline::Build(BezierRendererBase& target, std::span<const XMFLOAT
 
 	renderer = &target;
 	style = link_style;
-	style.bezier_power = 3;
 	style.merge_with_previous = false;
 	options = link_options;
 	knot_colored = false;
