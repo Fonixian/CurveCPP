@@ -81,6 +81,9 @@
     <ClCompile Include="catmull_rom.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="curve_switcher.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="app.h">
@@ -123,6 +126,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="catmull_rom.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="curve_switcher.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

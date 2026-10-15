@@ -158,6 +158,7 @@
     <ClCompile Include="bezier_line.cpp" />
     <ClCompile Include="camera.cpp" />
     <ClCompile Include="catmull_rom.cpp" />
+    <ClCompile Include="curve_switcher.cpp" />
     <ClCompile Include="gpu_buffers.cpp" />
     <ClCompile Include="CurveApp.cpp" />
     <ClCompile Include="orbital_camera.cpp" />
@@ -180,6 +181,7 @@
     <ClInclude Include="bezier_line.h" />
     <ClInclude Include="camera.h" />
     <ClInclude Include="catmull_rom.h" />
+    <ClInclude Include="curve_switcher.h" />
     <ClInclude Include="gpu_buffers.h" />
     <ClInclude Include="orbital_camera.h" />
     <ClInclude Include="pipeline.h" />
