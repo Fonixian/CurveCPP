@@ -12,6 +12,12 @@ static const uint CurveJoinSquare = 1u;
 
 static const uint CurveEndJoined = 0xFFu;
 
+// segment_map entries (bezier_common.h): the curve index in the low 30 bits, then whether the stroke
+// goes on past the segment's start and past its end.
+static const uint SegmentCurveMask = 0x3FFFFFFFu;
+static const uint SegmentHasPrev   = 0x40000000u;
+static const uint SegmentHasNext   = 0x80000000u;
+
 struct SolidVSOutput {
     float4 Position : SV_Position;
     noperspective float4 SDF : TEXCOORD0;

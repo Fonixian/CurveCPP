@@ -13,6 +13,8 @@ public:
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
 protected:
+	// One instance per segment, and nothing per sample: no point pass, no scan.
+	uint8_t LayoutBuffers() const override { return LayoutSegmentMap; }
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
 

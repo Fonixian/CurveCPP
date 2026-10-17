@@ -104,7 +104,8 @@ void ClearComputeBindings(GraphicsDeviceContext* context) {
 		context->BindUnorderedAccessView(nullptr, slot);
 }
 
-// t0..t8: the patterned renderer's curve_vs binds nine (see BezierRenderer::Draw).
+// t0..t8: t8 is the highest slot any vertex shader binds (the patterned renderer's curve_vs, see
+// BezierRenderer::Draw).
 constexpr uint32_t vertexSrvSlots = 9u;
 // t1 pattern positions - the only pixel-stage SRV any renderer binds (the chain's end is marked in
 // that data, so no slot range or pattern offsets reach the pixel stage). Slot 0 is never bound to the
@@ -269,29 +270,39 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	// must happen before anything below reads the per-curve vectors.
 	CompactRemoved();
 
-	// A merged curve shares its first sample with the previous curve's last one (see
-	// merge_with_previous), so it adds one sample fewer than its resolution.
+	// Every curve owns exactly `resolution` samples, merged or not (see merge_with_previous), so the
+	// layout never depends on merging.
 	total_points = 0;
 	for (size_t curveIndex = 0; curveIndex < TotalCurves(); ++curveIndex)
-		total_points += resolutions[curveIndex] - (IsChainStart(curveIndex) ? 0u : 1u);
+		total_points += resolutions[curveIndex];
 
 	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 	if (total_points < 2u || curve_count == 0u) {
 		total_points = 0;
+		total_segments = 0;
 		// UploadCurves, which normally recomputes it, is not reached on this path.
 		pattern_upper_bound = 0;
 		return;
 	}
+
+	// resolution - 1 segments per curve, and none for the step from one curve to the next.
+	total_segments = total_points - curve_count;
 
 	// Grow when full, shrink once a quarter or less is in use - see FitCapacity(). Shrinking goes
 	// through exactly the same reset() as growing; every buffer below is rewritten from scratch by the
 	// uploads at the end of this function or by the next point pass, so nothing has to be carried over.
 	const uint32_t points_required = FitCapacity(points_allocated, total_points);
 	const uint32_t curves_required = FitCapacity(curves_allocated, curve_count);
+	const uint8_t layout = LayoutBuffers();
 
 	if (points_allocated != points_required) {
-		curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
-		bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
+		if (layout & LayoutChainBegins)
+			curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
+		if (layout & LayoutSampleMap)
+			bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
+		// Always fewer segments than samples, so the point capacity fits the segment map too.
+		if (layout & LayoutSegmentMap)
+			segment_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
 		AllocatePointBuffers(device, points_required);
 		points_allocated = points_required;
 	}
@@ -306,39 +317,50 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	}
 
 	std::vector<uint32_t> index_map;
-	index_map.reserve(total_points);
-
-	std::vector<uint32_t> curve_begin_bits(std::max((points_allocated + 31u) / 32u, 1u), 0u);
+	std::vector<uint32_t> curve_begin_bits;
+	std::vector<uint32_t> segment_entries;
+	if (layout & LayoutSampleMap) index_map.reserve(total_points);
+	if (layout & LayoutChainBegins) curve_begin_bits.assign(std::max((points_allocated + 31u) / 32u, 1u), 0u);
+	if (layout & LayoutSegmentMap) segment_entries.reserve(total_segments);
 
 	uint32_t current = 0;
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
 		const uint32_t resolution = resolutions[curveIndex];
+		const bool chain_start = IsChainStart(curveIndex);
 
 		// One begin bit per CHAIN, not per curve: the scan restarts only where a new stroke starts, so
 		// a merged curve's arc lengths carry on from the curve before it. See IsChainStart().
-		if (IsChainStart(curveIndex)) {
+		//
+		// The begin bit and the segment flags are the ONLY things merging changes here. A merged
+		// curve still owns all of its own samples, its first one being its own copy of the joint (its
+		// t = 0, the same point as the previous curve's t = 1 by the shared-endpoint assumption). The
+		// point pass measures a zero chord from the previous curve's last sample to it, so the arc
+		// length runs on unbroken.
+		if ((layout & LayoutChainBegins) && chain_start)
 			curve_begin_bits[current / 32u] |= (1u << (current % 32u));
-			for (unsigned i = 0; i < resolution; ++i)
-				index_map.push_back(curveIndex);
-			current += resolution;
+
+		if (layout & LayoutSampleMap)
+			index_map.insert(index_map.end(), resolution, curveIndex);
+
+		// The curve's resolution - 1 segments, and none for the step to the next curve, which is how the
+		// draws come to have no bridge in them. Inside the curve the stroke always goes on; at its two
+		// ends only into a merged neighbour.
+		if (layout & LayoutSegmentMap) {
+			const bool joined_after = curveIndex + 1u < curve_count && !IsChainStart(curveIndex + 1u);
+			for (uint32_t j = 0; j + 1u < resolution; ++j)
+				segment_entries.push_back(curveIndex
+					| ((j > 0u || !chain_start) ? SegmentHasPrev : 0u)
+					| ((j + 2u < resolution || joined_after) ? SegmentHasNext : 0u));
 		}
-		else {
-			// The joint sample is the previous curve's last one. It is handed to THIS curve, because a
-			// sample's owner is the curve whose interval starts there: the point pass evaluates it as
-			// this curve's t = 0 (the same point, by the shared-endpoint assumption) and measures the
-			// chord to this curve's next sample, and the vertex shaders style the segment leaving it
-			// with this curve's width and caps. The previous curve still ENDS on it - its LastIndex
-			// is unchanged - it just no longer evaluates it.
-			index_map.back() = curveIndex;
-			for (unsigned i = 1; i < resolution; ++i)
-				index_map.push_back(curveIndex);
-			current += resolution - 1u;
-		}
+
+		current += resolution;
 	}
 	assert(current == total_points);
+	assert(!(layout & LayoutSegmentMap) || segment_entries.size() == total_segments);
 
-	bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
-	curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
+	if (layout & LayoutSampleMap) bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
+	if (layout & LayoutChainBegins) curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
+	if (layout & LayoutSegmentMap) segment_map->Upload(std::span<const uint32_t>{ segment_entries }, context);
 
 	// Everything: a buffer that was just (re)allocated holds nothing yet.
 	UploadCurves(context, DirtyAll);
@@ -393,8 +415,9 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 	// The vectors already hold the GPU form (cubic points, packed colours), so these are plain copies.
 	if (parts & DirtyPositions) {
 #ifndef NDEBUG
-		// Merging assumes the two curves meet: only the later curve's P0 is ever evaluated at the joint,
-		// so a gap would be closed silently by dropping the previous curve's real endpoint. The
+		// Merging assumes the two curves meet: the segment between the previous curve's last sample
+		// and this curve's first is taken to be zero-length and is never drawn, and the joins on both
+		// sides of it are built as if the stroke ran on unbroken, so a gap would leave a hole. The
 		// tolerance is relative, so it holds at any scene scale.
 		for (size_t curveIndex = 1; curveIndex < owners.size(); ++curveIndex)
 			assert((IsChainStart(curveIndex) || EndpointsMeet(cubic_points[curveIndex * 4u - 1u], cubic_points[curveIndex * 4u])) &&
@@ -406,12 +429,13 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 	if (parts & DirtyColors)
 		curve_colors->Upload(std::span<const UploadColorData>{ color_data }, context);
 
-	// A merged curve starts ON the previous curve's last sample (see BezierData::merge_with_previous).
+	// Disjoint and back to back, merged or not: a curve's first sample is the one right after the
+	// previous curve's last (see BezierData::merge_with_previous).
 	if (parts & DirtyLayout) {
 		index_scratch.resize(owners.size());
 		uint32_t current = 0;
 		for (size_t curveIndex = 0; curveIndex < owners.size(); ++curveIndex) {
-			const uint32_t first = IsChainStart(curveIndex) ? current : current - 1u;
+			const uint32_t first = current;
 			const uint32_t last = first + resolutions[curveIndex] - 1u;
 			index_scratch[curveIndex] = UploadSampleRange{ first, last };
 			current = last + 1u;

@@ -13,6 +13,12 @@ struct Indices {
     uint2 first_last; // FirstIndex, LastIndex: the curve's sample range, both inclusive
 };
 
+// segment_map entries (bezier_common.h): the curve index in the low 30 bits, then whether the stroke
+// goes on past the segment's start and past its end - the line renderer only needs the curve.
+static const uint SegmentCurveMask = 0x3FFFFFFFu;
+static const uint SegmentHasPrev   = 0x40000000u;
+static const uint SegmentHasNext   = 0x80000000u;
+
 // Straight from the vertex shader to the rasteriser: there is no geometry stage, so the line is the
 // hardware's own 1px LINELIST primitive and this is also the pixel shader's input.
 struct LineVSOutput {

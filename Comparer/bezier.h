@@ -39,10 +39,11 @@
 //
 // Curve data is the base class's split upload: control points, colours and sample ranges in three
 // buffers, plus one PatternStyle (width_capcapjoin, spacing, dash_length) per curve re-sent only
-// when a style setter fired. curve_vs builds the strip the way solid_vert does - B, C and both
-// neighbours evaluated straight from the control points, a neighbour across a merged joint taken
-// from the adjacent curve - so there is no per-sample position buffer; the point pass keeps only the
-// two arc lengths. The terminus test is per segment (Neighbors, from the begin bits).
+// when a style setter fired. curve_vs builds the strip the way solid_vert does - one instance per
+// segment_map entry, B, C and both neighbours evaluated straight from the control points, a
+// neighbour across a merged joint taken from the adjacent curve one sample past the joint's
+// duplicate - so there is no per-sample position buffer; the point pass keeps only the two arc
+// lengths. The terminus test is per segment (Neighbors, from the segment_map entry's flags).
 //
 // Nothing in a frame waits on a compute result: the pattern buffer is sized from
 // BezierRendererBase::PatternBound(), a CPU-side upper bound, and the exact centre total stays on the

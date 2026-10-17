@@ -194,12 +194,11 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	// t1 and t3..t7 are exactly the solid renderer's bindings; the three buffers only this renderer
-	// has take t0 and t8. t2 stays free, as in the solid renderer.
+	// t3..t7 are exactly the solid renderer's bindings; the two buffers only this renderer has take t0
+	// and t8. t1 and t2 stay free, as in the solid renderer - the chain ends come with segment_map.
 	distances->BindOrdered(ShaderStage::Vertex, 0, context);           // t0: cumulative arc length per sample, float2 (world, screen px)
-	curve_begins->Bind(ShaderStage::Vertex, 1, context);        // t1: chain boundary flags
 	BindCurveData(context, 3, 5, 7);                                   // t3 control points, t5 colours, t7 indices
-	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: point -> curve index
+	segment_map->Bind(ShaderStage::Vertex, 4, context);                // t4: curve + continuation per segment
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width_capcapjoin / spacing / dash length
 	pattern_offsets->BindOrdered(ShaderStage::Vertex, 8, context);     // t8: pattern base per curve
 
@@ -210,8 +209,9 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	viewport_data->Bind(ShaderStage::Vertex, 1, context); // b1
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);  // b1
 
+	// One instance per real segment (see segment_map): no bridge instances to throw away.
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	context->get()->DrawInstanced(5, total_points - 1u, 0, 0);
+	context->get()->DrawInstanced(5, total_segments, 0, 0);
 	profiler.end_gpu("draw");
 
 	ClearDrawBindings(context);

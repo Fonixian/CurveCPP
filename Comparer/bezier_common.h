@@ -51,10 +51,12 @@ struct BezierData {
 	// terminus from the chain's begin bits (curve_begins).
 	//
 	// ASSUMES the curve starts exactly where the previous one ends (its P0 == the previous P3; a debug
-	// build asserts it). The two share ONE sample at the joint: it is the previous curve's last sample
-	// and this curve's first, and only this curve evaluates it. So a merged curve adds resolution - 1
-	// samples, not resolution, and a chain is one polyline with no duplicate point and no zero-length
-	// segment at any joint - the vertex shaders need no merge-specific neighbour lookup.
+	// build asserts it). Merged or not, every curve owns exactly `resolution` samples, at
+	// t = j / (resolution - 1), so merging never moves a sample: the joint is sampled twice, as the
+	// previous curve's last sample (its t = 1) and as this curve's first (its t = 0). The zero-length
+	// step between those two copies is never drawn - segment_map has no entry for it, just as it has
+	// none for the step between two chains - and a neighbour across the joint steps over the duplicate
+	// (sample i - 2 / i + 3 instead of i - 1 / i + 2).
 	bool merge_with_previous = false;
 };
 
@@ -120,6 +122,23 @@ uint64_t PatternCenterBound(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3
 // only used by the merge asserts in the curve upload.
 bool EndpointsMeet(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b);
 
+// segment_map entries: the curve index in the low 30 bits, then whether the stroke goes on past the
+// segment's start (into the segment before it - same curve, or the last one of a merged previous
+// curve) and past its end. Same constants in solid_common / curve_common / line_common.hlsli.
+constexpr uint32_t SegmentHasPrev   = 1u << 30;
+constexpr uint32_t SegmentHasNext   = 1u << 31;
+constexpr uint32_t SegmentCurveMask = SegmentHasPrev - 1u;
+
+// The per-sample / per-segment layout buffers AllocateBuffers builds. Each renderer asks only for the
+// ones its passes read (BezierRendererBase::LayoutBuffers), so none is built, uploaded or kept for
+// nothing.
+enum LayoutBufferBits : uint8_t {
+	LayoutSampleMap   = 1u << 0, // bezier_data_map: curve per SAMPLE - the point passes
+	LayoutSegmentMap  = 1u << 1, // segment_map: curve + continuation per SEGMENT - the strip and line draws
+	LayoutChainBegins = 1u << 2, // curve_begins: a bit per sample where a chain starts - the segmented scan
+	LayoutAll         = LayoutSampleMap | LayoutSegmentMap | LayoutChainBegins
+};
+
 // Which part of the curve data a BezierCurve setter changed. UploadCurves() re-uploads only the
 // buffers whose part is dirty.
 // DirtyLayout is never raised by a setter: it is what AllocateBuffers() adds, because sample ranges
@@ -164,10 +183,17 @@ class BezierCurve;
 // whose weights are exactly 0 / 1 at the two ends, so P(0) == P0 and P(1) == P3 bit-for-bit and a
 // merged joint is exact from both sides.
 //
-// The sample ranges are the curve's first and last SAMPLE indices, both inclusive. Inside a chain they
-// overlap by one: a merged curve's first index is the previous curve's last index (the shared joint
-// sample, see BezierData::merge_with_previous), so every consumer that maps a sample to t as
-// (i - first) / (last - first) still gets t = 0 and t = 1 at the curve's two ends.
+// The sample ranges are the curve's first and last SAMPLE indices, both inclusive. They are disjoint
+// and back to back, merged or not: curve i owns [first, first + resolution - 1] and the next curve
+// starts right after it, so every consumer that maps a sample to t as (i - first) / (last - first)
+// gets t = 0 and t = 1 at the curve's two ends.
+//
+// The strip and line draws go by SEGMENT, not by sample: one instance (or line) per entry of
+// segment_map, which lists each curve's resolution - 1 segments back to back and nothing for the step
+// from one curve's last sample to the next curve's first - between two chains that step would join
+// two strokes, inside a chain it joins the two copies of a merged joint (see
+// BezierData::merge_with_previous). So no draw ever has a bridge to skip. Since every curve before
+// curve c has dropped exactly one sample that way, segment s of curve c starts on sample s + c.
 //
 // The HLSL side of the structs lives in the *_common.hlsli files - keep them in step.
 class BezierRendererBase {
@@ -272,17 +298,22 @@ protected:
 	uint8_t upload_parts = 0;
 
 	uint32_t total_points = 0;
+	// total_points - curve count: every curve has one segment fewer than samples. What the strip and
+	// line draws are sized by.
+	uint32_t total_segments = 0;
 
 	uint32_t points_allocated = 0;
 	uint32_t curves_allocated = 0;
 
+	// The layout buffers, each built only if LayoutBuffers() asks for it (null otherwise).
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data_map; // One uint32 curve index per point
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   segment_map;     // One uint32 per segment: curve | SegmentHasPrev | SegmentHasNext
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_control_points;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_colors;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_indices;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_styles;    // The renderer's own, see AllocateStyleBuffer
 
-	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_begins;   // read-only on the GPU: the scan and the vertex shaders only sample it
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_begins;   // read-only on the GPU: the segmented scan and curve_pattern_calc only sample it
 
 	Axodox::Graphics::ComputeShader* calc_points = nullptr;
 
@@ -317,6 +348,10 @@ protected:
 	// undefined - so the split is per buffer, not per curve. A renderer that needs more on top of this
 	// overrides it and calls this version first.
 	virtual void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts);
+
+	// Which layout buffers (LayoutBufferBits) this renderer's passes read; AllocateBuffers builds only
+	// those. Everything by default - the patterned renderer reads all three.
+	virtual uint8_t LayoutBuffers() const { return LayoutAll; }
 
 	// Renderer-specific buffers, on top of the shared ones above.
 	virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
@@ -379,7 +414,7 @@ public:
 	// Removes the curve from its renderer; the handle is invalid afterwards. Safe on an invalid handle.
 	// If the curve was part of a merged chain, the chain is SPLIT there: the curve that followed it
 	// starts a new stroke (its Merged() reads false from the next UpdateBuffers on). Keeping it merged
-	// would bridge the gap with a straight segment in the renderers that follow curve_begins.
+	// would carry the arc length, the pattern and the joins straight across the gap.
 	void Remove();
 
 	inline bool valid() const { return renderer != nullptr; }

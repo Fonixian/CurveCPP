@@ -46,18 +46,18 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	// Same slot numbers as the patterned renderer's curve_vs for t1, t3..t7, so the two vertex shaders
-	// stay easy to diff; t0, t2, t8 and t9 are the patterned renderer's alone and unbound here.
-	curve_begins->Bind(ShaderStage::Vertex, 1, context);
+	// Same slot numbers as the patterned renderer's curve_vs for t3..t7, so the two vertex shaders
+	// stay easy to diff; t0 and t8 are the patterned renderer's alone and unbound here.
 	BindCurveData(context, 3, 5, 7);                         // t3 control points, t5 colours, t7 indices
-	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
+	segment_map->Bind(ShaderStage::Vertex, 4, context);      // t4: curve + continuation per segment
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context);
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);
 
+	// One instance per real segment (see segment_map): no bridge instances to throw away.
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	context->get()->DrawInstanced(5, total_points - 1u, 0, 0);
+	context->get()->DrawInstanced(5, total_segments, 0, 0);
 	profiler.end_gpu("draw");
 
 	ClearDrawBindings(context);

@@ -31,8 +31,10 @@
 // Curve data is the base class's split upload (control points, colours and sample ranges), plus one
 // DotStyle (width_capcap + spacing) per curve re-sent only when a style setter fired. None of the
 // solid renderer's merged-joint handling is needed here: a dot is a point on one curve, so the draw
-// binds no curve_begins and no index map. The point pass still reads the
-// index map, which is what hands a joint sample to the curve leaving it.
+// binds no curve_begins and no index map. The point pass still reads the index map to find each
+// sample's curve; at a merged joint the curve ending there measures a zero chord from its last sample
+// (its own copy of the joint) and the next curve carries on from its first, so the arc length runs on
+// unbroken and the two curves' dot windows meet exactly.
 
 class BezierDotRenderer : public BezierRendererBase {
 public:
@@ -46,6 +48,8 @@ protected:
 	// dot_vert evaluates the curve at each dot's t straight from the control points, so nothing in
 	// this renderer stores a sample position or colour. See dot_calc_points.hlsl.
 
+	// The point pass reads the sample map and the scan the chain begins; nothing draws a segment.
+	uint8_t LayoutBuffers() const override { return LayoutSampleMap | LayoutChainBegins; }
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
