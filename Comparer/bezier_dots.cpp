@@ -74,7 +74,7 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context) {
 
 	// The point pass measures chord lengths and drops the positions.
 	viewport_data->Bind(ShaderStage::Compute, 0, context);        // b0
-	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: P0..P3 per curve
+	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: one 3x4 per curve, columns P0..P3
 	bezier_data_map->Bind(ShaderStage::Compute, 1, context);      // t1: owning curve per sample
 	curve_indices->Bind(ShaderStage::Compute, 2, context);        // t2: sample range per curve
 	distances->BindUnordered(0, context);                         // u0

@@ -122,6 +122,12 @@ uint64_t PatternCenterBound(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3
 // only used by the merge asserts in the curve upload.
 bool EndpointsMeet(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b);
 
+// A cubic as the renderer stores and uploads it: one 3x4 matrix, row = coordinate (x, y, z), column i =
+// control point Pi, so P3 sits in the fourth (.w) column. The shaders read it as a row_major float3x4
+// and evaluate mul(P, BernsteinWeights(t)).
+DirectX::XMFLOAT3X4 ToControlMatrix(const DirectX::XMFLOAT3 (&cubic)[4]);
+inline DirectX::XMFLOAT3 ControlPoint(const DirectX::XMFLOAT3X4& m, int i) { return { m.m[0][i], m.m[1][i], m.m[2][i] }; }
+
 // segment_map entries: the curve index in the low 30 bits, then whether the stroke goes on past the
 // segment's start (into the segment before it - same curve, or the last one of a merged previous
 // curve) and past its end. Same constants in solid_common / curve_common / line_common.hlsli.
@@ -162,7 +168,7 @@ class BezierCurve;
 // The curve data is split by how often it changes into three buffers, each re-uploaded only when its
 // part is dirty (see CurveDirtyBits), plus the renderer's own style buffer:
 //
-//   curve_control_points   4 x float3 per curve at curveIndex * 4, the cubic control points P0..P3
+//   curve_control_points   one 3x4 matrix per curve, rows x/y/z, columns = the control points P0..P3
 //                          (48 B)  when re-posed
 //   curve_colors           UploadColorData        (16 B)  when colours / the height band change
 //   curve_indices          UploadSampleRange      ( 8 B)  only when the layout changes
@@ -175,10 +181,11 @@ class BezierCurve;
 // vector and nothing is ever converted twice. The getters hand back what is stored (the quantised
 // values), not what was passed in.
 //
-// The control points sit at a fixed stride, so a shader finds them from the curve index alone and
-// never waits on curve_indices to know where to read. The shaders evaluate them in Bernstein form,
+// The control points are one 3x4 matrix per curve, so a shader finds them from the curve index alone
+// and never waits on curve_indices to know where to read. The shaders evaluate them in Bernstein form
+// as the matrix times a column of weights,
 //
-//     P(t) = (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
+//     P(t) = [P0 P1 P2 P3] * (s^3, 3 s^2 t, 3 s t^2, t^3),    s = 1 - t
 //
 // whose weights are exactly 0 / 1 at the two ends, so P(0) == P0 and P(1) == P3 bit-for-bit and a
 // merged joint is exact from both sides.
@@ -275,7 +282,7 @@ protected:
 	// every surviving handle. Bulk removal is therefore O(n) once, not O(n) per curve, and a handle's
 	// index stays valid right up to that compaction. Everything that runs after UpdateBuffers - every
 	// Draw pass - sees fully compacted vectors, so TotalCurves() is the live count there.
-	std::vector<DirectX::XMFLOAT3> cubic_points;  // 4 per curve: P0..P3, uploaded as curve_control_points
+	std::vector<DirectX::XMFLOAT3X4> cubic_points; // 1 per curve: columns P0..P3, uploaded as curve_control_points
 	std::vector<UploadColorData>   color_data;    // uploaded as curve_colors
 	std::vector<uint32_t>          style_words;   // width << 24 | cap_front << 16 | cap_back << 8 | join
 	std::vector<float>             spacings;
@@ -385,13 +392,12 @@ protected:
 	BezierCurve(BezierRendererBase* owner, size_t index) : curve_index(index), renderer(owner) {}
 
 	// This curve's slot in each of the renderer's vectors.
-	DirectX::XMFLOAT3* points() const { assert(valid()); return &renderer->cubic_points[curve_index * 4u]; }
+	DirectX::XMFLOAT3X4& points() const { assert(valid()); return renderer->cubic_points[curve_index]; }
 	BezierRendererBase::UploadColorData& color() const { assert(valid()); return renderer->color_data[curve_index]; }
 	uint32_t& style() const { assert(valid()); return renderer->style_words[curve_index]; }
 
 	void store_points(const DirectX::XMFLOAT3 (&cubic)[4]) {
-		DirectX::XMFLOAT3* p = points();
-		for (int i = 0; i < 4; ++i) p[i] = cubic[i];
+		points() = ToControlMatrix(cubic);
 		touch(DirtyPositions);
 	}
 

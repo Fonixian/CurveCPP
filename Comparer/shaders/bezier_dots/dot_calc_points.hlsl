@@ -9,20 +9,14 @@ cbuffer CameraData : register(b0) {
     uint     TotalCurveCount;
 };
 
-StructuredBuffer<float3>  ControlPoints  : register(t0);
+StructuredBuffer<Cubic>   ControlPoints  : register(t0); // one 3x4 per curve, rows x/y/z, columns P0..P3
 StructuredBuffer<uint>    BezierIndexMap : register(t1);
 StructuredBuffer<uint2>   CurveIndices   : register(t2);
 
 RWStructuredBuffer<float> WorldDistances : register(u0);
 
 Cubic LoadCubic(uint curveIndex) {
-    uint k = curveIndex << 2u;
-    Cubic cubic;
-    cubic.P0 = ControlPoints[k];
-    cubic.P1 = ControlPoints[k + 1u];
-    cubic.P2 = ControlPoints[k + 2u];
-    cubic.P3 = ControlPoints[k + 3u];
-    return cubic;
+    return ControlPoints[curveIndex];
 }
 
 // One thread measures TWO consecutive points: i0 = 2 * id and i1 = i0 + 1. Point i's value is the

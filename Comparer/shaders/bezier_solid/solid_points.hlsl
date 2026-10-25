@@ -15,15 +15,18 @@
 // Cubic, EvaluateBezier and SampleT are the ones solid_vert used to carry; the solid shaders keep their
 // own copies on purpose (no shared hlsli with the patterned renderer), and this is now their only home.
 
+// One row per coordinate, one column per control point: row x = (P0.x, P1.x, P2.x, P3.x), likewise y
+// and z, so P3 sits in the .w of every row. row_major so the rows sit in memory in that order, matching
+// the CPU's XMFLOAT3X4 whatever the compiler's default matrix packing is. 48 B, three 16-byte loads.
 struct Cubic {
-    float3 P0, P1, P2, P3;
+    row_major float3x4 P;
 };
 
 float3 EvaluateBezier(Cubic c, float t) {
     // Bernstein form
     float s   = 1.0 - t;
     float st3 = 3.0 * s * t;
-    return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
+    return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
 }
 
 // [range.x, range.y] -> [0.0, 1.0]
@@ -38,7 +41,7 @@ cbuffer CameraData : register(b0) {
     uint     TotalCurveCount;
 };
 
-StructuredBuffer<float3> CurveControlPoints : register(t0); // P0..P3 per curve, curveIndex * 4
+StructuredBuffer<Cubic>  CurveControlPoints : register(t0); // one 3x4 per curve, rows x/y/z, columns P0..P3
 StructuredBuffer<uint>   BezierIndexMap     : register(t1); // owning curve per sample
 StructuredBuffer<uint2>  CurveIndices       : register(t2); // FirstIndex, LastIndex per curve
 
@@ -52,12 +55,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     uint curve = BezierIndexMap[sampleIndex];
     uint2 range = CurveIndices[curve];
 
-    uint k = curve << 2u;
-    Cubic c;
-    c.P0 = CurveControlPoints[k];
-    c.P1 = CurveControlPoints[k + 1u];
-    c.P2 = CurveControlPoints[k + 2u];
-    c.P3 = CurveControlPoints[k + 3u];
+    Cubic c = CurveControlPoints[curve];
 
     float t = SampleT(range, sampleIndex);
     SamplePositions[sampleIndex] = float4(EvaluateBezier(c, t), t);

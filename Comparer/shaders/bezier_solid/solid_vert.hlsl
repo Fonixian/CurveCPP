@@ -28,31 +28,28 @@ cbuffer CameraData : register(b1) {
     uint TotalCurveCount;
 };
 
-StructuredBuffer<float3> CurveControlPoints : register(t3);
+// One row per coordinate, one column per control point: row x = (P0.x, P1.x, P2.x, P3.x), likewise y
+// and z, so P3 sits in the .w of every row. row_major so the rows sit in memory in that order, matching
+// the CPU's XMFLOAT3X4 whatever the compiler's default matrix packing is. 48 B, three 16-byte loads.
+struct Cubic {
+    row_major float3x4 P;
+};
+
+StructuredBuffer<Cubic>  CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
 StructuredBuffer<uint>   SegmentMap         : register(t4); // per segment: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<uint4>  CurveColors        : register(t5); // color1, color2, height1, height2 (for interpolation based on height)
 StructuredBuffer<uint>   CurveStyles        : register(t6); // width << 24 | front_cap << 16 | back_cap << 8 | join
 StructuredBuffer<uint2>  CurveIndices       : register(t7); // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
 
-struct Cubic {
-    float3 P0, P1, P2, P3;
-};
-
 Cubic LoadCubic(uint curveIndex) {
-    uint k = curveIndex << 2u;
-    Cubic c;
-    c.P0 = CurveControlPoints[k];
-    c.P1 = CurveControlPoints[k + 1u];
-    c.P2 = CurveControlPoints[k + 2u];
-    c.P3 = CurveControlPoints[k + 3u];
-    return c;
+    return CurveControlPoints[curveIndex];
 }
 
 float3 EvaluateBezier(Cubic c, float t) {
     // Bernstein form
     float s   = 1.0 - t;
     float st3 = 3.0 * s * t;
-    return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
+    return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
 }
 
 // [range.x, range.y] -> [0.0, 1.0]

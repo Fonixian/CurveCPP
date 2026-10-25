@@ -11,7 +11,7 @@ cbuffer CameraData : register(b1) {
 StructuredBuffer<float2>       Distances          : register(t0); // arc length from the chain's start, per sample: x world, y screen (px)
 // t1 and t2 are unused (the chain ends come with SegmentMap now, and the screen arc length used to have
 // its own buffer); the slot numbers match the solid renderer's.
-StructuredBuffer<float3>       CurveControlPoints : register(t3);
+StructuredBuffer<Cubic>        CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
 StructuredBuffer<uint>         SegmentMap         : register(t4); // per segment: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<uint4>        CurveColors        : register(t5);
 StructuredBuffer<PatternStyle> CurveStyles        : register(t6);
@@ -19,13 +19,7 @@ StructuredBuffer<uint2>        CurveIndices       : register(t7);
 StructuredBuffer<uint>         PatternOffsets     : register(t8);
 
 Cubic LoadCubic(uint curveIndex) {
-    uint k = curveIndex << 2u;
-    Cubic c;
-    c.P0 = CurveControlPoints[k];
-    c.P1 = CurveControlPoints[k + 1u];
-    c.P2 = CurveControlPoints[k + 2u];
-    c.P3 = CurveControlPoints[k + 3u];
-    return c;
+    return CurveControlPoints[curveIndex];
 }
 
 float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float t1, bool nearSide) {

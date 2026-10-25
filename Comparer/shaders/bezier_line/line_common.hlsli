@@ -2,9 +2,9 @@
 #define LINE_COMMON_HLSLI
 
 // Per-curve data, split by how often it changes - see BezierSplitRendererBase in bezier_common.h.
-// The control points are a plain StructuredBuffer<float3>, four per curve at curveIndex * 4: the cubic
-// as its four Bezier control points P0..P3 (lower degrees raised to cubic on upload) - the same points UploadBezierData
-// carries. Same layout as solid_common.hlsli, duplicated on purpose.
+// The control points are one row_major float3x4 per curve (see Cubic in line_vert.hlsl): the cubic
+// as its four Bezier control points P0..P3, one per column, rows x/y/z (lower degrees raised to cubic
+// on the way in). Same layout as solid_common.hlsli, duplicated on purpose.
 struct ColorData {
     uint4 c0_c1_height0_height1; // ColorBegin, ColorEnd, asuint(MinHeight), asuint(MaxHeight)
 };

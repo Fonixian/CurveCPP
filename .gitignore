@@ -430,3 +430,6 @@ FodyWeavers.xsd
 
 # vcpkg manifest-mode install tree - restored by vcpkg on build, never versioned
 vcpkg_installed/
+
+# Local JavaScript folder
+/js/

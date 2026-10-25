@@ -146,7 +146,8 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve) {
 	assert(curve.resolution >= 2u);
 
 	const size_t index = owners.size();
-	cubic_points.insert(cubic_points.end(), { curve.P0, curve.P1, curve.P2, curve.P3 });
+	const XMFLOAT3 cubic[4] = { curve.P0, curve.P1, curve.P2, curve.P3 };
+	cubic_points.push_back(ToControlMatrix(cubic));
 	color_data.push_back(UploadColorData{
 		PackFloat3ToR8G8B8A8(curve.C0), PackFloat3ToR8G8B8A8(curve.C1),
 		curve.min_height, curve.max_height
@@ -189,7 +190,7 @@ void BezierRendererBase::CompactRemoved() {
 		previous_removed = false;
 
 		if (write != read) {
-			for (size_t i = 0; i < 4u; ++i) cubic_points[write * 4u + i] = cubic_points[read * 4u + i];
+			cubic_points[write] = cubic_points[read];
 			color_data[write] = color_data[read];
 			style_words[write] = style_words[read];
 			spacings[write] = spacings[read];
@@ -202,7 +203,7 @@ void BezierRendererBase::CompactRemoved() {
 		++write;
 	}
 
-	cubic_points.resize(write * 4u);
+	cubic_points.resize(write);
 	color_data.resize(write);
 	style_words.resize(write);
 	spacings.resize(write);
@@ -253,6 +254,14 @@ uint64_t PatternCenterBound(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOA
 
 	const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(spacing)) + 1.0;
 	return static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
+}
+
+XMFLOAT3X4 ToControlMatrix(const XMFLOAT3 (&cubic)[4]) {
+	return XMFLOAT3X4{
+		cubic[0].x, cubic[1].x, cubic[2].x, cubic[3].x,
+		cubic[0].y, cubic[1].y, cubic[2].y, cubic[3].y,
+		cubic[0].z, cubic[1].z, cubic[2].z, cubic[3].z
+	};
 }
 
 bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
@@ -308,7 +317,7 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	}
 
 	if (curves_allocated != curves_required) {
-		curve_control_points.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT3>(curves_required * 4u)));
+		curve_control_points.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT3X4>(curves_required)));
 		curve_colors.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadColorData>(curves_required)));
 		curve_indices.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadSampleRange>(curves_required)));
 		AllocateStyleBuffer(device, curves_required);
@@ -403,8 +412,8 @@ void BezierRendererBase::UploadCameraData(const XMMATRIX& view_proj, GraphicsDev
 void BezierRendererBase::UpdatePatternBound() {
 	uint64_t bound = 0;
 	for (size_t curveIndex = 0; curveIndex < owners.size(); ++curveIndex) {
-		const XMFLOAT3* p = &cubic_points[curveIndex * 4u];
-		bound += PatternCenterBound(p[0], p[1], p[2], p[3], spacings[curveIndex]);
+		const XMFLOAT3X4& p = cubic_points[curveIndex];
+		bound += PatternCenterBound(ControlPoint(p, 0), ControlPoint(p, 1), ControlPoint(p, 2), ControlPoint(p, 3), spacings[curveIndex]);
 	}
 	pattern_upper_bound = static_cast<uint32_t>(std::min<uint64_t>(bound, maxPatternCount));
 }
@@ -420,10 +429,10 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 		// sides of it are built as if the stroke ran on unbroken, so a gap would leave a hole. The
 		// tolerance is relative, so it holds at any scene scale.
 		for (size_t curveIndex = 1; curveIndex < owners.size(); ++curveIndex)
-			assert((IsChainStart(curveIndex) || EndpointsMeet(cubic_points[curveIndex * 4u - 1u], cubic_points[curveIndex * 4u])) &&
+			assert((IsChainStart(curveIndex) || EndpointsMeet(ControlPoint(cubic_points[curveIndex - 1u], 3), ControlPoint(cubic_points[curveIndex], 0))) &&
 				"merge_with_previous on a curve that does not start where the previous one ends");
 #endif
-		curve_control_points->Upload(std::span<const XMFLOAT3>{ cubic_points }, context);
+		curve_control_points->Upload(std::span<const XMFLOAT3X4>{ cubic_points }, context);
 	}
 
 	if (parts & DirtyColors)
