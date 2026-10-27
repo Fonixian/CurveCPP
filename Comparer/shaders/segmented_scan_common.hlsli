@@ -28,6 +28,9 @@ StructuredBuffer<uint>              Flags      : register(t0);
 RWStructuredBuffer<SCAN_VALUE_TYPE> Values     : register(u0);
 RWStructuredBuffer<SCAN_VALUE_TYPE> BlockSums  : register(u2);
 RWStructuredBuffer<uint>            BlockFlags : register(u3);
-RWStructuredBuffer<uint>            NeedsCarry : register(u4);
+// One per block: the local index of the block's first segment begin (its first set flag), GROUP_SIZE
+// when the block has none. The carry pass adds the block's sum to every element before it - see
+// segmented_scan_add_offsets.hlsli.
+RWStructuredBuffer<uint>            FirstBegin : register(u4);
 
 #endif

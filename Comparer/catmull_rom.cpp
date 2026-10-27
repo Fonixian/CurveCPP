@@ -216,13 +216,6 @@ void CatmullRomSpline::HeightRange(float min, float max) {
 	for (auto& link : links) link.HeightRange(min, max);
 }
 
-void CatmullRomSpline::Dot() {
-	style.cap_front = CurveCap::Round;
-	style.cap_back = CurveCap::Round;
-	style.dash_length = 0.0f;
-	for (auto& link : links) link.Dot();
-}
-
 void CatmullRomSpline::Resolution(unsigned value) {
 	style.resolution = value;
 	for (auto& link : links)

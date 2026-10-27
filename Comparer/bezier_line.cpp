@@ -42,6 +42,6 @@ void BezierLineRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& v
 	context->get()->Draw(2u * total_segments, 0);
 	profiler.end_gpu("draw");
 
-	ClearDrawBindings(context);
+	UnbindShaderResources(context, ShaderStage::Vertex, { 3, 4, 5, 6 });
 	EndDraw();
 }

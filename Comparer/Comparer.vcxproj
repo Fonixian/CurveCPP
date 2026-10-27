@@ -136,6 +136,7 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <AdditionalIncludeDirectories>..\axodox-common\Axodox.Common.Shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <EnableEnhancedInstructionSet>AdvancedVectorExtensions2</EnableEnhancedInstructionSet>
+      <FloatingPointModel>Precise</FloatingPointModel>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -152,6 +153,7 @@
   <ItemGroup>
     <ClCompile Include="app.cpp" />
     <ClCompile Include="bezier.cpp" />
+    <ClCompile Include="BezierData.cpp" />
     <ClCompile Include="bezier_common.cpp" />
     <ClCompile Include="bezier_dots.cpp" />
     <ClCompile Include="bezier_solid.cpp" />
@@ -175,6 +177,7 @@
   <ItemGroup>
     <ClInclude Include="app.h" />
     <ClInclude Include="bezier.h" />
+    <ClInclude Include="BezierData.h" />
     <ClInclude Include="bezier_common.h" />
     <ClInclude Include="bezier_dots.h" />
     <ClInclude Include="bezier_solid.h" />

@@ -56,13 +56,13 @@ CurveKind SwitchedCurve::Kind() const {
 
 void SwitchedCurve::control_points(const XMFLOAT3& P0, const XMFLOAT3& P1) {
 	assert(valid());
-	LinearToCubic(P0, P1, cp);
+	cp[0] = P0; cp[1] = LerpFloat3(P0, P1, 1.0f / 3.0f); cp[2] = LerpFloat3(P0, P1, 2.0f / 3.0f); cp[3] = P1;
 	inner.control_points(cp[0], cp[1], cp[2], cp[3]);
 }
 
 void SwitchedCurve::control_points(const XMFLOAT3& P0, const XMFLOAT3& P1, const XMFLOAT3& P2) {
 	assert(valid());
-	QuadraticToCubic(P0, P1, P2, cp);
+	cp[0] = P0; cp[1] = LerpFloat3(P0, P1, 2.0f / 3.0f); cp[2] = LerpFloat3(P1, P2, 1.0f / 3.0f); cp[3] = P2;
 	inner.control_points(cp[0], cp[1], cp[2], cp[3]);
 }
 
@@ -86,12 +86,6 @@ void SwitchedCurve::DashLength(float value) {
 void SwitchedCurve::Spacing(float value) {
 	assert(valid());
 	inner.Spacing(value);
-	KindMayHaveChanged();
-}
-
-void SwitchedCurve::Dot() {
-	assert(valid());
-	inner.Dot();
 	KindMayHaveChanged();
 }
 

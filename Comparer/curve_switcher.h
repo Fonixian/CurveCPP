@@ -97,7 +97,6 @@ public:
 	// These three can change the curve's kind, so they tell the switcher to look again before drawing.
 	void DashLength(float value);
 	void Spacing(float value);
-	void Dot();
 
 	// See BezierData::merge_with_previous; the previous curve is the one Added directly before this one
 	// to the SWITCHER (not to any one renderer). Merged(true) with no curve before this one does

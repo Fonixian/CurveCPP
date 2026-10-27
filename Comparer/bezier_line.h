@@ -1,10 +1,7 @@
 #pragma once
 #include "bezier_common.h"
 
-// Hardware line primitive only: a D3D11 LINELIST (the GL_LINES equivalent) with no geometry shader, so
-// every curve is 1px wide whatever its `width`, uncapped, unjoined and unpatterned. The curve data is
-// the base class's split upload; colour, including the height band, is the only style it reads, so
-// it has no style buffer and style setters (Width, Cap, ...) upload nothing.
+// Hardware line primitive only: a D3D11 LINELIST
 class BezierLineRenderer : public BezierRendererBase {
 public:
 	explicit BezierLineRenderer(const Axodox::Graphics::GraphicsDevice& device);
@@ -12,7 +9,6 @@ public:
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
 protected:
-	// One line per segment, and nothing per sample.
 	uint8_t LayoutBuffers() const override { return LayoutSegmentMap; }
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice&, uint32_t) override {}
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext*) override {}

@@ -19,7 +19,7 @@ struct SegmentedScanShaders;
 // BezierRenderer scans its (world, screen) arc lengths together as one XMFLOAT2 buffer, the dots
 // renderer scans world arc length alone as float.
 //
-// An instance owns its block-sum / block-flag / carry-flag scratch, so one instance cannot be used for
+// An instance owns its block-sum / block-flag / first-begin scratch, so one instance cannot be used for
 // two concurrent scans.
 template <typename T>
 class SegmentedScan
@@ -38,7 +38,7 @@ private:
         uint32_t capacity = 0u;
         std::unique_ptr<RWStructuredBuffer> blockSums;
         std::unique_ptr<RWStructuredBuffer> blockFlags;
-        std::unique_ptr<RWStructuredBuffer> needsCarry;
+        std::unique_ptr<RWStructuredBuffer> firstBegin; // one uint per block, see FirstBegin in segmented_scan_common.hlsli
         std::unique_ptr<ConstantBuffer> constants;
     };
 

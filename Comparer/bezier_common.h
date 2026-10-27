@@ -1,68 +1,14 @@
 #pragma once
+#include "BezierData.h"
 #include <Include/Axodox.Graphics.h>
 #include <DirectXMath.h>
 #include <vector>
 #include <memory>
 #include <span>
+#include <initializer_list>
 #include <cassert>
 #include "pipeline.h"
 #include "profiler.h"
-
-enum class CurveCap : uint8_t {
-	Butt = 0,
-	Square = 1,
-	Round = 2,
-	TriangleOut = 3,
-	TriangleIn = 4
-};
-
-enum class CurveJoin : uint8_t {
-	Round = 0,
-	Square = 1
-};
-
-struct BezierData {
-	// Control points, always CUBIC: Linear() and Quadratic() raise to cubic when they build the struct,
-	// exactly as the handle's control_points() overloads do, so a degree never travels any further.
-	DirectX::XMFLOAT3 P0 = { 0.f, 0.f, 0.f };
-	DirectX::XMFLOAT3 P1 = { 0.f, 0.f, 0.f };
-	DirectX::XMFLOAT3 P2 = { 0.f, 0.f, 0.f };
-	DirectX::XMFLOAT3 P3 = { 0.f, 0.f, 0.f };
-	// Colors
-	DirectX::XMFLOAT3 C0 = { 1.f, 1.f, 1.f };
-	DirectX::XMFLOAT3 C1 = { 1.f, 1.f, 1.f };
-	float min_height = 0.f;
-	float max_height = 0.f;
-	float width = 2.f;
-	CurveCap cap_front = CurveCap::Butt;
-	CurveCap cap_back = CurveCap::Butt;
-	CurveJoin join = CurveJoin::Round;
-	float dash_length = 0.f;
-	float spacing = 0.f;
-	unsigned resolution = 64u;
-	// Merged curves: when true, this curve continues the stroke of the curve Added directly before it
-	// in the same renderer, so the two share one arc length, one pattern grid and one pair of end
-	// caps. A CHAIN is a run of consecutive curves in which every curve after the first has this set.
-	// Chains are contiguous by construction - the segmented scan's segments are runs of points
-	// between begin bits, so only the previous index can ever be merged into. Ignored on curve 0.
-	//
-	// Every curve in a chain keeps its own width, colour, join and spacing. The front cap only ever
-	// fires on the chain's first curve and the back cap on its last one - the vertex shaders find the
-	// terminus from the chain's begin bits (curve_begins).
-	//
-	// ASSUMES the curve starts exactly where the previous one ends (its P0 == the previous P3; a debug
-	// build asserts it). Merged or not, every curve owns exactly `resolution` samples, at
-	// t = j / (resolution - 1), so merging never moves a sample: the joint is sampled twice, as the
-	// previous curve's last sample (its t = 1) and as this curve's first (its t = 0). The zero-length
-	// step between those two copies is never drawn - segment_map has no entry for it, just as it has
-	// none for the step between two chains - and a neighbour across the joint steps over the duplicate
-	// (sample i - 2 / i + 3 instead of i - 1 / i + 2).
-	bool merge_with_previous = false;
-};
-
-BezierData Linear(DirectX::XMFLOAT3 P0, DirectX::XMFLOAT3 P1);
-BezierData Quadratic(DirectX::XMFLOAT3 P0, DirectX::XMFLOAT3 P1, DirectX::XMFLOAT3 P2);
-BezierData Cubic(DirectX::XMFLOAT3 P0, DirectX::XMFLOAT3 P1, DirectX::XMFLOAT3 P2, DirectX::XMFLOAT3 P3);
 
 struct CameraDataBuffer {
 	DirectX::XMFLOAT4X4 VP;
@@ -71,69 +17,17 @@ struct CameraDataBuffer {
 	uint32_t TotalCurveCount;
 };
 
-// Ceiling on the CPU-side pattern bound, so a curve with a near-zero spacing asks for a buffer of a
-// sane size rather than one of a few billion entries. Past this the calc shaders clamp and the tail
-// of the pattern simply is not drawn.
-constexpr uint32_t maxPatternCount = 4'000'000u;
+constexpr uint32_t maxPatternCount = 4'000'000u; // To avoid allocating giant buffer when spacing is near zero.
+constexpr uint32_t maxElementCount = 1'200'000u; // For the scans, because they preallocate thier buffers.
 
-// Capacity every scan instance is built for. A curve is worth at least one point, so it bounds the
-// per-curve scans (centre / dot offsets) as well as the per-point ones.
-constexpr uint32_t maxElementCount = 1'200'000u;
+uint32_t FitCapacity(uint32_t allocated, uint32_t required); // Get the buffer size based on the current and required size.
 
-// Capacity policy shared by every over-allocated GPU buffer (points, curves, pattern / dot slots).
-// Returns the capacity the buffer SHOULD have for `required` live elements, given what it has now:
-//   - grows to next_pow2(required) as soon as it no longer fits,
-//   - shrinks to next_pow2(required) once usage has fallen to a quarter of the allocation or less,
-//   - otherwise keeps `allocated`.
-// The factor-4 gap between the two thresholds is the hysteresis: a count hovering around a power of
-// two (an animated pattern bound, a batch added then removed) cannot make the buffer flip between two
-// sizes every frame. Reallocate exactly when the result differs from `allocated`.
-uint32_t FitCapacity(uint32_t allocated, uint32_t required);
-
-// Thread groups needed to cover `items` threads of `group_size` each.
 constexpr uint32_t GroupCount(uint32_t items, uint32_t group_size) { return (items + group_size - 1u) / group_size; }
 
-uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
-DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
-DirectX::XMFLOAT3 UnpackFloat3FromR8G8B8A8(uint32_t color);
-
-// Raise a line / quadratic to the four cubic control points the renderers store.
-void LinearToCubic(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, DirectX::XMFLOAT3 (&cubic)[4]);
-void QuadraticToCubic(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, DirectX::XMFLOAT3 (&cubic)[4]);
-
-// A width as the style word's top byte: rounded to a whole pixel and clamped to [0, 255].
-uint32_t PackWidthByte(float width);
-
-// The per-curve style word the patterned, solid and dot shaders read:
-//
-//     width << 24 | cap_front << 16 | cap_back << 8 | join
-//
-// The width takes the top byte, so it is rounded to a WHOLE pixel and clamped to [0, 255]. The low
-// three bytes are the CapCapJoin the pixel shaders unpack. The dot renderer has no joins and masks the
-// low byte off.
-uint32_t PackWidthCapCapJoin(const BezierData& bez);
-
-// One curve's share of PatternBound(): floor(control polygon / spacing) + 1, clamped to
-// maxPatternCount, or 0 when spacing <= 0. Takes the CUBIC control points as stored, since the
-// polygon of a raised curve is what bounds the arc length the point pass measures.
-uint64_t PatternCenterBound(const DirectX::XMFLOAT3& p0, const DirectX::XMFLOAT3& p1, const DirectX::XMFLOAT3& p2, const DirectX::XMFLOAT3& p3, float spacing);
-
-// Whether two curve ends coincide closely enough to be merged. Relative, so it holds at any scale;
-// only used by the merge asserts in the curve upload.
-bool EndpointsMeet(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b);
-
-// A cubic as the renderer stores and uploads it: one 3x4 matrix, row = coordinate (x, y, z), column i =
-// control point Pi, so P3 sits in the fourth (.w) column. The shaders read it as a row_major float3x4
-// and evaluate mul(P, BernsteinWeights(t)).
-DirectX::XMFLOAT3X4 ToControlMatrix(const DirectX::XMFLOAT3 (&cubic)[4]);
-inline DirectX::XMFLOAT3 ControlPoint(const DirectX::XMFLOAT3X4& m, int i) { return { m.m[0][i], m.m[1][i], m.m[2][i] }; }
-
-// segment_map entries: the curve index in the low 30 bits, then whether the stroke goes on past the
-// segment's start (into the segment before it - same curve, or the last one of a merged previous
-// curve) and past its end. Same constants in solid_common / curve_common / line_common.hlsli.
-constexpr uint32_t SegmentHasPrev   = 1u << 30;
-constexpr uint32_t SegmentHasNext   = 1u << 31;
-constexpr uint32_t SegmentCurveMask = SegmentHasPrev - 1u;
+// Fastest PatternCenterBound loop measured so far (all renderers), in ns per curve; infinity when
+// nothing has been measured since the last reset.
+double PatternBoundMinTimeNs();
+void ResetPatternBoundMinTime();
 
 // The per-sample / per-segment layout buffers AllocateBuffers builds. Each renderer asks only for the
 // ones its passes read (BezierRendererBase::LayoutBuffers), so none is built, uploaded or kept for
@@ -157,10 +51,17 @@ enum CurveDirtyBits : uint8_t {
 	DirtyAll        = DirtyPositions | DirtyColors | DirtyStyles | DirtyLayout
 };
 
-void ClearComputeBindings(Axodox::Graphics::GraphicsDeviceContext* context);
-void ClearDrawBindings(Axodox::Graphics::GraphicsDeviceContext* context);
-
-class BezierCurve;
+// Bind nullptr to each listed slot: SRVs of `stage`, or compute UAVs. Every pass (draw, compute, the
+// scans) unbinds exactly the slots it bound once it is done, so the next pass starts from clean slots
+// and a buffer can switch between SRV and UAV. Both take an array (span) or a braced list:
+//   UnbindShaderResources(context, ShaderStage::Vertex, { 3, 4, 5 });
+//   UnbindUnorderedAccessViews(context, { 0 });
+void UnbindShaderResources(Axodox::Graphics::GraphicsDeviceContext* context, Axodox::Graphics::ShaderStage stage,
+	std::span<const uint32_t> slots);
+void UnbindShaderResources(Axodox::Graphics::GraphicsDeviceContext* context, Axodox::Graphics::ShaderStage stage,
+	std::initializer_list<uint32_t> slots);
+void UnbindUnorderedAccessViews(Axodox::Graphics::GraphicsDeviceContext* context, std::span<const uint32_t> slots);
+void UnbindUnorderedAccessViews(Axodox::Graphics::GraphicsDeviceContext* context, std::initializer_list<uint32_t> slots);
 
 // Common part of the four renderers (line, solid, patterned, dots): the curve list, the sample layout,
 // the camera constants and the per-curve upload.
@@ -282,6 +183,16 @@ protected:
 	// every surviving handle. Bulk removal is therefore O(n) once, not O(n) per curve, and a handle's
 	// index stays valid right up to that compaction. Everything that runs after UpdateBuffers - every
 	// Draw pass - sees fully compacted vectors, so TotalCurves() is the live count there.
+	//
+	// cubic_points: one 3x4 matrix per curve, row = coordinate (x, y, z), column i = control point Pi,
+	// so P3 sits in the fourth (.w) column. The shaders read it as a row_major float3x4 and evaluate
+	// mul(P, BernsteinWeights(t)).
+	//
+	// style_words: the per-curve style word the patterned, solid and dot shaders read,
+	//     width << 24 | cap_front << 16 | cap_back << 8 | join
+	// The width takes the top byte, so it is rounded to a WHOLE pixel and clamped to [0, 255]. The low
+	// three bytes are the CapCapJoin the pixel shaders unpack. The dot renderer has no joins and masks
+	// the low byte off.
 	std::vector<DirectX::XMFLOAT3X4> cubic_points; // 1 per curve: columns P0..P3, uploaded as curve_control_points
 	std::vector<UploadColorData>   color_data;    // uploaded as curve_colors
 	std::vector<uint32_t>          style_words;   // width << 24 | cap_front << 16 | cap_back << 8 | join
@@ -373,94 +284,4 @@ private:
 
 	// Staging vector for the sample ranges, kept between uploads so a relayout does not allocate.
 	std::vector<UploadSampleRange> index_scratch;
-};
-
-// An OWNING handle to one curve in one renderer - move-only, like a unique_ptr. The curve is removed
-// from its renderer when the handle is destroyed, when Remove() is called, or when another handle is
-// move-assigned into it. A default-constructed or moved-from handle owns nothing (!valid()), and
-// every accessor below asserts valid().
-//
-// The renderer keeps a pointer back to the handle (BezierRendererBase::owners) so it can rewrite
-// curve_index when removals compact the curve array; the move operations keep that pointer current,
-// so handles may live anywhere - members, arrays, std::vector (reallocation moves them).
-class BezierCurve {
-	friend class BezierRendererBase;
-protected:
-	size_t curve_index = 0;
-	BezierRendererBase* renderer = nullptr;
-
-	BezierCurve(BezierRendererBase* owner, size_t index) : curve_index(index), renderer(owner) {}
-
-	// This curve's slot in each of the renderer's vectors.
-	DirectX::XMFLOAT3X4& points() const { assert(valid()); return renderer->cubic_points[curve_index]; }
-	BezierRendererBase::UploadColorData& color() const { assert(valid()); return renderer->color_data[curve_index]; }
-	uint32_t& style() const { assert(valid()); return renderer->style_words[curve_index]; }
-
-	void store_points(const DirectX::XMFLOAT3 (&cubic)[4]) {
-		points() = ToControlMatrix(cubic);
-		touch(DirtyPositions);
-	}
-
-	// `parts` is a CurveDirtyBits mask; see there. The default keeps any caller that does not say what
-	// it changed on the safe side.
-	inline void touch(uint8_t parts = DirtyAll) { renderer->need_upload = true; renderer->upload_parts |= parts; }
-	inline void touch_layout() { renderer->need_resize = true; }
-
-public:
-	BezierCurve() = default;
-	~BezierCurve() { Remove(); }
-
-	BezierCurve(const BezierCurve&) = delete;
-	BezierCurve& operator=(const BezierCurve&) = delete;
-
-	BezierCurve(BezierCurve&& other) noexcept;
-	// Removes the curve this handle owned (if any), then takes over `other`'s.
-	BezierCurve& operator=(BezierCurve&& other) noexcept;
-
-	// Removes the curve from its renderer; the handle is invalid afterwards. Safe on an invalid handle.
-	// If the curve was part of a merged chain, the chain is SPLIT there: the curve that followed it
-	// starts a new stroke (its Merged() reads false from the next UpdateBuffers on). Keeping it merged
-	// would carry the arc length, the pattern and the joins straight across the gap.
-	void Remove();
-
-	inline bool valid() const { return renderer != nullptr; }
-
-	// Lines and quadratics are raised to cubic here, so the renderer only ever holds cubic points.
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1) { DirectX::XMFLOAT3 c[4]; LinearToCubic(P0, P1, c); store_points(c); }
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2) { DirectX::XMFLOAT3 c[4]; QuadraticToCubic(P0, P1, P2, c); store_points(c); }
-	inline void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3) { const DirectX::XMFLOAT3 c[4] = { P0, P1, P2, P3 }; store_points(c); }
-
-	// The colours are stored at 8 bits per channel, so these return the quantised values.
-	inline DirectX::XMFLOAT3 C0() const { return UnpackFloat3FromR8G8B8A8(color().color_begin); }
-	inline DirectX::XMFLOAT3 C1() const { return UnpackFloat3FromR8G8B8A8(color().color_end); }
-	inline float MinHeight() const { return color().min_height; }
-	inline float MaxHeight() const { return color().max_height; }
-
-	inline void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1) { color().color_begin = PackFloat3ToR8G8B8A8(C0); color().color_end = PackFloat3ToR8G8B8A8(C1); touch(DirtyColors); }
-	inline void HeightRange(float min, float max) { color().min_height = min; color().max_height = max; touch(DirtyColors); }
-
-	// Width is stored as the whole pixel the shaders draw (see PackWidthByte).
-	inline float Width() const { return float(style() >> 24); }
-	inline CurveCap CapFront() const { return static_cast<CurveCap>((style() >> 16) & 0xFFu); }
-	inline CurveCap CapBack() const { return static_cast<CurveCap>((style() >> 8) & 0xFFu); }
-	inline CurveJoin Join() const { return static_cast<CurveJoin>(style() & 0xFFu); }
-	inline float DashLength() const { assert(valid()); return renderer->dash_lengths[curve_index]; }
-	inline float Spacing() const { assert(valid()); return renderer->spacings[curve_index]; }
-
-	inline void Width(float value) { style() = (style() & 0x00FFFFFFu) | (PackWidthByte(value) << 24); touch(DirtyStyles); }
-	inline void Cap(CurveCap front, CurveCap back) { style() = (style() & 0xFF0000FFu) | (uint32_t(front) << 16) | (uint32_t(back) << 8); touch(DirtyStyles); }
-	inline void Join(CurveJoin value) { style() = (style() & ~0xFFu) | uint32_t(value); touch(DirtyStyles); }
-	inline void DashLength(float value) { assert(valid()); renderer->dash_lengths[curve_index] = value; touch(DirtyStyles); }
-	inline void Spacing(float value) { assert(valid()); renderer->spacings[curve_index] = value; touch(DirtyStyles); }
-
-	inline void Dot() { Cap(CurveCap::Round, CurveCap::Round); renderer->dash_lengths[curve_index] = 0.f; }
-
-	inline unsigned Resolution() const { assert(valid()); return renderer->resolutions[curve_index]; }
-	inline void Resolution(unsigned value) { assert(valid()); renderer->resolutions[curve_index] = value; touch_layout(); }
-
-	// See BezierData::merge_with_previous. A layout change, not a plain upload: the chain boundaries
-	// live in the curve_begins bits, which are rebuilt only when the buffers are laid out. Setting the
-	// value it already has does nothing, so this is safe to call every frame.
-	inline bool Merged() const { assert(valid()); return renderer->merged[curve_index] != 0; }
-	inline void Merged(bool value) { if (Merged() != value) { renderer->merged[curve_index] = value ? 1u : 0u; touch_layout(); } }
 };

@@ -2,120 +2,41 @@
 #include <algorithm>
 #include <bit>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <execution>
 #include <limits>
+#include <numeric>
 
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
-static BezierData FromCubic(const XMFLOAT3 (&cubic)[4]) {
-	BezierData result;
-	result.P0 = cubic[0];
-	result.P1 = cubic[1];
-	result.P2 = cubic[2];
-	result.P3 = cubic[3];
-	return result;
-}
-
-BezierData Linear(XMFLOAT3 P0, XMFLOAT3 P1) {
-	XMFLOAT3 cubic[4];
-	LinearToCubic(P0, P1, cubic);
-	return FromCubic(cubic);
-}
-
-BezierData Quadratic(XMFLOAT3 P0, XMFLOAT3 P1, XMFLOAT3 P2) {
-	XMFLOAT3 cubic[4];
-	QuadraticToCubic(P0, P1, P2, cubic);
-	return FromCubic(cubic);
-}
-
-BezierData Cubic(XMFLOAT3 P0, XMFLOAT3 P1, XMFLOAT3 P2, XMFLOAT3 P3) {
-	const XMFLOAT3 cubic[4] = { P0, P1, P2, P3 };
-	return FromCubic(cubic);
-}
-
-unsigned next_pow2(unsigned x) { return x <= 1u ? 1u : 1u << (std::numeric_limits<unsigned>::digits - std::countl_zero(x - 1u)); }
+constexpr uint32_t SegmentHasPrev = 1u << 30;
+constexpr uint32_t SegmentHasNext = 1u << 31;
+constexpr uint32_t SegmentCurveMask = SegmentHasPrev - 1u;
 
 uint32_t FitCapacity(uint32_t allocated, uint32_t required) {
-	const uint32_t fitted = next_pow2(std::max(required, 1u));
-	if (allocated < fitted) return fitted;
-	if (fitted <= allocated / 4u) return fitted;
+	uint32_t fitted = required > 0u ? 1u << (std::numeric_limits<unsigned>::digits - std::countl_zero(required - 1u)) : 1u;
+	if (allocated < fitted || fitted <= allocated / 4u) return fitted;
 	return allocated;
 }
 
-uint32_t PackFloat3ToR8G8B8A8(const XMFLOAT3& color) {
-	const float r = std::clamp(color.x, 0.0f, 1.0f);
-	const float g = std::clamp(color.y, 0.0f, 1.0f);
-	const float b = std::clamp(color.z, 0.0f, 1.0f);
-
-	const uint32_t ir = static_cast<uint32_t>(r * 255.0f + 0.5f);
-	const uint32_t ig = static_cast<uint32_t>(g * 255.0f + 0.5f);
-	const uint32_t ib = static_cast<uint32_t>(b * 255.0f + 0.5f);
-	const uint32_t ia = 255u;
-
-	return (ia << 24) | (ib << 16) | (ig << 8) | ir;
+void UnbindShaderResources(GraphicsDeviceContext* context, ShaderStage stage, std::span<const uint32_t> slots) {
+	for (uint32_t slot : slots)
+		context->BindShaderResourceView(nullptr, stage, slot);
 }
 
-XMFLOAT3 UnpackFloat3FromR8G8B8A8(uint32_t color) {
-	return XMFLOAT3{
-		float(color & 0xFFu) / 255.0f,
-		float((color >> 8) & 0xFFu) / 255.0f,
-		float((color >> 16) & 0xFFu) / 255.0f
-	};
+void UnbindShaderResources(GraphicsDeviceContext* context, ShaderStage stage, std::initializer_list<uint32_t> slots) {
+	UnbindShaderResources(context, stage, std::span<const uint32_t>(slots.begin(), slots.size()));
 }
 
-uint32_t PackWidthByte(float width) {
-	return static_cast<uint32_t>(std::clamp(width, 0.f, 255.f) + 0.5f);
-}
-
-uint32_t PackWidthCapCapJoin(const BezierData& bez) {
-	return (PackWidthByte(bez.width) << 24) |
-		(uint32_t(bez.cap_front) << 16) |
-		(uint32_t(bez.cap_back) << 8) |
-		uint32_t(bez.join);
-}
-
-XMFLOAT3 LerpFloat3(const XMFLOAT3& a, const XMFLOAT3& b, float t) {
-	XMFLOAT3 out;
-	XMStoreFloat3(&out, XMVectorLerp(XMLoadFloat3(&a), XMLoadFloat3(&b), t));
-	return out;
-}
-
-void LinearToCubic(const XMFLOAT3& p0, const XMFLOAT3& p1, XMFLOAT3 (&cubic)[4]) {
-	cubic[0] = p0;
-	cubic[1] = LerpFloat3(p0, p1, 1.0f / 3.0f);
-	cubic[2] = LerpFloat3(p0, p1, 2.0f / 3.0f);
-	cubic[3] = p1;
-}
-
-void QuadraticToCubic(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOAT3& p2, XMFLOAT3 (&cubic)[4]) {
-	cubic[0] = p0;
-	cubic[1] = LerpFloat3(p0, p1, 2.0f / 3.0f);
-	cubic[2] = LerpFloat3(p1, p2, 1.0f / 3.0f);
-	cubic[3] = p2;
-}
-
-constexpr uint32_t computeSrvSlots = 5u;
-constexpr uint32_t computeUavSlots = 5u;
-void ClearComputeBindings(GraphicsDeviceContext* context) {
-	for (uint32_t slot = 0; slot < computeSrvSlots; ++slot)
-		context->BindShaderResourceView(nullptr, ShaderStage::Compute, slot);
-	for (uint32_t slot = 0; slot < computeUavSlots; ++slot)
+void UnbindUnorderedAccessViews(GraphicsDeviceContext* context, std::span<const uint32_t> slots) {
+	for (uint32_t slot : slots)
 		context->BindUnorderedAccessView(nullptr, slot);
 }
 
-// t0..t8: t8 is the highest slot any vertex shader binds (the patterned renderer's curve_vs, see
-// BezierRenderer::Draw).
-constexpr uint32_t vertexSrvSlots = 9u;
-// t1 pattern positions - the only pixel-stage SRV any renderer binds (the chain's end is marked in
-// that data, so no slot range or pattern offsets reach the pixel stage). Slot 0 is never bound to the
-// pixel stage, so the loop starts at 1.
-constexpr uint32_t pixelSrvSlots = 2u;
-void ClearDrawBindings(GraphicsDeviceContext* context) {
-	for (uint32_t slot = 0; slot < vertexSrvSlots; ++slot)
-		context->BindShaderResourceView(nullptr, ShaderStage::Vertex, slot);
-	for (uint32_t slot = 1; slot < pixelSrvSlots; ++slot)
-		context->BindShaderResourceView(nullptr, ShaderStage::Pixel, slot);
+void UnbindUnorderedAccessViews(GraphicsDeviceContext* context, std::initializer_list<uint32_t> slots) {
+	UnbindUnorderedAccessViews(context, std::span<const uint32_t>(slots.begin(), slots.size()));
 }
 
 
@@ -146,13 +67,22 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve) {
 	assert(curve.resolution >= 2u);
 
 	const size_t index = owners.size();
-	const XMFLOAT3 cubic[4] = { curve.P0, curve.P1, curve.P2, curve.P3 };
-	cubic_points.push_back(ToControlMatrix(cubic));
+	// Rows x / y / z, columns P0..P3 - see cubic_points.
+	cubic_points.push_back(XMFLOAT3X4{
+		curve.P0.x, curve.P1.x, curve.P2.x, curve.P3.x,
+		curve.P0.y, curve.P1.y, curve.P2.y, curve.P3.y,
+		curve.P0.z, curve.P1.z, curve.P2.z, curve.P3.z
+	});
 	color_data.push_back(UploadColorData{
 		PackFloat3ToR8G8B8A8(curve.C0), PackFloat3ToR8G8B8A8(curve.C1),
 		curve.min_height, curve.max_height
 	});
-	style_words.push_back(PackWidthCapCapJoin(curve));
+	// width << 24 | cap_front << 16 | cap_back << 8 | join - see style_words.
+	style_words.push_back(
+		(static_cast<uint32_t>(std::clamp(curve.width, 0.f, 255.f) + 0.5f) << 24) |
+		(uint32_t(curve.cap_front) << 16) |
+		(uint32_t(curve.cap_back) << 8) |
+		uint32_t(curve.join));
 	spacings.push_back(curve.spacing);
 	dash_lengths.push_back(curve.dash_length);
 	resolutions.push_back(curve.resolution);
@@ -214,61 +144,14 @@ void BezierRendererBase::CompactRemoved() {
 	removed_count = 0;
 }
 
-// --- BezierCurve ----------------------------------------------------------------------------------
+// Fastest UpdatePatternBound loop seen so far, in nanoseconds PER CURVE (the loop over every curve
+// divided by the curve count, so renderers with different curve counts are comparable). A single
+// PatternCenterBound call is a few ns - below the clock's resolution - so the loop is what gets timed.
+// Shared by all renderers; infinity until the first measurement or after a reset.
+static double pattern_bound_min_ns = std::numeric_limits<double>::infinity();
 
-BezierCurve::BezierCurve(BezierCurve&& other) noexcept
-	: curve_index(other.curve_index), renderer(other.renderer) {
-	if (renderer) renderer->owners[curve_index] = this;
-	other.renderer = nullptr;
-}
-
-BezierCurve& BezierCurve::operator=(BezierCurve&& other) noexcept {
-	if (this == &other) return *this;
-
-	Remove();
-
-	curve_index = other.curve_index;
-	renderer = other.renderer;
-	if (renderer) renderer->owners[curve_index] = this;
-	other.renderer = nullptr;
-	return *this;
-}
-
-void BezierCurve::Remove() {
-	if (!renderer) return;
-
-	assert(renderer->owners[curve_index] == this);
-	renderer->owners[curve_index] = nullptr;
-	++renderer->removed_count;
-	renderer->need_resize = true;
-	renderer = nullptr;
-}
-
-uint64_t PatternCenterBound(const XMFLOAT3& p0, const XMFLOAT3& p1, const XMFLOAT3& p2, const XMFLOAT3& p3, float spacing) {
-	if (!(spacing > 0.f)) return 0;
-
-	const float polygon =
-		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p1) - XMLoadFloat3(&p0))) +
-		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p2) - XMLoadFloat3(&p1))) +
-		XMVectorGetX(XMVector3Length(XMLoadFloat3(&p3) - XMLoadFloat3(&p2)));
-
-	const double centers = std::floor(static_cast<double>(polygon) / static_cast<double>(spacing)) + 1.0;
-	return static_cast<uint64_t>(std::clamp(centers, 0.0, static_cast<double>(maxPatternCount)));
-}
-
-XMFLOAT3X4 ToControlMatrix(const XMFLOAT3 (&cubic)[4]) {
-	return XMFLOAT3X4{
-		cubic[0].x, cubic[1].x, cubic[2].x, cubic[3].x,
-		cubic[0].y, cubic[1].y, cubic[2].y, cubic[3].y,
-		cubic[0].z, cubic[1].z, cubic[2].z, cubic[3].z
-	};
-}
-
-bool EndpointsMeet(const XMFLOAT3& a, const XMFLOAT3& b) {
-	const XMVECTOR va = XMLoadFloat3(&a), vb = XMLoadFloat3(&b);
-	const float scale = std::max(1.0f, XMVectorGetX(XMVectorMax(XMVector3Length(va), XMVector3Length(vb))));
-	return XMVectorGetX(XMVector3Length(va - vb)) <= 1e-4f * scale;
-}
+double PatternBoundMinTimeNs() { return pattern_bound_min_ns; }
+void ResetPatternBoundMinTime() { pattern_bound_min_ns = std::numeric_limits<double>::infinity(); }
 
 bool BezierRendererBase::IsChainStart(size_t index) const {
 	return index == 0 || merged[index] == 0;
@@ -410,12 +293,45 @@ void BezierRendererBase::UploadCameraData(const XMMATRIX& view_proj, GraphicsDev
 }
 
 void BezierRendererBase::UpdatePatternBound() {
-	uint64_t bound = 0;
-	for (size_t curveIndex = 0; curveIndex < owners.size(); ++curveIndex) {
-		const XMFLOAT3X4& p = cubic_points[curveIndex];
-		bound += PatternCenterBound(ControlPoint(p, 0), ControlPoint(p, 1), ControlPoint(p, 2), ControlPoint(p, 3), spacings[curveIndex]);
+	const auto start = std::chrono::steady_clock::now();
+	// cubic_points and spacings are parallel vectors (one entry per curve), so the two-range overload
+	// pairs them up without an index. par_unseq: each curve is independent and the sum is
+	// associative, so the work can be split across threads and vectorised in any order.
+	const uint64_t bound = std::transform_reduce(std::execution::par_unseq,
+		cubic_points.begin(), cubic_points.end(), spacings.begin(), uint64_t{ 0 },
+		std::plus<>{},
+		[](const XMFLOAT3X4& cubic, float spacing) {
+			if (!(spacing > 0.f)) return static_cast<uint64_t>(0);
+
+			XMVECTOR x = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(cubic.m[0]));
+			XMVECTOR y = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(cubic.m[1]));
+			XMVECTOR z = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(cubic.m[2]));
+			XMVECTOR dx = XMVectorSubtract(XMVectorSwizzle<1, 2, 3, 3>(x), x);
+			XMVECTOR dy = XMVectorSubtract(XMVectorSwizzle<1, 2, 3, 3>(y), y);
+			XMVECTOR dz = XMVectorSubtract(XMVectorSwizzle<1, 2, 3, 3>(z), z);
+			XMVECTOR edges = XMVectorSqrt(XMVectorMultiplyAdd(dz, dz, XMVectorMultiplyAdd(dy, dy, XMVectorMultiply(dx, dx))));
+			float polygon = XMVectorGetX(XMVector4Dot(edges, XMVectorSplatOne()));
+
+			const float centers = std::floor(polygon / spacing) + 1.f;
+			constexpr float cap = static_cast<float>(maxPatternCount);
+			return static_cast<uint64_t>(centers < cap ? centers : cap);
+		});
+	const auto elapsed = std::chrono::steady_clock::now() - start;
+
+	if (!owners.empty()) {
+		const double ns_per_curve = std::chrono::duration<double, std::nano>(elapsed).count() / static_cast<double>(owners.size());
+		pattern_bound_min_ns = std::min(pattern_bound_min_ns, ns_per_curve);
 	}
 	pattern_upper_bound = static_cast<uint32_t>(std::min<uint64_t>(bound, maxPatternCount));
+}
+
+// Whether `prev` ends where `next` starts: P3 of `prev` (its last column) against P0 of `next` (its
+// first column) - see cubic_points.
+bool EndpointsMeet(const XMFLOAT3X4& prev, const XMFLOAT3X4& next) {
+	const XMVECTOR va = XMVectorSet(prev.m[0][3], prev.m[1][3], prev.m[2][3], 0.f);
+	const XMVECTOR vb = XMVectorSet(next.m[0][0], next.m[1][0], next.m[2][0], 0.f);
+	const float scale = std::max(1.0f, XMVectorGetX(XMVectorMax(XMVector3Length(va), XMVector3Length(vb))));
+	return XMVectorGetX(XMVector3Length(va - vb)) <= 1e-4f * scale;
 }
 
 void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t parts) {
@@ -429,14 +345,22 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 		// sides of it are built as if the stroke ran on unbroken, so a gap would leave a hole. The
 		// tolerance is relative, so it holds at any scene scale.
 		for (size_t curveIndex = 1; curveIndex < owners.size(); ++curveIndex)
-			assert((IsChainStart(curveIndex) || EndpointsMeet(ControlPoint(cubic_points[curveIndex - 1u], 3), ControlPoint(cubic_points[curveIndex], 0))) &&
+			assert((IsChainStart(curveIndex) || EndpointsMeet(cubic_points[curveIndex - 1u], cubic_points[curveIndex])) &&
 				"merge_with_previous on a curve that does not start where the previous one ends");
 #endif
+		// CPU time of the Map(WRITE_DISCARD) + copy + Unmap; the GPU reads the data when a pass uses it,
+		// so there is no separate GPU copy to time. Only recorded on frames that upload, so the
+		// average is over uploads, not over frames.
+		profiler.begin_cpu("upload points");
 		curve_control_points->Upload(std::span<const XMFLOAT3X4>{ cubic_points }, context);
+		profiler.end_cpu("upload points");
 	}
 
-	if (parts & DirtyColors)
+	if (parts & DirtyColors) {
+		profiler.begin_cpu("upload colors");
 		curve_colors->Upload(std::span<const UploadColorData>{ color_data }, context);
+		profiler.end_cpu("upload colors");
+	}
 
 	// Disjoint and back to back, merged or not: a curve's first sample is the one right after the
 	// previous curve's last (see BezierData::merge_with_previous).

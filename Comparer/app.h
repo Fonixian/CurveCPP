@@ -67,7 +67,7 @@ private:
 	// frame instead. x_offset slides the whole copy sideways so the copies can be compared;
 	// BezierCurve itself is renderer-agnostic, so the same Scene type serves all three.
 	//
-	// Every BezierCurve here OWNS its curve (see bezier_common.h): destroying the handle removes the
+	// Every BezierCurve here OWNS its curve (see BezierData.h): destroying the handle removes the
 	// curve from its renderer. That is how the Test screen removes curves - it simply erases entries
 	// from test_curves - and why a Scene is move-only.
 	//

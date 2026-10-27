@@ -1,6 +1,5 @@
 #include "SegmentedScan.h"
 #include "pipeline.h"
-#ifdef PLATFORM_WINDOWS
 
 using namespace Axodox::Graphics;
 
@@ -38,10 +37,9 @@ SegmentedScan<T>::SegmentedScan(const GraphicsDevice& device, uint32_t maxElemen
         level.capacity = levelCapacity;
 
         auto blockCount = DivRoundUp(levelCapacity, GroupSize);
-        // One T per block, matching Values' element type (BlockSums in segmented_scan_common.hlsli).
         level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<T>(blockCount));
         level.blockFlags = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
-        level.needsCarry = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(levelCapacity));
+        level.firstBegin = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
         level.constants = std::make_unique<ConstantBuffer>(device, ScanConstants{});
 
         _levels.push_back(std::move(level));
@@ -92,18 +90,17 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, 
     BindFlags(flags, context);                      // t0, read-only
     level.blockSums->BindUnordered(2u, context);
     level.blockFlags->BindUnordered(3u, context);
-    level.needsCarry->BindUnordered(4u, context);
+    level.firstBegin->BindUnordered(4u, context);
 
     _localScan->Run({ blockCount, 1u, 1u }, context);
 
     if (blockCount > 1u) {
-        // The next level reads blockFlags through its SRV; drop the UAV it is still bound to here.
         context->BindUnorderedAccessView(nullptr, 3u);
         ScanLevel(*level.blockSums, *level.blockFlags, blockCount, levelIndex + 1u, context);
         level.constants->Bind(ShaderStage::Compute, 0u, context);
         values.BindUnordered(0u, context);
         level.blockSums->BindUnordered(2u, context);
-        level.needsCarry->BindUnordered(4u, context);
+        level.firstBegin->BindUnordered(4u, context);
 
         _addBlockOffsets->Run({ blockCount, 1u, 1u }, context);
     }
@@ -114,8 +111,5 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, 
     context->BindUnorderedAccessView(nullptr, 4u);
 }
 
-// The element types the shaders exist for. A new T also needs its SegmentedScanShaders specialisation
-// above and the two wrapper .hlsl files.
 template class SegmentedScan<float>;
 template class SegmentedScan<DirectX::XMFLOAT2>;
-#endif

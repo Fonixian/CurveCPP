@@ -134,7 +134,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 		stroke.cap_front = GalleryFrontCap(i);
 		stroke.cap_back = GalleryBackCap(i);
 		stroke.resolution = GalleryResolution;
-		stroke.C0 = { 1.0f, 1.0f, 1.0f };
+		stroke.C0 = XMFLOAT3{ 1.0f, 1.0f, 1.0f };
 		stroke.C1 = gallery_color;
 		scene.gallery[i] = renderer.Add(stroke);
 	}
@@ -850,6 +850,8 @@ void App::ProfilerGui()
 
 	static constexpr TimingRow rows[] = {
 		{ "update",    "update",  true  },
+		{ "  points",  "upload points", true },
+		{ "  colors",  "upload colors", true },
 		{ "calc",      "calc",    false },
 		{ "scan",      "scan",    false },
 		{ "pattern",   "pattern", false },
@@ -915,6 +917,14 @@ void App::ProfilerGui()
 			"GPU rows are timestamp queries read back a few frames late, so they lag the picture "
 			"slightly. \"pattern\" covers ini + calc together, and no longer carries a readback "
 			"stall on the frames that recount, so it should stay flat across a scene change.");
+
+		ImGui::Separator();
+		// Min over every UpdatePatternBound() call (any renderer), per curve - see bezier_common.cpp.
+		const double bound_min_ns = PatternBoundMinTimeNs();
+		if (std::isfinite(bound_min_ns)) ImGui::Text("pattern bound min: %.2f ns / curve", bound_min_ns);
+		else ImGui::TextDisabled("pattern bound min: not measured yet");
+		ImGui::SameLine();
+		if (ImGui::Button("Reset min")) ResetPatternBoundMinTime();
 
 		ImGui::Separator();
 		ImGui::TextUnformatted("pattern centres");
