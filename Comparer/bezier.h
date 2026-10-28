@@ -9,8 +9,6 @@ public:
 
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
-	uint32_t PatternCapacity() const override { return patterns_allocated; }
-
 protected:
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
@@ -34,8 +32,6 @@ private:
 	static_assert(sizeof(UploadPatternStyle) == 12, "UploadPatternStyle must match PatternStyle in the shaders");
 
 	std::vector<UploadPatternStyle> style_scratch;
-
-	uint32_t patterns_allocated = 0;
 
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances;
 	std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> pattern_offsets;

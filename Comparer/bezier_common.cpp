@@ -157,6 +157,20 @@ bool BezierRendererBase::IsChainStart(size_t index) const {
 	return index == 0 || merged[index] == 0;
 }
 
+void BezierRendererBase::AllocateSampleMap(const GraphicsDevice& device, uint32_t points_required) {
+	bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
+}
+
+// Always fewer segments than samples, so the point capacity fits the segment map too.
+void BezierRendererBase::AllocateSegmentMap(const GraphicsDevice& device, uint32_t points_required) {
+	segment_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
+}
+
+// One bit per sample, packed 32 to a word.
+void BezierRendererBase::AllocateChainBegins(const GraphicsDevice& device, uint32_t points_required) {
+	curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
+}
+
 void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
 	// Removal only ever raises need_resize, so this is the one place it has to be folded in - and it
 	// must happen before anything below reads the per-curve vectors.
@@ -185,17 +199,9 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	// uploads at the end of this function or by the next point pass, so nothing has to be carried over.
 	const uint32_t points_required = FitCapacity(points_allocated, total_points);
 	const uint32_t curves_required = FitCapacity(curves_allocated, curve_count);
-	const uint8_t layout = LayoutBuffers();
 
 	if (points_allocated != points_required) {
-		if (layout & LayoutChainBegins)
-			curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
-		if (layout & LayoutSampleMap)
-			bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
-		// Always fewer segments than samples, so the point capacity fits the segment map too.
-		if (layout & LayoutSegmentMap)
-			segment_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
-		AllocatePointBuffers(device, points_required);
+		AllocatePointBuffers(device, points_required); // also creates the layout buffers this renderer reads
 		points_allocated = points_required;
 	}
 
@@ -211,9 +217,9 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	std::vector<uint32_t> index_map;
 	std::vector<uint32_t> curve_begin_bits;
 	std::vector<uint32_t> segment_entries;
-	if (layout & LayoutSampleMap) index_map.reserve(total_points);
-	if (layout & LayoutChainBegins) curve_begin_bits.assign(std::max((points_allocated + 31u) / 32u, 1u), 0u);
-	if (layout & LayoutSegmentMap) segment_entries.reserve(total_segments);
+	if (bezier_data_map) index_map.reserve(total_points);
+	if (curve_begins) curve_begin_bits.assign(std::max((points_allocated + 31u) / 32u, 1u), 0u);
+	if (segment_map) segment_entries.reserve(total_segments);
 
 	uint32_t current = 0;
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
@@ -228,16 +234,16 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 		// t = 0, the same point as the previous curve's t = 1 by the shared-endpoint assumption). The
 		// point pass measures a zero chord from the previous curve's last sample to it, so the arc
 		// length runs on unbroken.
-		if ((layout & LayoutChainBegins) && chain_start)
+		if (curve_begins && chain_start)
 			curve_begin_bits[current / 32u] |= (1u << (current % 32u));
 
-		if (layout & LayoutSampleMap)
+		if (bezier_data_map)
 			index_map.insert(index_map.end(), resolution, curveIndex);
 
 		// The curve's resolution - 1 segments, and none for the step to the next curve, which is how the
 		// draws come to have no bridge in them. Inside the curve the stroke always goes on; at its two
 		// ends only into a merged neighbour.
-		if (layout & LayoutSegmentMap) {
+		if (segment_map) {
 			const bool joined_after = curveIndex + 1u < curve_count && !IsChainStart(curveIndex + 1u);
 			for (uint32_t j = 0; j + 1u < resolution; ++j)
 				segment_entries.push_back(curveIndex
@@ -248,11 +254,11 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 		current += resolution;
 	}
 	assert(current == total_points);
-	assert(!(layout & LayoutSegmentMap) || segment_entries.size() == total_segments);
+	assert(!segment_map || segment_entries.size() == total_segments);
 
-	if (layout & LayoutSampleMap) bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
-	if (layout & LayoutChainBegins) curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
-	if (layout & LayoutSegmentMap) segment_map->Upload(std::span<const uint32_t>{ segment_entries }, context);
+	if (bezier_data_map) bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
+	if (curve_begins) curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
+	if (segment_map) segment_map->Upload(std::span<const uint32_t>{ segment_entries }, context);
 
 	// Everything: a buffer that was just (re)allocated holds nothing yet.
 	UploadCurves(context, DirtyAll);

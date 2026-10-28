@@ -26,11 +26,12 @@ struct LineVSOutput {
     float3 Color : COLOR0;
 };
 
+// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed) {
     return float4(
-        float( packed        & 0xFF) / 255.0,
-        float((packed >>  8) & 0xFF) / 255.0,
         float((packed >> 16) & 0xFF) / 255.0,
+        float((packed >>  8) & 0xFF) / 255.0,
+        float( packed        & 0xFF) / 255.0,
         float((packed >> 24) & 0xFF) / 255.0);
 }
 

@@ -29,6 +29,8 @@ BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
 }
 
 void BezierDotRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
+	AllocateSampleMap(device, points_required);   // point pass
+	AllocateChainBegins(device, points_required); // distance scan
 	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
 }
 
@@ -76,11 +78,11 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context) {
 }
 
 void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device) {
-	const uint32_t required = FitCapacity(dots_allocated, pattern_upper_bound);
-	if (dots && dots_allocated == required) return;
+	const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
+	if (dots && patterns_allocated == required) return;
 
 	dots.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<DotSample>(required)));
-	dots_allocated = required;
+	patterns_allocated = required;
 }
 
 void BezierDotRenderer::CountDots(GraphicsDeviceContext* context) {

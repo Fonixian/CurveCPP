@@ -28,9 +28,10 @@ struct DotVSOutput {
     nointerpolation uint CapCapJoin : TEXCOORD1;
 };
 
+// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed) {
     uint4 unpacked = uint4(packed, packed, packed, packed);
-    unpacked >>= uint4(0, 8, 16, 24);
+    unpacked >>= uint4(16, 8, 0, 24);
     unpacked &= 0xFF;
     return float4(unpacked) / 255.0;
 }

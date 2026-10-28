@@ -23,6 +23,9 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 }
 
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
+	AllocateSampleMap(device, points_required);   // point pass
+	AllocateChainBegins(device, points_required); // distance scan, curve_pattern_calc
+	AllocateSegmentMap(device, points_required);  // curve-body draw
 	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
 }
 
