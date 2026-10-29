@@ -6,16 +6,13 @@
 class BezierRenderer : public BezierRendererBase {
 public:
 	explicit BezierRenderer(const Axodox::Graphics::GraphicsDevice& device);
-
 	void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
-
 protected:
 	void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
 	void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
 	void UploadStyles(Axodox::Graphics::GraphicsDeviceContext* context) override;
 	void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts) override;
-
 private:
 	void RunPointPass(Axodox::Graphics::GraphicsDeviceContext* context);
 	void AllocatePatternBuffer(const Axodox::Graphics::GraphicsDevice& device);

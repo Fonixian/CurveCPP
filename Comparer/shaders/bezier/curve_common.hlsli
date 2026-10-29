@@ -10,8 +10,8 @@ static const uint CurveCapTriangleIn  = 4u;
 static const uint CurveJoinRound  = 0u;
 static const uint CurveJoinSquare = 1u;
 
-// segment_map entries (bezier_common.h): the curve index in the low 30 bits, then whether the stroke
-// goes on past the segment's start and past its end.
+// bezier_data_map entries (bezier_common.h), one per sample: the curve index in the low 30 bits, then
+// whether the stroke goes on past the start and past the end of the segment starting on that sample.
 static const uint SegmentCurveMask = 0x3FFFFFFFu;
 static const uint SegmentHasPrev   = 0x40000000u;
 static const uint SegmentHasNext   = 0x80000000u;

@@ -11,6 +11,7 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
+// bezier_data_map entry layout - keep in step with the *_common.hlsli files.
 constexpr uint32_t SegmentHasPrev = 1u << 30;
 constexpr uint32_t SegmentHasNext = 1u << 31;
 constexpr uint32_t SegmentCurveMask = SegmentHasPrev - 1u;
@@ -161,11 +162,6 @@ void BezierRendererBase::AllocateSampleMap(const GraphicsDevice& device, uint32_
 	bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
 }
 
-// Always fewer segments than samples, so the point capacity fits the segment map too.
-void BezierRendererBase::AllocateSegmentMap(const GraphicsDevice& device, uint32_t points_required) {
-	segment_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
-}
-
 // One bit per sample, packed 32 to a word.
 void BezierRendererBase::AllocateChainBegins(const GraphicsDevice& device, uint32_t points_required) {
 	curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
@@ -185,14 +181,10 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 	if (total_points < 2u || curve_count == 0u) {
 		total_points = 0;
-		total_segments = 0;
 		// UploadCurves, which normally recomputes it, is not reached on this path.
 		pattern_upper_bound = 0;
 		return;
 	}
-
-	// resolution - 1 segments per curve, and none for the step from one curve to the next.
-	total_segments = total_points - curve_count;
 
 	// Grow when full, shrink once a quarter or less is in use - see FitCapacity(). Shrinking goes
 	// through exactly the same reset() as growing; every buffer below is rewritten from scratch by the
@@ -216,10 +208,8 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 
 	std::vector<uint32_t> index_map;
 	std::vector<uint32_t> curve_begin_bits;
-	std::vector<uint32_t> segment_entries;
 	if (bezier_data_map) index_map.reserve(total_points);
 	if (curve_begins) curve_begin_bits.assign(std::max((points_allocated + 31u) / 32u, 1u), 0u);
-	if (segment_map) segment_entries.reserve(total_segments);
 
 	uint32_t current = 0;
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
@@ -237,28 +227,27 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 		if (curve_begins && chain_start)
 			curve_begin_bits[current / 32u] |= (1u << (current % 32u));
 
-		if (bezier_data_map)
-			index_map.insert(index_map.end(), resolution, curveIndex);
-
-		// The curve's resolution - 1 segments, and none for the step to the next curve, which is how the
-		// draws come to have no bridge in them. Inside the curve the stroke always goes on; at its two
-		// ends only into a merged neighbour.
-		if (segment_map) {
+		// Sample j starts the curve's segment j (j < resolution - 1). Inside the curve the stroke always
+		// goes on; at its two ends only into a merged neighbour. The last sample starts no segment - the
+		// step to the next curve - so it gets the bare curve index, and the draws cull its instance:
+		// that is how they come to have no bridge in them.
+		if (bezier_data_map) {
+			assert(curveIndex <= SegmentCurveMask);
 			const bool joined_after = curveIndex + 1u < curve_count && !IsChainStart(curveIndex + 1u);
 			for (uint32_t j = 0; j + 1u < resolution; ++j)
-				segment_entries.push_back(curveIndex
+				index_map.push_back(curveIndex
 					| ((j > 0u || !chain_start) ? SegmentHasPrev : 0u)
 					| ((j + 2u < resolution || joined_after) ? SegmentHasNext : 0u));
+			index_map.push_back(curveIndex);
 		}
 
 		current += resolution;
 	}
 	assert(current == total_points);
-	assert(!segment_map || segment_entries.size() == total_segments);
+	assert(!bezier_data_map || index_map.size() == total_points);
 
 	if (bezier_data_map) bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
 	if (curve_begins) curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
-	if (segment_map) segment_map->Upload(std::span<const uint32_t>{ segment_entries }, context);
 
 	// Everything: a buffer that was just (re)allocated holds nothing yet.
 	UploadCurves(context, DirtyAll);

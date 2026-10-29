@@ -9,10 +9,10 @@ cbuffer CameraData : register(b1) {
 
 
 StructuredBuffer<float2>       Distances          : register(t0); // arc length from the chain's start, per sample: x world, y screen (px)
-// t1 and t2 are unused (the chain ends come with SegmentMap now, and the screen arc length used to have
+// t1 and t2 are unused (the chain ends come with SampleMap now, and the screen arc length used to have
 // its own buffer); the slot numbers match the solid renderer's.
 StructuredBuffer<Cubic>        CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
-StructuredBuffer<uint>         SegmentMap         : register(t4); // per segment: curve | SegmentHasPrev | SegmentHasNext
+StructuredBuffer<uint>         SampleMap          : register(t4); // per sample: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<uint4>        CurveColors        : register(t5);
 StructuredBuffer<PatternStyle> CurveStyles        : register(t6);
 StructuredBuffer<uint2>        CurveIndices       : register(t7);
@@ -107,23 +107,25 @@ bool InnerMiterOverlaps(float2 dirAB, float cosTurn, float2 bisector, float leng
     return l > lengthAB || l > lengthCB;
 }
 
-// Drawn as DrawInstanced(5, total_segments), one instance per segment_map entry, i.e. per real
-// segment - there is no instance for the step from one curve to the next, so no bridge to throw away.
-PatternedVSOutput main(uint vertexId : SV_VertexID, uint segmentIndex : SV_InstanceID) {
+// Drawn as DrawInstanced(5, total_points), one instance per sample: instance i is the segment from
+// sample i to i + 1. The instance on a curve's last sample would be the step to the next curve, so it
+// is culled straight after the map and range loads - no bridge gets drawn.
+PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID) {
     PatternedVSOutput o = (PatternedVSOutput)0;
     bool nearSide = vertexId < 2u;
 
-    // Every curve has one segment fewer than samples, so counting segments skips exactly one sample
-    // per curve before this one: segment s of curve c starts on sample s + c. The entry also says
-    // whether the stroke goes on past either end of the segment.
-    uint segment = SegmentMap[segmentIndex];
-    uint currentCurve = segment & SegmentCurveMask;
-    bool hasPrev = (segment & SegmentHasPrev) != 0u;
-    bool hasNext = (segment & SegmentHasNext) != 0u;
-    uint sampleIndex = segmentIndex + currentCurve;
+    // The segment starting on this sample: its curve, and whether the stroke goes on past either end.
+    uint entry = SampleMap[sampleIndex];
+    uint currentCurve = entry & SegmentCurveMask;
+    uint2 currentRange = CurveIndices[currentCurve];
+    if (sampleIndex == currentRange.y) { // the curve's last sample starts no segment
+        o.Position = 0.0 / 0.0;
+        return o;
+    }
+    bool hasPrev = (entry & SegmentHasPrev) != 0u;
+    bool hasNext = (entry & SegmentHasNext) != 0u;
 
     Cubic currentCubic = LoadCubic(currentCurve);
-    uint2 currentRange = CurveIndices[currentCurve];
 
     float tStart = SampleT(currentRange, sampleIndex);
     float tEnd = SampleT(currentRange, sampleIndex + 1u);

@@ -16,7 +16,7 @@ struct Cubic {
 };
 
 StructuredBuffer<Cubic>     control_points : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
-StructuredBuffer<uint>      SegmentMap     : register(t4); // per segment: curve | SegmentHasPrev | SegmentHasNext
+StructuredBuffer<uint>      SampleMap      : register(t4); // per sample: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<ColorData> colors         : register(t5);
 StructuredBuffer<Indices>   indices        : register(t6);
 
@@ -49,19 +49,22 @@ float3 SampleColor(uint4 color, float height, float t) {
     return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
 }
 
-// Drawn as a LINELIST of 2 * total_segments vertices, one line per segment_map entry, i.e. per real
-// segment: there is no line for the step from one curve to the next (between two chains it would
-// bridge two strokes, inside a merged chain it would join the joint's two copies), so nothing has to
-// be thrown away. Both ends of a line lie on its segment's curve - every curve has one segment fewer
-// than samples, so segment s of curve c runs from sample s + c to s + c + 1 - and each vertex
-// evaluates its own end of it. Near-plane clipping the rasteriser does itself.
+// Drawn as a LINELIST of 2 * total_points vertices, one line per sample: line i runs from sample i to
+// sample i + 1 on sample i's curve, and each vertex evaluates its own end of it. The line starting on
+// a curve's last sample would be the step to the next curve (between two chains it would bridge two
+// strokes, inside a merged chain it would join the joint's two copies), so both its vertices are
+// culled - they read the same map entry, so they agree. Near-plane clipping the rasteriser does itself.
 LineVSOutput main(uint vertexId : SV_VertexID) {
-    LineVSOutput o;
+    LineVSOutput o = (LineVSOutput)0;
 
-    const uint segment = vertexId >> 1u;
-    const uint curveIndex = SegmentMap[segment] & SegmentCurveMask;
-    const uint sampleIndex = segment + curveIndex + (vertexId & 1u);
+    const uint startSample = vertexId >> 1u;
+    const uint curveIndex = SampleMap[startSample] & SegmentCurveMask;
     const uint2 range = indices[curveIndex].first_last;
+    if (startSample == range.y) {
+        o.Position = 0.0 / 0.0; // NaN: the whole line is discarded
+        return o;
+    }
+    const uint sampleIndex = startSample + (vertexId & 1u);
 
     const float t = float(sampleIndex - range.x) / float(range.y - range.x);
     const float3 p = EvaluateBezier(LoadCubic(curveIndex), t);

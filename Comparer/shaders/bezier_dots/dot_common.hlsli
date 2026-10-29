@@ -7,6 +7,10 @@ static const uint CurveCapRound       = 2u;
 static const uint CurveCapTriangleOut = 3u;
 static const uint CurveCapTriangleIn  = 4u;
 
+// bezier_data_map entries (bezier_common.h): the curve index in the low 30 bits; the top two bits are
+// segment continuation flags the stroke renderers use, dots only need the curve.
+static const uint SegmentCurveMask = 0x3FFFFFFFu;
+
 struct DotStyle {
     uint  width_capcap; // width << 24 | front_cap << 16 | back_cap << 8; dots never join, so the low byte is 0
     float spacing;      // world arc length between dot centers; <= 0 means no dots on this curve

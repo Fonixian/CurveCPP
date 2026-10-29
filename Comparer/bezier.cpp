@@ -23,9 +23,8 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 }
 
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
-	AllocateSampleMap(device, points_required);   // point pass
+	AllocateSampleMap(device, points_required);   // point pass and curve-body draw
 	AllocateChainBegins(device, points_required); // distance scan, curve_pattern_calc
-	AllocateSegmentMap(device, points_required);  // curve-body draw
 	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
 }
 
@@ -154,7 +153,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 
 	distances->BindOrdered(ShaderStage::Vertex, 0, context);           // t0: cumulative arc length per sample, float2 (world, screen px)
 	BindCurveData(context, 3, 5, 7);                                   // t3 control points, t5 colours, t7 indices
-	segment_map->Bind(ShaderStage::Vertex, 4, context);                // t4: curve + continuation per segment
+	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: curve + continuation per sample
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width_capcapjoin / spacing / dash length
 	pattern_offsets->BindOrdered(ShaderStage::Vertex, 8, context);     // t8: pattern base per curve
 
@@ -164,7 +163,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);  // b1
 
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	context->get()->DrawInstanced(5, total_segments, 0, 0);
+	context->get()->DrawInstanced(5, total_points, 0, 0); // one per sample, curve ends culled in the VS
 	profiler.end_gpu("draw");
 
 	UnbindShaderResources(context, ShaderStage::Vertex, { 0, 3, 4, 5, 6, 7, 8 });

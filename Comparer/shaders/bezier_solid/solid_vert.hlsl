@@ -1,8 +1,8 @@
 #include "solid_common.hlsli"
 
-// Drawn as DrawInstanced(5, total_segments) with a TRIANGLESTRIP, one instance per segment_map entry,
-// i.e. per real segment - there is no instance for the step from one curve to the next, so there is
-// no bridge to throw away (see bezier_common.h):
+// Drawn as DrawInstanced(5, total_points) with a TRIANGLESTRIP, one instance per sample: instance i is
+// the segment from sample i to i + 1. The instance on a curve's last sample would be the step to the
+// next curve, so it is culled straight after the map and range loads (see bezier_common.h):
 //
 //                0 ----------------- 2
 //                |                   |  \
@@ -36,7 +36,7 @@ struct Cubic {
 };
 
 StructuredBuffer<Cubic>  CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
-StructuredBuffer<uint>   SegmentMap         : register(t4); // per segment: curve | SegmentHasPrev | SegmentHasNext
+StructuredBuffer<uint>   SampleMap          : register(t4); // per sample: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<uint4>  CurveColors        : register(t5); // color1, color2, height1, height2 (for interpolation based on height)
 StructuredBuffer<uint>   CurveStyles        : register(t6); // width << 24 | front_cap << 16 | back_cap << 8 | join
 StructuredBuffer<uint2>  CurveIndices       : register(t7); // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
@@ -118,22 +118,23 @@ bool InnerMiterOverlaps(float2 dirAB, float cosTurn, float2 bisector, float leng
     return l > lengthAB || l > lengthCB;
 }
 
-SolidVSOutput main(uint vertexId : SV_VertexID, uint segmentIndex : SV_InstanceID) {
+SolidVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID) {
     SolidVSOutput o = (SolidVSOutput)0;
     bool nearSide = vertexId < 2u;
 
-    // Every curve has one segment fewer than samples, so counting segments skips exactly one sample
-    // per curve before this one: segment s of curve c starts on sample s + c. The entry also says
-    // whether the stroke goes on past either end of the segment.
-    uint segment = SegmentMap[segmentIndex];
-    uint currentCurve = segment & SegmentCurveMask;
-    bool hasPrev = (segment & SegmentHasPrev) != 0u; // segment before the start
-    bool hasNext = (segment & SegmentHasNext) != 0u; // segment after the end
+    // The segment starting on this sample: its curve, and whether the stroke goes on past either end.
+    uint entry = SampleMap[sampleIndex];
+    uint currentCurve = entry & SegmentCurveMask;
+    uint2 currentRange = CurveIndices[currentCurve];
+    if (sampleIndex == currentRange.y) { // the curve's last sample starts no segment
+        o.Position = 0.0 / 0.0;
+        return o;
+    }
+    bool hasPrev = (entry & SegmentHasPrev) != 0u; // segment before the start
+    bool hasNext = (entry & SegmentHasNext) != 0u; // segment after the end
     bool hasNeighbor = nearSide ? hasPrev : hasNext;
-    uint sampleIndex = segmentIndex + currentCurve;
 
     Cubic currentCubic = LoadCubic(currentCurve);
-    uint2 currentRange = CurveIndices[currentCurve];
 
     float tStart = SampleT(currentRange, sampleIndex);
     float tEnd = SampleT(currentRange, sampleIndex + 1u);

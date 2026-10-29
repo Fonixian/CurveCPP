@@ -13,8 +13,9 @@ struct Indices {
     uint2 first_last; // FirstIndex, LastIndex: the curve's sample range, both inclusive
 };
 
-// segment_map entries (bezier_common.h): the curve index in the low 30 bits, then whether the stroke
-// goes on past the segment's start and past its end - the line renderer only needs the curve.
+// bezier_data_map entries (bezier_common.h), one per sample: the curve index in the low 30 bits, then
+// whether the stroke goes on past the start and past the end of the segment starting on that sample -
+// the line renderer only needs the curve.
 static const uint SegmentCurveMask = 0x3FFFFFFFu;
 static const uint SegmentHasPrev   = 0x40000000u;
 static const uint SegmentHasNext   = 0x80000000u;

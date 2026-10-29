@@ -40,14 +40,14 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 	curve_draw.Bind(context);
 
 	BindCurveData(context, 3, 5, 7);                         // t3 control points, t5 colours, t7 indices
-	segment_map->Bind(ShaderStage::Vertex, 4, context);      // t4: curve + continuation per segment
+	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);  // t4: curve + continuation per sample
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context);
 	viewport_data->Bind(ShaderStage::Pixel, 1, context);
 
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-	context->get()->DrawInstanced(5, total_segments, 0, 0);
+	context->get()->DrawInstanced(5, total_points, 0, 0); // one per sample, curve ends culled in the VS
 	profiler.end_gpu("draw");
 
 	UnbindShaderResources(context, ShaderStage::Vertex, { 3, 4, 5, 6, 7 });

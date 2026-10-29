@@ -59,8 +59,10 @@ void UnbindUnorderedAccessViews(Axodox::Graphics::GraphicsDeviceContext* context
 // Shaders evaluate P(t) = [P0 P1 P2 P3] * (s^3, 3s^2t, 3st^2, t^3), s = 1 - t: exact at t = 0 / 1, so
 // merged joints match bit-for-bit from both sides.
 // Sample ranges are inclusive and back to back: curve i owns [first, first + resolution - 1], t = 0..1.
-// Strip and line draws go per SEGMENT (segment_map): resolution - 1 per curve, no bridge between curves,
-// so segment s of curve c starts on sample s + c.
+// One map serves both the point passes and the strip / line draws (bezier_data_map): entry i is the
+// owning curve of sample i plus the continuation flags of the segment that STARTS on sample i. The
+// draws go per sample, so total_points instances / lines; the one per curve that starts on the curve's
+// last sample has no segment behind it and the vertex shader culls it (sample == CurveIndices[c].y).
 //
 // The HLSL side of the structs lives in the *_common.hlsli files - keep them in step.
 class BezierRendererBase {
@@ -124,7 +126,6 @@ protected:
 	uint8_t upload_parts = 0; // CurveDirtyBits touched since the last upload; set and cleared with need_upload
 
 	uint32_t total_points = 0;
-	uint32_t total_segments = 0; // total_points - curve count; sizes the strip and line draws
 
 	uint32_t points_allocated = 0;
 	uint32_t curves_allocated = 0;
@@ -132,8 +133,7 @@ protected:
 
 	// Layout buffers: created by the renderer's AllocatePointBuffers through the Allocate* helpers below;
 	// null = this renderer does not use it, and AllocateBuffers then neither builds nor uploads it.
-	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data_map; // One uint32 curve index per point - the point passes
-	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   segment_map;     // One uint32 per segment: curve | SegmentHasPrev | SegmentHasNext
+	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   bezier_data_map; // One uint32 per sample: curve | SegmentHasPrev | SegmentHasNext (of the segment starting there)
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_control_points;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_colors;
 	std::unique_ptr<Axodox::Graphics::StructuredBuffer>   curve_indices;
@@ -171,7 +171,6 @@ protected:
 
 	// Create one layout buffer each; call them from AllocatePointBuffers for the buffers the renderer reads.
 	void AllocateSampleMap(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required);   // bezier_data_map
-	void AllocateSegmentMap(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required);  // segment_map
 	void AllocateChainBegins(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required); // curve_begins
 
 	// Renderer-specific buffers, on top of the shared ones above. AllocatePointBuffers also creates the

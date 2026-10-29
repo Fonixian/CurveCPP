@@ -10,7 +10,7 @@ cbuffer CameraData : register(b0) {
 };
 
 StructuredBuffer<Cubic>   ControlPoints  : register(t0); // one 3x4 per curve, rows x/y/z, columns P0..P3
-StructuredBuffer<uint>    BezierIndexMap : register(t1);
+StructuredBuffer<uint>    BezierIndexMap : register(t1); // curve | segment flags per sample
 StructuredBuffer<uint2>   CurveIndices   : register(t2);
 
 RWStructuredBuffer<float> WorldDistances : register(u0);
@@ -30,7 +30,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
     if (i0 >= TotalPointCount) return;
     uint i1 = i0 + 1u;
 
-    uint curve0 = BezierIndexMap[i0];
+    uint curve0 = BezierIndexMap[i0] & SegmentCurveMask;
     uint2 range0 = CurveIndices[curve0];
     Cubic cubic0 = LoadCubic(curve0);
 
@@ -40,7 +40,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID) {
 
     if (i1 >= TotalPointCount) return;
 
-    uint curve1 = BezierIndexMap[i1];
+    uint curve1 = BezierIndexMap[i1] & SegmentCurveMask;
     if (curve1 == curve0 && i1 <= range0.y) {
         // Same curve and i1 is not clamped, so its start position is pos1 exactly.
         float3 pos2 = EvaluateBezier(cubic0, SampleT(range0, min(i1 + 1u, range0.y)));
