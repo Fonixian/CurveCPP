@@ -8,6 +8,15 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
+const char* CurveKindName(CurveKind kind) {
+	switch (kind) {
+	case CurveKind::Solid:     return "Solid";
+	case CurveKind::Patterned: return "Patterned";
+	case CurveKind::Dotted:    return "Dots";
+	}
+	return "?";
+}
+
 static BezierData FromCubic(const XMFLOAT3 (&cubic)[4]) {
 	BezierData result;
 	result.P0 = cubic[0];

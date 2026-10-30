@@ -4,15 +4,6 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
-const char* CurveKindName(CurveKind kind) {
-	switch (kind) {
-	case CurveKind::Solid:     return "Solid";
-	case CurveKind::Patterned: return "Patterned";
-	case CurveKind::Dotted:    return "Dots";
-	}
-	return "?";
-}
-
 BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 	: solid(device), patterned(device), dots(device) {}
 
@@ -38,17 +29,11 @@ void BezierRenderer::SetViewport(float width, float height) {
 	dots.SetViewport(width, height);
 }
 
-bool BezierRenderer::ContinuesLastAdd() const {
-	return last_added != nullptr
-		&& last_added->owners.size() == last_added_slots
-		&& last_added->owners.back() != nullptr;
-}
-
 BezierCurve BezierRenderer::Add(const BezierData& curve) {
 	BezierData data = curve;
 	BezierRendererBase* target = nullptr;
 
-	if (data.merge_with_previous && ContinuesLastAdd()) {
+	if (data.merge_with_previous && last_added != nullptr && last_added->owners.size() == last_added_slots && last_added->owners.back() != nullptr) {
 		target = last_added;
 	}
 	else {

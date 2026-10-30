@@ -56,6 +56,7 @@ enum class CurveKind : uint8_t {
 	Dotted = 2     // BezierDotRenderer
 };
 constexpr size_t CurveKindCount = 3;
+const char* CurveKindName(CurveKind kind);
 
 // spacing 0 -> Solid, dash length 0 -> Dotted, otherwise Patterned ("0" = not above zero, NaN too).
 constexpr CurveKind KindOf(float spacing, float dash_length) {
