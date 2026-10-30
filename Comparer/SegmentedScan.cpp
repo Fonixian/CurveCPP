@@ -1,117 +1,135 @@
 #include "SegmentedScan.h"
-#include "pipeline.h"
+#include "Pipeline.h"
 #ifdef PLATFORM_WINDOWS
 
 using namespace Axodox::Graphics;
 
- struct ScanConstants {
-    uint32_t ElementCount = 0u;
-    uint32_t IsTopLevel = 0u;
- };
-
- static uint32_t DivRoundUp(uint32_t value, uint32_t divisor) {
-   return (value + divisor - 1u) / divisor;
- }
-
-template <>
-struct SegmentedScanShaders<float> {
-    static constexpr const char* Local = "segmented_scan_local_float.cso";
-    static constexpr const char* AddOffsets = "segmented_scan_add_offsets_float.cso";
+struct ScanConstants
+{
+  uint32_t ElementCount = 0u;
+  uint32_t IsTopLevel = 0u;
 };
 
-template <>
-struct SegmentedScanShaders<DirectX::XMFLOAT2> {
-    static constexpr const char* Local = "segmented_scan_local_float2.cso";
-    static constexpr const char* AddOffsets = "segmented_scan_add_offsets_float2.cso";
+static uint32_t DivRoundUp(uint32_t value, uint32_t divisor)
+{
+  return (value + divisor - 1u) / divisor;
+}
+
+template<>
+struct SegmentedScanShaders<float>
+{
+  static constexpr const char* Local = "SegmentedScanLocalFloat.cso";
+  static constexpr const char* AddOffsets = "SegmentedScanAddOffsetsFloat.cso";
 };
 
-template <typename T>
+template<>
+struct SegmentedScanShaders<DirectX::XMFLOAT2>
+{
+  static constexpr const char* Local = "SegmentedScanLocalFloat2.cso";
+  static constexpr const char* AddOffsets = "SegmentedScanAddOffsetsFloat2.cso";
+};
+
+template<typename T>
 SegmentedScan<T>::SegmentedScan(const GraphicsDevice& device, uint32_t maxElementCount) :
-    _device(device),
-    _localScan(Pipeline::getCS(device, SegmentedScanShaders<T>::Local)),
-    _addBlockOffsets(Pipeline::getCS(device, SegmentedScanShaders<T>::AddOffsets)) {
-    if (maxElementCount == 0u) throw std::invalid_argument("maxElementCount must be greater than zero.");
+  _device(device),
+  _localScan(Pipeline::getCS(device, SegmentedScanShaders<T>::Local)),
+  _addBlockOffsets(Pipeline::getCS(device, SegmentedScanShaders<T>::AddOffsets))
+{
+  if (maxElementCount == 0u) throw std::invalid_argument("maxElementCount must be greater than zero.");
 
-    uint32_t levelCapacity = maxElementCount;
-    for (;;) {
-        Level level;
-        level.capacity = levelCapacity;
+  uint32_t levelCapacity = maxElementCount;
+  for (;;)
+  {
+    Level level;
+    level.capacity = levelCapacity;
 
-        auto blockCount = DivRoundUp(levelCapacity, GroupSize);
-        // One T per block, matching Values' element type (BlockSums in segmented_scan_common.hlsli).
-        level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<T>(blockCount));
-        level.blockFlags = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
-        level.needsCarry = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(levelCapacity));
-        level.constants = std::make_unique<ConstantBuffer>(device, ScanConstants{});
+    auto blockCount = DivRoundUp(levelCapacity, GroupSize);
+    // One T per block, matching Values' element type (BlockSums in SegmentedScanCommon.hlsli).
+    level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<T>(blockCount));
+    level.blockFlags = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
+    level.needsCarry = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(levelCapacity));
+    level.constants = std::make_unique<ConstantBuffer>(device, ScanConstants{});
 
-        _levels.push_back(std::move(level));
+    _levels.push_back(std::move(level));
 
-        if (blockCount <= 1u) break;
-        levelCapacity = blockCount;
-    }
+    if (blockCount <= 1u) break;
+    levelCapacity = blockCount;
+  }
 }
 
-static void BindFlags(StructuredBuffer& flags, GraphicsDeviceContext* context) { flags.Bind(ShaderStage::Compute, 0u, context); }
-static void BindFlags(RWStructuredBuffer& flags, GraphicsDeviceContext* context) { flags.BindOrdered(ShaderStage::Compute, 0u, context); }
-
-template <typename T>
-void SegmentedScan<T>::Scan(RWStructuredBuffer& values, StructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context) {
-    if (_levels.empty() || count > _levels.front().capacity) {
-        throw std::out_of_range("count exceeds the maxElementCount this SegmentedScan was constructed with.");
-    }
-
-    if (count == 0u) return;
-
-    if (!context) context = _device.ImmediateContext();
-
-    ScanLevel(values, flags, count, 0, context);
-    context->BindShaderResourceView(nullptr, ShaderStage::Compute, 0u);
-    context->BindUnorderedAccessView(nullptr, 0);
-    context->BindUnorderedAccessView(nullptr, 2);
-    context->BindUnorderedAccessView(nullptr, 3);
-    context->BindUnorderedAccessView(nullptr, 4);
+static void BindFlags(StructuredBuffer& flags, GraphicsDeviceContext* context)
+{
+  flags.Bind(ShaderStage::Compute, 0u, context);
 }
 
-template <typename T>
-template <typename FlagBuffer>
-void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context) {
-    if (levelIndex >= _levels.size()) {
-        throw std::logic_error("SegmentedScan: not enough recursion levels were preallocated for this element count.");
-    }
+static void BindFlags(RWStructuredBuffer& flags, GraphicsDeviceContext* context)
+{
+  flags.BindOrdered(ShaderStage::Compute, 0u, context);
+}
 
-    auto& level = _levels[levelIndex];
-    auto blockCount = DivRoundUp(count, GroupSize);
+template<typename T>
+void SegmentedScan<T>::Scan(RWStructuredBuffer& values, StructuredBuffer& flags, uint32_t count, GraphicsDeviceContext* context)
+{
+  if (_levels.empty() || count > _levels.front().capacity)
+  {
+    throw std::out_of_range("count exceeds the maxElementCount this SegmentedScan was constructed with.");
+  }
 
-    ScanConstants constants;
-    constants.ElementCount = count;
-    constants.IsTopLevel = (levelIndex == 0u) ? 1u : 0u;
-    level.constants->Upload(constants, context);
+  if (count == 0u) return;
+
+  if (!context) context = _device.ImmediateContext();
+
+  ScanLevel(values, flags, count, 0, context);
+  context->BindShaderResourceView(nullptr, ShaderStage::Compute, 0u);
+  context->BindUnorderedAccessView(nullptr, 0);
+  context->BindUnorderedAccessView(nullptr, 2);
+  context->BindUnorderedAccessView(nullptr, 3);
+  context->BindUnorderedAccessView(nullptr, 4);
+}
+
+template<typename T>
+template<typename FlagBuffer>
+void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, uint32_t count, size_t levelIndex, GraphicsDeviceContext* context)
+{
+  if (levelIndex >= _levels.size())
+  {
+    throw std::logic_error("SegmentedScan: not enough recursion levels were preallocated for this element count.");
+  }
+
+  auto& level = _levels[levelIndex];
+  auto blockCount = DivRoundUp(count, GroupSize);
+
+  ScanConstants constants;
+  constants.ElementCount = count;
+  constants.IsTopLevel = (levelIndex == 0u) ? 1u : 0u;
+  level.constants->Upload(constants, context);
+  level.constants->Bind(ShaderStage::Compute, 0u, context);
+
+  values.BindUnordered(0u, context);
+  BindFlags(flags, context); // t0, read-only
+  level.blockSums->BindUnordered(2u, context);
+  level.blockFlags->BindUnordered(3u, context);
+  level.needsCarry->BindUnordered(4u, context);
+
+  _localScan->Run({ blockCount, 1u, 1u }, context);
+
+  if (blockCount > 1u)
+  {
+    // The next level reads blockFlags through its SRV; drop the UAV it is still bound to here.
+    context->BindUnorderedAccessView(nullptr, 3u);
+    ScanLevel(*level.blockSums, *level.blockFlags, blockCount, levelIndex + 1u, context);
     level.constants->Bind(ShaderStage::Compute, 0u, context);
-
     values.BindUnordered(0u, context);
-    BindFlags(flags, context);                      // t0, read-only
     level.blockSums->BindUnordered(2u, context);
-    level.blockFlags->BindUnordered(3u, context);
     level.needsCarry->BindUnordered(4u, context);
 
-    _localScan->Run({ blockCount, 1u, 1u }, context);
-
-    if (blockCount > 1u) {
-        // The next level reads blockFlags through its SRV; drop the UAV it is still bound to here.
-        context->BindUnorderedAccessView(nullptr, 3u);
-        ScanLevel(*level.blockSums, *level.blockFlags, blockCount, levelIndex + 1u, context);
-        level.constants->Bind(ShaderStage::Compute, 0u, context);
-        values.BindUnordered(0u, context);
-        level.blockSums->BindUnordered(2u, context);
-        level.needsCarry->BindUnordered(4u, context);
-
-        _addBlockOffsets->Run({ blockCount, 1u, 1u }, context);
-    }
-    context->BindShaderResourceView(nullptr, ShaderStage::Compute, 0u);
-    context->BindUnorderedAccessView(nullptr, 0u);
-    context->BindUnorderedAccessView(nullptr, 2u);
-    context->BindUnorderedAccessView(nullptr, 3u);
-    context->BindUnorderedAccessView(nullptr, 4u);
+    _addBlockOffsets->Run({ blockCount, 1u, 1u }, context);
+  }
+  context->BindShaderResourceView(nullptr, ShaderStage::Compute, 0u);
+  context->BindUnorderedAccessView(nullptr, 0u);
+  context->BindUnorderedAccessView(nullptr, 2u);
+  context->BindUnorderedAccessView(nullptr, 3u);
+  context->BindUnorderedAccessView(nullptr, 4u);
 }
 
 // The element types the shaders exist for. A new T also needs its SegmentedScanShaders specialisation

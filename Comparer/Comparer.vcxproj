@@ -150,22 +150,25 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="app.cpp" />
-    <ClCompile Include="bezier.cpp" />
-    <ClCompile Include="bezier_pattern.cpp" />
-    <ClCompile Include="bezier_common.cpp" />
-    <ClCompile Include="bezier_dots.cpp" />
-    <ClCompile Include="bezier_solid.cpp" />
-    <ClCompile Include="bezier_line.cpp" />
-    <ClCompile Include="camera.cpp" />
-    <ClCompile Include="catmull_rom.cpp" />
-    <ClCompile Include="gpu_buffers.cpp" />
+    <ClCompile Include="App.cpp" />
+    <ClCompile Include="BezierRenderer.cpp" />
+    <ClCompile Include="BezierPatternRenderer.cpp" />
+    <ClCompile Include="BezierData.cpp" />
+    <ClCompile Include="BezierHelpers.cpp" />
+    <ClCompile Include="BezierRendererBase.cpp" />
+    <ClCompile Include="BezierCurve.cpp" />
+    <ClCompile Include="BezierDotRenderer.cpp" />
+    <ClCompile Include="BezierSolidRenderer.cpp" />
+    <ClCompile Include="BezierLineRenderer.cpp" />
+    <ClCompile Include="Camera.cpp" />
+    <ClCompile Include="CatmullRomSpline.cpp" />
+    <ClCompile Include="IndirectDrawArgs.cpp" />
     <ClCompile Include="CurveApp.cpp" />
-    <ClCompile Include="orbital_camera.cpp" />
-    <ClCompile Include="pipeline.cpp" />
-    <ClCompile Include="profiler.cpp" />
+    <ClCompile Include="OrbitalCamera.cpp" />
+    <ClCompile Include="Pipeline.cpp" />
+    <ClCompile Include="Profiler.cpp" />
     <ClCompile Include="SegmentedScan.cpp" />
-    <ClCompile Include="ParalellScan.cpp" />
+    <ClCompile Include="ParallelScan.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\axodox-common\Axodox.Common.Desktop\Axodox.Common.Desktop.vcxproj">
@@ -173,139 +176,143 @@
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="app.h" />
-    <ClInclude Include="bezier.h" />
-    <ClInclude Include="bezier_pattern.h" />
-    <ClInclude Include="bezier_common.h" />
-    <ClInclude Include="bezier_dots.h" />
-    <ClInclude Include="bezier_solid.h" />
-    <ClInclude Include="bezier_line.h" />
-    <ClInclude Include="camera.h" />
-    <ClInclude Include="catmull_rom.h" />
-    <ClInclude Include="gpu_buffers.h" />
-    <ClInclude Include="orbital_camera.h" />
-    <ClInclude Include="pipeline.h" />
-    <ClInclude Include="profiler.h" />
+    <ClInclude Include="App.h" />
+    <ClInclude Include="BezierRenderer.h" />
+    <ClInclude Include="BezierPatternRenderer.h" />
+    <ClInclude Include="BezierData.h" />
+    <ClInclude Include="BezierHelpers.h" />
+    <ClInclude Include="CurveRenderer.h" />
+    <ClInclude Include="BezierRendererBase.h" />
+    <ClInclude Include="BezierCurve.h" />
+    <ClInclude Include="BezierDotRenderer.h" />
+    <ClInclude Include="BezierSolidRenderer.h" />
+    <ClInclude Include="BezierLineRenderer.h" />
+    <ClInclude Include="Camera.h" />
+    <ClInclude Include="CatmullRomSpline.h" />
+    <ClInclude Include="IndirectDrawArgs.h" />
+    <ClInclude Include="OrbitalCamera.h" />
+    <ClInclude Include="Pipeline.h" />
+    <ClInclude Include="Profiler.h" />
     <ClInclude Include="SegmentedScan.h" />
-    <ClInclude Include="ParalellScan.h" />
+    <ClInclude Include="ParallelScan.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="shaders\bezier\curve_common.hlsli" />
-    <None Include="shaders\bezier_solid\solid_common.hlsli" />
-    <None Include="shaders\bezier_line\line_common.hlsli" />
-    <None Include="shaders\bezier_dots\dot_common.hlsli" />
-    <None Include="shaders\segmented_scan_common.hlsli" />
-    <None Include="shaders\segmented_scan_local.hlsli" />
-    <None Include="shaders\segmented_scan_add_offsets.hlsli" />
-    <None Include="shaders\paralell_scan_common.hlsli" />
+    <None Include="Shaders\Bezier\CurveCommon.hlsli" />
+    <None Include="Shaders\BezierSolid\SolidCommon.hlsli" />
+    <None Include="Shaders\BezierLine\LineCommon.hlsli" />
+    <None Include="Shaders\BezierDots\DotCommon.hlsli" />
+    <None Include="Shaders\SegmentedScanCommon.hlsli" />
+    <None Include="Shaders\SegmentedScanLocal.hlsli" />
+    <None Include="Shaders\SegmentedScanAddOffsets.hlsli" />
+    <None Include="Shaders\ParallelScanCommon.hlsli" />
     <None Include="vcpkg.json" />
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="shaders\bezier\curve_calc_points.hlsl">
+    <FxCompile Include="Shaders\Bezier\CurveCalcPoints.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_pattern_ini.hlsl">
+    <FxCompile Include="Shaders\Bezier\CurvePatternIni.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_pattern_calc.hlsl">
+    <FxCompile Include="Shaders\Bezier\CurvePatternCalc.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_ps.hlsl">
+    <FxCompile Include="Shaders\Bezier\CurvePs.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier\curve_vs.hlsl">
+    <FxCompile Include="Shaders\Bezier\CurveVs.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
     </FxCompile>
     <!-- FxCompile writes to $(OutDir)%(Filename).cso, which is flat: these names must not collide
-         with anything under shaders\bezier\. -->
-    <FxCompile Include="shaders\bezier_solid\solid_vert.hlsl">
+         with anything under Shaders\Bezier\. -->
+    <FxCompile Include="Shaders\BezierSolid\SolidVert.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_solid\solid_ps.hlsl">
+    <FxCompile Include="Shaders\BezierSolid\SolidPs.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_line\line_vert.hlsl">
+    <FxCompile Include="Shaders\BezierLine\LineVert.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_line\line_ps.hlsl">
+    <FxCompile Include="Shaders\BezierLine\LinePs.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_add_offsets_float.hlsl">
+    <FxCompile Include="Shaders\SegmentedScanAddOffsetsFloat.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_add_offsets_float2.hlsl">
+    <FxCompile Include="Shaders\SegmentedScanAddOffsetsFloat2.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_local_float.hlsl">
+    <FxCompile Include="Shaders\SegmentedScanLocalFloat.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_local_float2.hlsl">
+    <FxCompile Include="Shaders\SegmentedScanLocalFloat2.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\paralell_scan_local.hlsl">
+    <FxCompile Include="Shaders\ParallelScanLocal.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\paralell_scan_add_offsets.hlsl">
+    <FxCompile Include="Shaders\ParallelScanAddOffsets.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
     <!-- FxCompile writes to $(OutDir)%(Filename).cso, which is flat: these names must not collide
-         with anything under shaders\bezier\ or shaders\bezier_solid\. -->
-    <FxCompile Include="shaders\bezier_dots\dot_calc_points.hlsl">
+         with anything under Shaders\Bezier\ or Shaders\BezierSolid\. -->
+    <FxCompile Include="Shaders\BezierDots\DotCalcPoints.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_ini.hlsl">
+    <FxCompile Include="Shaders\BezierDots\DotIni.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_calc.hlsl">
+    <FxCompile Include="Shaders\BezierDots\DotCalc.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_args.hlsl">
+    <FxCompile Include="Shaders\BezierDots\DotArgs.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Compute</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Compute</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_vert.hlsl">
+    <FxCompile Include="Shaders\BezierDots\DotVert.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Vertex</ShaderType>
     </FxCompile>
-    <FxCompile Include="shaders\bezier_dots\dot_ps.hlsl">
+    <FxCompile Include="Shaders\BezierDots\DotPs.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
@@ -315,4 +322,4 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
-</Project>
+</Project>
