@@ -37,7 +37,7 @@ void BezierLineRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& v
 
 	viewport_data->Bind(ShaderStage::Vertex, 1, context);
 
-	// One line per pair of consecutive samples; line_vert.hlsl discards the ones that bridge two chains.
+	// One line per sample pair; line_vert drops the ones bridging two chains.
 	context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
 	context->get()->Draw(2u * (total_points - 1u), 0);
 	profiler.end_gpu("draw");

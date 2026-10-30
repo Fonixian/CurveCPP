@@ -1,0 +1,638 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bezier 3D benchmark (instanced lines)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #121214; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  pre { position: fixed; left: 8px; margin: 0; color: #e8e8e8; pointer-events: none;
+        font: 12px/1.4 Consolas, "Courier New", monospace; text-shadow: 0 0 3px #000, 0 0 2px #000; }
+  #hud { top: 6px; }
+  #help { top: 110px; background: rgba(0,0,0,0.78); padding: 8px 12px; border-radius: 4px; display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<pre id="hud"></pre>
+<pre id="help"></pre>
+<script>
+"use strict";
+/*
+ * 3D cubic Bezier benchmark built on the instanced line technique from
+ * src/commands.js:
+ *  - "3D space curves" uses the interleavedStripRoundCapJoin3D math: both segment
+ *    ends are projected in the vertex shader and the template is laid out in
+ *    pixels, so the width is constant on screen. The curves are flattened once
+ *    in 3D and never touched by the CPU again; the projection is per vertex, so
+ *    it is exact in perspective (no "pieces per curve" approximation needed).
+ *  - "Planar ribbons" is the 2D interleavedStripRoundCapJoin math done in world
+ *    space inside each curve's own plane.
+ * Additions (same as the 2D page): bridge segments between curves rejected in the
+ * vertex shader, end discs reshaped into caps, indexed template, plus segments
+ * with an endpoint behind the camera rejected.
+ */
+
+const canvas = document.getElementById("c");
+const hud = document.getElementById("hud");
+const helpEl = document.getElementById("help");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false, depth: true, stencil: false, powerPreference: "high-performance" });
+if (!gl) { hud.textContent = "WebGL2 is not available in this browser."; throw new Error("no webgl2"); }
+const timerExt = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+
+// ---------------------------------------------------------------- shaders
+const CAP_GLSL = `
+uniform int stride;    // points per curve = segments per curve + 1
+uniform int capFront;  // 0 flat, 1 round, 2 square, 3 triangle
+uniform int capBack;
+// Interior joints keep only the half disc facing the middle of the curve (both
+// at turns sharper than 90 degrees); see the 2D page for the reasoning.
+vec2 capShape(vec3 pos, int seg, bool sharpStart, bool sharpEnd) {
+  int last = stride - 2;
+  int mid = last / 2;
+  int style;
+  if (pos.z < 0.5) style = seg == 0 ? capFront : ((seg > mid || sharpStart) ? 1 : 0);
+  else             style = seg == last ? capBack : ((seg + 1 <= mid || sharpEnd) ? 1 : 0);
+  vec2 p = pos.xy;
+  if (style == 1) return p;
+  float r = length(p);
+  if (r < 1e-6) return p;
+  vec2 d = p / r;
+  if (style == 0) return vec2(0.0, p.y);
+  if (style == 2) return p / max(abs(d.x), abs(d.y));
+  return p / (abs(d.x) + abs(d.y));
+}`;
+
+const VS_SPACE = `#version 300 es
+precision highp float;
+in vec3 position;
+in vec3 pointZ, pointA, pointB, pointC; // previous, segment start, segment end, next
+uniform float width;        // pixels
+uniform vec2 resolution;
+uniform mat4 viewProj;
+${CAP_GLSL}
+vec2 toScreen(vec4 c) { return resolution * (0.5 * c.xy / c.w + 0.5); }
+void main() {
+  int seg = gl_InstanceID % stride;
+  vec4 clip0 = viewProj * vec4(pointA, 1.0);
+  vec4 clip1 = viewProj * vec4(pointB, 1.0);
+  if (seg == stride - 1 || clip0.w <= 1e-5 || clip1.w <= 1e-5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // --- original interleavedStripRoundCapJoin3D math ---
+  vec2 screen0 = toScreen(clip0);
+  vec2 screen1 = toScreen(clip1);
+  vec2 dir = screen1 - screen0;
+  vec4 clipZ = viewProj * vec4(pointZ, 1.0);
+  vec4 clipC = viewProj * vec4(pointC, 1.0);
+  bool sharpStart = clipZ.w > 1e-5 && dot(screen0 - toScreen(clipZ), dir) < 0.0;
+  bool sharpEnd   = clipC.w > 1e-5 && dot(dir, toScreen(clipC) - screen1) < 0.0;
+  vec2 p = capShape(position, seg, sharpStart, sharpEnd);
+  float len = length(dir);
+  vec2 xBasis = len > 0.0 ? dir / len : vec2(1.0, 0.0);
+  vec2 yBasis = vec2(-xBasis.y, xBasis.x);
+  vec2 pt0 = screen0 + width * (p.x * xBasis + p.y * yBasis);
+  vec2 pt1 = screen1 + width * (p.x * xBasis + p.y * yBasis);
+  vec2 pt = mix(pt0, pt1, position.z);
+  vec4 clip = mix(clip0, clip1, position.z);
+  gl_Position = vec4(clip.w * (2.0 * pt / resolution - 1.0), clip.z, clip.w);
+}`;
+
+const VS_RIBBON = `#version 300 es
+precision highp float;
+in vec3 position;
+in vec3 pointZ, pointA, pointB, pointC;
+in vec3 normal;             // normal of the curve's plane
+uniform float width;        // world units
+uniform mat4 viewProj;
+${CAP_GLSL}
+void main() {
+  int seg = gl_InstanceID % stride;
+  if (seg == stride - 1) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  vec3 dir = pointB - pointA;
+  vec2 p = capShape(position, seg, dot(pointA - pointZ, dir) < 0.0, dot(dir, pointC - pointB) < 0.0);
+  float len = length(dir);
+  vec3 xBasis = len > 0.0 ? dir / len : vec3(1.0, 0.0, 0.0);
+  vec3 yBasis = normalize(cross(normal, xBasis));
+  vec3 offsetA = pointA + width * (p.x * xBasis + p.y * yBasis);
+  vec3 offsetB = pointB + width * (p.x * xBasis + p.y * yBasis);
+  gl_Position = viewProj * vec4(mix(offsetA, offsetB, position.z), 1.0);
+}`;
+
+const FS = `#version 300 es
+precision highp float;
+uniform vec4 color;
+out vec4 outColor;
+void main() { outColor = vec4(color.rgb, 0.5); } // constant alpha 0.5; only visible with blending on (x)`;
+
+const VS_LINES = `#version 300 es
+precision highp float;
+in vec3 pos; in vec3 col;
+uniform mat4 viewProj;
+out vec3 vCol;
+void main() { vCol = col; gl_Position = viewProj * vec4(pos, 1.0); }`;
+const FS_LINES = `#version 300 es
+precision highp float;
+in vec3 vCol; out vec4 outColor;
+void main() { outColor = vec4(vCol, 1.0); }`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProgram(vs, fs, attribs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  attribs.forEach((a, i) => gl.bindAttribLocation(p, i, a));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+const progSpace = makeProgram(VS_SPACE, FS, ["position", "pointZ", "pointA", "pointB", "pointC"]);
+const progRibbon = makeProgram(VS_RIBBON, FS, ["position", "pointZ", "pointA", "pointB", "pointC", "normal"]);
+const progLines = makeProgram(VS_LINES, FS_LINES, ["pos", "col"]);
+
+// ------------------------------------------- template (roundCapJoinGeometry, indexed)
+function buildTemplate(res) {
+  const verts = [], index = [], map = new Map();
+  const v = (x, y, z) => {
+    x = Math.round(x * 1e6) / 1e6 + 0; y = Math.round(y * 1e6) / 1e6 + 0;
+    const k = x + "," + y + "," + z;
+    let i = map.get(k);
+    if (i === undefined) { i = verts.length / 3; verts.push(x, y, z); map.set(k, i); }
+    index.push(i);
+  };
+  v(0, -0.5, 0); v(0, -0.5, 1); v(0, 0.5, 1);
+  v(0, -0.5, 0); v(0, 0.5, 1); v(0, 0.5, 0);
+  for (let s = 0; s < res; s++) {
+    const t0 = Math.PI / 2 + (s * Math.PI) / res, t1 = Math.PI / 2 + ((s + 1) * Math.PI) / res;
+    v(0, 0, 0); v(0.5 * Math.cos(t0), 0.5 * Math.sin(t0), 0); v(0.5 * Math.cos(t1), 0.5 * Math.sin(t1), 0);
+  }
+  for (let s = 0; s < res; s++) {
+    const t0 = (3 * Math.PI) / 2 + (s * Math.PI) / res, t1 = (3 * Math.PI) / 2 + ((s + 1) * Math.PI) / res;
+    v(0, 0, 1); v(0.5 * Math.cos(t0), 0.5 * Math.sin(t0), 1); v(0.5 * Math.cos(t1), 0.5 * Math.sin(t1), 1);
+  }
+  return { verts: new Float32Array(verts), index: new Uint16Array(index) };
+}
+const CAP_RES = 8;
+const tmpl = buildTemplate(CAP_RES);
+const tBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, tBuf);
+gl.bufferData(gl.ARRAY_BUFFER, tmpl.verts, gl.STATIC_DRAW);
+const iBuf = gl.createBuffer();
+
+function makeCurveVao(instanceAttribs) {
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, tBuf);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iBuf);
+  for (let i = 1; i <= instanceAttribs; i++) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(i, 1); }
+  gl.bindVertexArray(null);
+  return vao;
+}
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iBuf);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, tmpl.index, gl.STATIC_DRAW);
+const vaoSpace = makeCurveVao(4);
+const vaoRibbon = makeCurveVao(5);
+const spaceBuf = gl.createBuffer();
+const ribbonBuf = gl.createBuffer();
+
+// reference cube + axes
+const linesVao = gl.createVertexArray();
+let linesCount = 0;
+{
+  const d = [];
+  const g = [0.45, 0.45, 0.45];
+  const corners = [];
+  for (let i = 0; i < 8; i++) corners.push([i & 1 ? 1 : -1, i & 2 ? 1 : -1, i & 4 ? 1 : -1]);
+  for (let i = 0; i < 8; i++) for (const b of [1, 2, 4]) if (!(i & b)) d.push(...corners[i], ...g, ...corners[i | b], ...g);
+  const L = 0.3;
+  d.push(0, 0, 0, 1, 0.2, 0.2, L, 0, 0, 1, 0.2, 0.2);
+  d.push(0, 0, 0, 0.2, 1, 0.2, 0, L, 0, 0.2, 1, 0.2);
+  d.push(0, 0, 0, 0.3, 0.45, 1, 0, 0, L, 0.3, 0.45, 1);
+  linesCount = d.length / 6;
+  gl.bindVertexArray(linesVao);
+  const b = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, b);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(d), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 24, 0);
+  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 24, 12);
+  gl.bindVertexArray(null);
+}
+
+// ---------------------------------------------------------------- state
+const COLORS = [[1, 1, 1, 1], [0.55, 0.8, 1, 1], [1, 0.62, 0.2, 1], [0.45, 0.9, 0.45, 1], [1, 0.55, 0.8, 1]];
+const COLOR_NAMES = ["white", "light blue", "orange", "green", "pink"];
+const CAP_NAMES = ["flat", "round", "square", "triangle"];
+const SEG_OPTIONS = [8, 16, 32, 64];
+const MAX_CURVES = 1 << 19;
+const FOV = (45 * Math.PI) / 180;
+
+const S = {
+  seed: 1, curves: 3000, N: 32, colorMode: 0, capFront: 1, capBack: 1,
+  pxWidth: 2, worldWidth: 0.008, ribbon: false, ortho: false, showGrid: true,
+  perCurve: false, vsync: true, showText: true, showHelp: false, blend: false,
+  bob: false, bobTime: 0,
+  cam: null,
+};
+function resetCamera() { S.cam = { yaw: 0.6, pitch: 0.45, dist: 4.2, tx: 0, ty: 0, tz: 0 }; }
+resetCamera();
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let ctrl = null;
+function generate() {
+  const rnd = mulberry32(S.seed * 7919);
+  ctrl = new Float32Array(S.curves * 12);
+  for (let i = 0; i < ctrl.length; i++) ctrl[i] = rnd() * 2 - 1;
+  rebuildPoints();
+}
+
+// Bounce: each curve moves up and down (world Y) with its own phase. The CPU
+// moves the control points and re-evaluates the curve's points every frame.
+const BOB_AMP = 0.12, BOB_W = Math.PI; // 2 s period
+const BOB_PHASE = 2.399963;            // golden angle, spreads phases over the curves
+
+let basis = null, spData = null, rbData = null;
+const filledAt = { space: NaN, ribbon: NaN }; // bobTime each buffer was last filled for
+
+// Allocate buffers; the frame loop fills them (fillPoints) when they're stale.
+function rebuildPoints() {
+  const N = S.N, N1 = N + 1, C = S.curves;
+  basis = new Float32Array(N1 * 4);
+  for (let k = 0; k < N1; k++) {
+    const t = k / N, m = 1 - t;
+    basis[k * 4] = m * m * m; basis[k * 4 + 1] = 3 * m * m * t; basis[k * 4 + 2] = 3 * m * t * t; basis[k * 4 + 3] = t * t * t;
+  }
+  // one padding point before and after so pointZ / pointC never read outside the buffer
+  spData = new Float32Array((C * N1 + 2) * 3);
+  rbData = new Float32Array((C * N1 + 2) * 6);
+  gl.bindBuffer(gl.ARRAY_BUFFER, spaceBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, spData.byteLength, gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ribbonBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, rbData.byteLength, gl.DYNAMIC_DRAW);
+  filledAt.space = filledAt.ribbon = NaN;
+}
+
+// Evaluate every curve (moved by the bounce offset) into the buffer of one mode and upload:
+// true 3D points for space curves, or points projected onto the curve's best-fit
+// plane (+ that plane's normal) for ribbons.
+function fillPoints(ribbon) {
+  const N1 = S.N + 1, C = S.curves, bt = S.bobTime;
+  const out = ribbon ? rbData : spData, step = ribbon ? 6 : 3;
+  const P = new Float32Array(12), F = new Float32Array(12);
+  let w = step;
+  for (let i = 0; i < C; i++) {
+    for (let j = 0; j < 12; j++) P[j] = ctrl[i * 12 + j];
+    if (bt !== 0) {
+      const oy = BOB_AMP * (Math.sin(BOB_W * bt + i * BOB_PHASE) - Math.sin(i * BOB_PHASE));
+      P[1] += oy; P[4] += oy; P[7] += oy; P[10] += oy;
+    }
+    let src = P, nx = 0, ny = 0, nz = 0;
+    if (ribbon) {
+      // Newell normal of the control polygon, plane through the centroid
+      let cx = 0, cy = 0, cz = 0;
+      for (let a = 0; a < 4; a++) {
+        const b = (a + 1) & 3;
+        const ax = P[a * 3], ay = P[a * 3 + 1], az = P[a * 3 + 2], bx = P[b * 3], by = P[b * 3 + 1], bz = P[b * 3 + 2];
+        nx += (ay - by) * (az + bz); ny += (az - bz) * (ax + bx); nz += (ax - bx) * (ay + by);
+        cx += ax / 4; cy += ay / 4; cz += az / 4;
+      }
+      let nl = Math.hypot(nx, ny, nz);
+      if (nl < 1e-9) { nx = 0; ny = 0; nz = 1; nl = 1; }
+      nx /= nl; ny /= nl; nz /= nl;
+      for (let a = 0; a < 4; a++) {
+        const dd = (P[a * 3] - cx) * nx + (P[a * 3 + 1] - cy) * ny + (P[a * 3 + 2] - cz) * nz;
+        F[a * 3] = P[a * 3] - dd * nx; F[a * 3 + 1] = P[a * 3 + 1] - dd * ny; F[a * 3 + 2] = P[a * 3 + 2] - dd * nz;
+      }
+      src = F;
+    }
+    for (let k = 0, q = 0; k < N1; k++, q += 4) {
+      const b0 = basis[q], b1 = basis[q + 1], b2 = basis[q + 2], b3 = basis[q + 3];
+      out[w] = b0 * src[0] + b1 * src[3] + b2 * src[6] + b3 * src[9];
+      out[w + 1] = b0 * src[1] + b1 * src[4] + b2 * src[7] + b3 * src[10];
+      out[w + 2] = b0 * src[2] + b1 * src[5] + b2 * src[8] + b3 * src[11];
+      if (ribbon) { out[w + 3] = nx; out[w + 4] = ny; out[w + 5] = nz; }
+      w += step;
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, ribbon ? ribbonBuf : spaceBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, out);
+  filledAt[ribbon ? "ribbon" : "space"] = bt;
+}
+
+// ---------------------------------------------------------------- matrices (column major)
+function mul(a, b) {
+  const o = new Float32Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return o;
+}
+function perspective(fovy, aspect, n, f) {
+  const t = 1 / Math.tan(fovy / 2);
+  return new Float32Array([t / aspect, 0, 0, 0, 0, t, 0, 0, 0, 0, (f + n) / (n - f), -1, 0, 0, (2 * f * n) / (n - f), 0]);
+}
+function ortho(l, r, b, t, n, f) {
+  return new Float32Array([2 / (r - l), 0, 0, 0, 0, 2 / (t - b), 0, 0, 0, 0, -2 / (f - n), 0, -(r + l) / (r - l), -(t + b) / (t - b), -(f + n) / (f - n), 1]);
+}
+function cameraBasis() {
+  const c = S.cam;
+  const fx = -Math.cos(c.pitch) * Math.sin(c.yaw), fy = -Math.sin(c.pitch), fz = -Math.cos(c.pitch) * Math.cos(c.yaw); // forward
+  let rx = -fz, rz = fx; const rl = Math.hypot(rx, rz); rx /= rl; rz /= rl;                                                // right = forward x up
+  const ux = -rz * fy, uy = rz * fx - rx * fz, uz = rx * fy;                                                                // up = right x forward
+  return { f: [fx, fy, fz], r: [rx, 0, rz], u: [ux, uy, uz] };
+}
+function viewProjMatrix() {
+  const c = S.cam, B = cameraBasis();
+  const eye = [c.tx - B.f[0] * c.dist, c.ty - B.f[1] * c.dist, c.tz - B.f[2] * c.dist];
+  const x = B.r, y = B.u, z = [-B.f[0], -B.f[1], -B.f[2]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const view = new Float32Array([x[0], y[0], z[0], 0, x[1], y[1], z[1], 0, x[2], y[2], z[2], 0, -dot(x, eye), -dot(y, eye), -dot(z, eye), 1]);
+  const aspect = canvas.width / canvas.height;
+  let proj;
+  if (S.ortho) {
+    const h = c.dist * Math.tan(FOV / 2);
+    proj = ortho(-h * aspect, h * aspect, -h, h, -100, 100);
+  } else {
+    proj = perspective(FOV, aspect, 0.01, 100);
+  }
+  return mul(proj, view);
+}
+function panPixels(dx, dy) {
+  const c = S.cam, B = cameraBasis();
+  const k = (2 * c.dist * Math.tan(FOV / 2)) / canvas.clientHeight;
+  for (let i = 0; i < 3; i++) {
+    const d = -dx * k * B.r[i] + dy * k * B.u[i];
+    if (i === 0) c.tx += d; else if (i === 1) c.ty += d; else c.tz += d;
+  }
+}
+function orbit(dx, dy) {
+  S.cam.yaw -= dx * 0.008;
+  S.cam.pitch = Math.max(-1.55, Math.min(1.55, S.cam.pitch + dy * 0.008));
+}
+function dolly(f) { S.cam.dist = Math.max(0.05, Math.min(50, S.cam.dist * f)); }
+
+// ---------------------------------------------------------------- drawing
+let lastDraw = { calls: 0, inst: 0 };
+function groupStart(g) { return Math.floor((g * S.curves) / 5); }
+
+function drawCurves(viewProj) {
+  const ribbon = S.ribbon;
+  const prog = ribbon ? progRibbon : progSpace;
+  const u = prog.u;
+  gl.useProgram(prog.p);
+  gl.bindVertexArray(ribbon ? vaoRibbon : vaoSpace);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ribbon ? ribbonBuf : spaceBuf);
+  gl.uniformMatrix4fv(u.viewProj, false, viewProj);
+  gl.uniform1i(u.stride, S.N + 1);
+  gl.uniform1i(u.capFront, S.capFront);
+  gl.uniform1i(u.capBack, S.capBack);
+  if (ribbon) {
+    gl.uniform1f(u.width, S.worldWidth);
+    gl.disable(gl.CULL_FACE); // ribbons are seen from both sides
+  } else {
+    gl.uniform1f(u.width, S.pxWidth * (window.devicePixelRatio || 1));
+    gl.uniform2f(u.resolution, canvas.width, canvas.height);
+    gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+  }
+  const N1 = S.N + 1, stride = ribbon ? 24 : 12, idxCount = tmpl.index.length;
+  let calls = 0, inst = 0, lastCol = -1;
+  const drawRange = (start, count, col) => {
+    const off = start * N1 * stride; // = padding point before this range's first point
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, stride, off);              // pointZ
+    gl.vertexAttribPointer(2, 3, gl.FLOAT, false, stride, off + stride);     // pointA
+    gl.vertexAttribPointer(3, 3, gl.FLOAT, false, stride, off + 2 * stride); // pointB
+    gl.vertexAttribPointer(4, 3, gl.FLOAT, false, stride, off + 3 * stride); // pointC
+    if (ribbon) gl.vertexAttribPointer(5, 3, gl.FLOAT, false, stride, off + stride + 12); // normal of pointA
+    if (col !== lastCol) { gl.uniform4fv(u.color, COLORS[col]); lastCol = col; }
+    const n = count * N1 - 1;
+    gl.drawElementsInstanced(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0, n);
+    calls++; inst += n;
+  };
+  if (S.colorMode === 0) {
+    for (let g = 0; g < 5; g++) {
+      const s = groupStart(g), e = groupStart(g + 1);
+      if (e <= s) continue;
+      if (S.perCurve) for (let i = s; i < e; i++) drawRange(i, 1, g);
+      else drawRange(s, e - s, g);
+    }
+  } else {
+    const col = S.colorMode - 1;
+    if (S.perCurve) for (let i = 0; i < S.curves; i++) drawRange(i, 1, col);
+    else drawRange(0, S.curves, col);
+  }
+  gl.bindVertexArray(null);
+  lastDraw = { calls, inst };
+}
+
+function drawReference(viewProj) {
+  gl.disable(gl.CULL_FACE);
+  gl.useProgram(progLines.p);
+  gl.uniformMatrix4fv(progLines.u.viewProj, false, viewProj);
+  gl.bindVertexArray(linesVao);
+  gl.drawArrays(gl.LINES, 0, linesCount);
+  gl.bindVertexArray(null);
+}
+
+// ---------------------------------------------------------------- timing
+const stats = {};
+let statGen = 0;
+function resetStats() {
+  Object.assign(stats, { t0: performance.now(), frames: 0, frameSum: 0, cpuSum: 0, gpuSum: 0, gpuN: 0, updSum: 0, updN: 0 });
+  statGen++;
+}
+resetStats();
+let shown = { gpu: NaN, cpu: NaN, frame: NaN, upd: NaN };
+
+const freeQ = [], pendingQ = [];
+function gpuBegin() {
+  if (!timerExt || pendingQ.length > 8) return null;
+  const q = freeQ.pop() || gl.createQuery();
+  gl.beginQuery(timerExt.TIME_ELAPSED_EXT, q);
+  return q;
+}
+function gpuEnd(q) { if (q) { gl.endQuery(timerExt.TIME_ELAPSED_EXT); pendingQ.push({ q, gen: statGen }); } }
+function gpuPoll() {
+  if (!timerExt) return;
+  const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
+  while (pendingQ.length) {
+    const p = pendingQ[0];
+    if (!gl.getQueryParameter(p.q, gl.QUERY_RESULT_AVAILABLE)) break;
+    const ns = gl.getQueryParameter(p.q, gl.QUERY_RESULT);
+    pendingQ.shift(); freeQ.push(p.q);
+    if (!disjoint && p.gen === statGen) { stats.gpuSum += ns / 1e6; stats.gpuN++; }
+  }
+}
+
+// ---------------------------------------------------------------- HUD
+const fmt = (v) => (isFinite(v) ? v.toFixed(3) + " ms" : "--");
+function hudText() {
+  const colour = S.colorMode === 0 ? "mixed" : COLOR_NAMES[S.colorMode - 1];
+  const fps = isFinite(shown.frame) && shown.frame > 0 ? (1000 / shown.frame).toFixed(1) : "--";
+  const gpu = timerExt ? fmt(shown.gpu) : "n/a (no EXT_disjoint_timer_query_webgl2)";
+  const width = S.ribbon ? `${S.worldWidth.toPrecision(3)} world units` : `${S.pxWidth.toPrecision(3)} px`;
+  const mode = S.ribbon
+    ? "planar ribbons (world-unit width, culling off)"
+    : "3D space curves (pixel width; projected on GPU, CPU project+update: 0 ms)";
+  return [
+    `${S.curves} curves  |  colour: ${colour}  |  caps front: ${CAP_NAMES[S.capFront]}  back: ${CAP_NAMES[S.capBack]}  |  width: ${width}`,
+    `GPU render: ${gpu}  |  CPU submit: ${fmt(shown.cpu)}  |  frame: ${fmt(shown.frame)} (${fps} fps)`,
+    `mode: ${mode}  |  ${S.N} segs/curve  |  ${S.ortho ? "orthographic" : "perspective"}`,
+    `bounce (CPU moves control points + re-evaluates): ${S.bob ? "on  |  CPU update: " + fmt(shown.upd) : S.bobTime ? "paused" : "off"}`,
+    `draw: instanced strips, ${S.perCurve ? "one curve per draw" : "batched per colour"} (${lastDraw.calls} draw calls, ${lastDraw.inst.toLocaleString()} segment instances)  |  vsync ${S.vsync ? "on" : "off (uncapped loop)"}  |  alpha blend ${S.blend ? "on" : "off"}`,
+  ].join("\n");
+}
+helpEl.textContent = [
+  "p        colour: mixed -> white -> light blue -> orange -> green -> pink",
+  "c / C    front / back cap: flat, round, square, triangle",
+  "< / >    thinner / thicker (pixels in space mode, world units in ribbon mode; also , and .)",
+  "[ / ]    halve / double the number of curves",
+  "n / k    segments per curve: 8 / 16 / 32 / 64",
+  "r        new random curves",
+  "i        batched per colour  /  one draw call per curve",
+  "m        3D space curves  /  planar ribbons",
+  "b        bounce: curves move up and down, moved on the CPU every frame",
+  "g        show / hide reference cube and axes",
+  "o        perspective / orthographic",
+  "v        vsync on (requestAnimationFrame) / off (uncapped loop)",
+  "x        alpha blending on / off (curves output alpha 0.5)",
+  "t        hide / show text      h  this help      Esc  close help",
+  "",
+  "left-drag orbit  |  shift+drag closer/further  |  ctrl+drag pan  |  wheel closer/further",
+  "arrows orbit  |  + / - closer/further  |  w a s d pan  |  space / Home reset camera",
+].join("\n");
+
+// ---------------------------------------------------------------- loop
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+
+const channel = new MessageChannel();
+channel.port1.onmessage = frame;
+function schedule() { if (S.vsync) requestAnimationFrame(frame); else channel.port2.postMessage(0); }
+
+let lastT = performance.now();
+function frame() {
+  const now = performance.now();
+  const dt = now - lastT; lastT = now;
+  resize();
+
+  // CPU side: move the curves (bounce) and refill the active mode's buffer when stale
+  if (S.bob) S.bobTime += Math.min(dt, 100) / 1000;
+  if (filledAt[S.ribbon ? "ribbon" : "space"] !== S.bobTime) {
+    const t0 = performance.now();
+    fillPoints(S.ribbon);
+    if (S.bob) { stats.updSum += performance.now() - t0; stats.updN++; }
+  }
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.07, 0.07, 0.08, 1);
+  gl.depthMask(true);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL);
+
+  // with blending, translucent curves must not hide each other: keep the depth test, skip depth writes
+  if (S.blend) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false); }
+  else { gl.disable(gl.BLEND); gl.depthMask(true); }
+
+  const vp = viewProjMatrix();
+  const c0 = performance.now();
+  const q = gpuBegin();
+  drawCurves(vp);
+  gpuEnd(q);
+  stats.cpuSum += performance.now() - c0;
+  gl.disable(gl.BLEND); gl.depthMask(true);
+  if (S.showGrid) drawReference(vp);
+  gpuPoll();
+
+  stats.frames++; stats.frameSum += dt;
+  if (now - stats.t0 >= 500 && stats.frames > 1) {
+    shown = { gpu: stats.gpuN ? stats.gpuSum / stats.gpuN : NaN, cpu: stats.cpuSum / stats.frames, frame: stats.frameSum / stats.frames, upd: stats.updN ? stats.updSum / stats.updN : NaN };
+    stats.t0 = now; stats.frames = 0; stats.frameSum = 0; stats.cpuSum = 0; stats.gpuSum = 0; stats.gpuN = 0; stats.updSum = 0; stats.updN = 0;
+    if (S.showText) hud.textContent = hudText();
+  }
+  schedule();
+}
+
+function changed() { resetStats(); shown = { gpu: NaN, cpu: NaN, frame: NaN, upd: NaN }; if (S.showText) hud.textContent = hudText(); }
+
+// ---------------------------------------------------------------- input
+const NO_RESET_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-", "_", "w", "a", "s", "d", " ", "Home", "h", "t", "Escape"]);
+window.addEventListener("keydown", (e) => {
+  const k = e.key;
+  let handled = true;
+  switch (k) {
+    case "p": S.colorMode = (S.colorMode + 1) % 6; break;
+    case "c": S.capFront = (S.capFront + 1) % 4; break;
+    case "C": S.capBack = (S.capBack + 1) % 4; break;
+    case "<": case ",":
+      if (S.ribbon) S.worldWidth = Math.max(1e-5, S.worldWidth / 1.25); else S.pxWidth = Math.max(0.25, S.pxWidth / 1.25); break;
+    case ">": case ".":
+      if (S.ribbon) S.worldWidth = Math.min(1, S.worldWidth * 1.25); else S.pxWidth = Math.min(200, S.pxWidth * 1.25); break;
+    case "[": if (S.curves > 1) { S.curves = Math.max(1, S.curves >> 1); generate(); } break;
+    case "]": if (S.curves < MAX_CURVES) { S.curves = Math.min(MAX_CURVES, S.curves * 2); generate(); } break;
+    case "n": case "N": case "k": case "K": S.N = SEG_OPTIONS[(SEG_OPTIONS.indexOf(S.N) + 1) % SEG_OPTIONS.length]; rebuildPoints(); break;
+    case "r": S.seed++; generate(); break;
+    case "i": S.perCurve = !S.perCurve; break;
+    case "m": S.ribbon = !S.ribbon; break;
+    case "g": S.showGrid = !S.showGrid; break;
+    case "b": S.bob = !S.bob; break;
+    case "o": S.ortho = !S.ortho; break;
+    case "v": S.vsync = !S.vsync; break;
+    case "x": S.blend = !S.blend; break;
+    case "t": S.showText = !S.showText; hud.style.display = S.showText ? "" : "none"; if (!S.showText) helpEl.style.display = "none"; break;
+    case "h": S.showHelp = !S.showHelp; helpEl.style.display = S.showHelp && S.showText ? "block" : "none"; break;
+    case "Escape": S.showHelp = false; helpEl.style.display = "none"; break;
+    case "ArrowLeft": orbit(-30, 0); break;
+    case "ArrowRight": orbit(30, 0); break;
+    case "ArrowUp": orbit(0, 30); break;
+    case "ArrowDown": orbit(0, -30); break;
+    case "+": case "=": dolly(1 / 1.15); break;
+    case "-": case "_": dolly(1.15); break;
+    case "w": panPixels(0, 40); break;
+    case "s": panPixels(0, -40); break;
+    case "a": panPixels(40, 0); break;
+    case "d": panPixels(-40, 0); break;
+    case " ": case "Home": resetCamera(); break;
+    default: handled = false;
+  }
+  if (handled) { e.preventDefault(); if (!NO_RESET_KEYS.has(k)) changed(); }
+});
+
+let drag = null;
+canvas.addEventListener("pointerdown", (e) => { if (e.button === 0) { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); } });
+canvas.addEventListener("pointerup", () => { drag = null; });
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag = { x: e.clientX, y: e.clientY };
+  if (e.shiftKey) dolly(Math.exp(dy * 0.01));
+  else if (e.ctrlKey) panPixels(dx, dy);
+  else orbit(dx, dy);
+});
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); dolly(Math.exp(e.deltaY * 0.0015)); }, { passive: false });
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+generate();
+resize();
+hud.textContent = hudText();
+schedule();
+</script>
+</body>
+</html>

@@ -36,6 +36,11 @@ void CatmullRomToBezier(const DirectX::XMFLOAT3& k0, const DirectX::XMFLOAT3& k1
 // A Catmull-Rom spline through a list of knots, drawn as a chain of cubic Bezier links in ONE
 // renderer. It owns its links the way a BezierCurve owns its curve: destroying the spline removes them.
 //
+// The renderer is any CurveRenderer. Given a BezierRenderer, the links are Added one straight after
+// the other, so they all land in the backend the first link's pattern picks and stay one chain there;
+// a style change that alters the pattern moves the whole spline on the next Draw(), still as one chain
+// (the setters below keep every link's style the same, which is what that needs).
+//
 // Every link shares one style (the BezierData handed to Build(), minus its control points) and the
 // setters below push a change to all of them - they are named like BezierCurve's so the same generic
 // code can drive either. Link(i) is there for anything per link.
@@ -57,7 +62,7 @@ public:
 	// supplies everything but the geometry: width, caps, join, pattern, resolution (PER LINK), height
 	// band, and C0 -> C1 as a gradient over the whole spline rather than per link. Its control points
 	// and merge_with_previous are ignored.
-	void Build(BezierRendererBase& renderer, std::span<const DirectX::XMFLOAT3> knots,
+	void Build(CurveRenderer& renderer, std::span<const DirectX::XMFLOAT3> knots,
 		const BezierData& style, const CatmullRomOptions& options = {});
 
 	// Re-poses the links through new knots, same `ends` convention as Build(). Cheap when the link
@@ -104,7 +109,7 @@ public:
 	bool valid() const { return !links.empty() && links.front().valid(); }
 
 private:
-	BezierRendererBase* renderer = nullptr;
+	CurveRenderer* renderer = nullptr;
 	std::vector<BezierCurve> links;  // in chain order; reallocation is fine, handles are movable
 	BezierData style;                // the shared style; also what newly added links start from
 	CatmullRomOptions options;

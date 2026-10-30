@@ -3,8 +3,6 @@
 #include <Include/Axodox.Graphics.h>
 #include "orbital_camera.h"
 #include "bezier.h"
-#include "bezier_solid.h"
-#include "bezier_dots.h"
 #include "bezier_line.h"
 #include "catmull_rom.h"
 #include <vector>
@@ -18,18 +16,15 @@ private:
 	std::unique_ptr<Axodox::Graphics::DepthStencil2D> depth;
 	std::unique_ptr<Axodox::Graphics::ConstantBuffer> buffer_camera;
 
-	// All three renderers are alive at once and each owns its own copy of the same scene, drawn side
-	// by side: patterned, then solid, then dots, then lines. That is the point of this app - with the pattern set
-	// to Solid the first two halves should be pixel-identical, and any difference in cost between them
-	// is the price of the pattern pipeline; the third is BezierDotRenderer, which draws only dot
-	// patterns via its own instanced-quad technique (see bezier_dots.h) rather than piggybacking dots
-	// on a line-strip's SDF the way the patterned renderer's dash_length == 0 case does.
+	// Two renderers, each with its own copy of the same scene, drawn side by side:
+	//   - curve_renderer, a BezierRenderer (bezier.h): every curve goes to its solid, patterned or dot
+	//     backend by its spacing and dash length, and moves when the style panel changes those. The
+	//     Timings window still shows the three backends one column each.
+	//   - line_renderer, the hardware line primitive (1 px, colour only), as the cost floor.
 	//
-	// A curve belongs to the renderer that created it and cannot be moved between them, so the
-	// scene really is built three times.
-	std::unique_ptr<BezierRenderer> patterned_renderer;
-	std::unique_ptr<BezierSolidRenderer> solid_renderer;
-	std::unique_ptr<BezierDotRenderer> dot_renderer;
+	// A curve belongs to the renderer that created it, so the scene is built twice. Inside the
+	// BezierRenderer nothing is built per backend - its routing is the whole point.
+	std::unique_ptr<BezierRenderer> curve_renderer;
 	std::unique_ptr<BezierLineRenderer> line_renderer;
 
 	Camera camera;
@@ -65,7 +60,8 @@ private:
 	// One renderer's worth of scene. The four example groups are added once in BuildScene() and kept
 	// for the lifetime of the app, so animation reposes them in place through these handles every
 	// frame instead. x_offset slides the whole copy sideways so the copies can be compared;
-	// BezierCurve itself is renderer-agnostic, so the same Scene type serves all three.
+	// BezierCurve itself is renderer-agnostic, so the same Scene type serves both. In the
+	// BezierRenderer a handle stays valid when its curve moves to another backend.
 	//
 	// Every BezierCurve here OWNS its curve (see bezier_common.h): destroying the handle removes the
 	// curve from its renderer. That is how the Test screen removes curves - it simply erases entries
@@ -83,15 +79,16 @@ private:
 		std::vector<TestCurve> test_curves;
 	};
 
-	Scene patterned_scene;
-	Scene solid_scene;
-	Scene dot_scene;
+	Scene curve_scene;
 	Scene line_scene;
+
+	// Columns, left to right: curve_renderer / curve_scene, then line_renderer / line_scene.
+	static constexpr int ColumnCount = 2;
 
 	// --- screens -------------------------------------------------------------------
 	// Two tabs in the control window. Example is the hand-built demo scene; Test spawns random curves
 	// into one renderer at a time so the Timings window has something to measure. Both screens share
-	// the renderer checkboxes, the style controls, and the same three scenes - the tab only decides
+	// the renderer checkboxes, the style controls, and the same two scenes - the tab only decides
 	// which controls are on screen, never what is drawn.
 	bool show_timings = true;
 
@@ -116,12 +113,10 @@ private:
 	float test_spread = 0.8f;
 
 	// --- what gets drawn -----------------------------------------------------------
-	bool draw_patterned = true;
-	bool draw_solid = true;
-	bool draw_dots = true;
+	bool draw_curves = true;
 	bool draw_lines = true;
-	// World-space gap between adjacent visible copies, evenly spaced and centred on the origin -
-	// see Update() for how 1, 2 or 3 visible copies are laid out.
+	// World-space gap between the two copies when both are visible, centred on the origin - see
+	// Update().
 	float compare_offset = 7.0f;
 
 	// --- runtime-editable style, applied to every curve in the scene every frame ---
@@ -130,12 +125,11 @@ private:
 	int style_cap_back = 0;         // CurveCap at the far end
 	bool link_caps = false;         // drive both ends from the front picker
 	int style_join = 0;             // CurveJoin
-	// The pattern is no longer an enum. `patterned` off uploads spacing 0, which produces no pattern
-	// centres and so a solid stroke - that is what makes the two halves comparable. A dot is
-	// style_dash_length 0 with both caps set to Round; the "Dot" button in the panel does exactly
-	// that and nothing else.
+	// The pattern is two numbers, and the BezierRenderer picks the backend from them (KindOf):
+	// `patterned` off uploads spacing 0 -> Solid; dash length 0 -> Dots; both set -> Patterned. A dot
+	// is dash length 0 with both caps Round; the "Make dots" button sets exactly that.
 	bool style_patterned = true;     // off => spacing 0 => solid
-	float style_dash_length = 80.0f; // LENGTH of one dash, in pixels (0 + round caps = dot)
+	float style_dash_length = 80.0f; // LENGTH of one dash, in pixels (0 = dots)
 	float style_spacing = 0.35f;     // world units between pattern centers
 	int style_resolution = 120;      // sample points per curve
 	float style_min_height = 0.0f;  // colour-by-height band; min >= max blends by curve t instead
@@ -164,27 +158,25 @@ private:
 	// Stroke / caps / join / pattern / height band. Shown on both tabs because it drives every curve
 	// in every scene, test curves included.
 	void StyleGui();
-	// The timings window. Reads each renderer's public Profiler, one column per renderer.
+	// The timings window. Reads each renderer's public Profiler: one column per BezierRenderer
+	// backend, then the line renderer.
 	void ProfilerGui();
 	void Render();
 
 	// Adds one copy of the scene to `renderer` and fills `scene` with handles to it.
-	void BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset);
+	void BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset);
 	// Spawns test_count random curves into ONE renderer and records them in that renderer's scene.
 	// Deliberately per renderer rather than broadcast: the scenes are allowed to diverge, which is the
-	// only way to give one renderer a heavier load than the others and watch the Timings table split.
-	// `force_spacing` matches ApplyStyle()'s parameter - see there.
-	void AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing);
+	// only way to give one renderer a heavier load than the other and watch the Timings table split.
+	void AddTestCurves(CurveRenderer& renderer, Scene& scene);
 	// Drops the `count` most recently added test curves of one scene (all of them if it holds fewer).
 	// Erasing the handles is the removal - each one takes its curve out of the renderer as it goes.
 	void RemoveTestCurves(Scene& scene, size_t count);
 	// Re-poses and re-colours one copy for the current animation_time and x_offset.
 	void PoseScene(Scene& scene);
-	// Pushes the runtime style controls onto one copy. The gallery keeps its own caps. `force_spacing`
-	// is for dot_scene: BezierDotRenderer has no solid/off state, so its spacing must not go to 0 just
-	// because the "Patterned" checkbox (which only means something for the first two renderers) is
-	// unticked.
-	void ApplyStyle(Scene& scene, bool force_spacing = false);
+	// Pushes the runtime style controls onto one copy. The gallery keeps its own caps. In the
+	// BezierRenderer this is also what moves curves between backends, on its next Draw().
+	void ApplyStyle(Scene& scene);
 
 public:
 	SDL_AppResult Init();

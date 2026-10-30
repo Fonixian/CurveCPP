@@ -16,7 +16,7 @@ struct SegmentedScanShaders;
 // An in-place EXCLUSIVE segmented prefix sum over a buffer of T, with the segment begins packed one bit
 // per element into `flags`, which is only read. T is the element type of `values`, of the per-block sums, and of the
 // SCAN_VALUE_TYPE the shaders were compiled with - float and DirectX::XMFLOAT2 are instantiated.
-// BezierRenderer scans its (world, screen) arc lengths together as one XMFLOAT2 buffer, the dots
+// BezierPatternRenderer scans its (world, screen) arc lengths together as one XMFLOAT2 buffer, the dots
 // renderer scans world arc length alone as float.
 //
 // An instance owns its block-sum / block-flag / carry-flag scratch, so one instance cannot be used for

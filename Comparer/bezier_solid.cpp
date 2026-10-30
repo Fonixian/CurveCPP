@@ -16,14 +16,12 @@ BezierSolidRenderer::BezierSolidRenderer(const GraphicsDevice& device)
 	});
 }
 
-// SolidCurveStyle in solid_common.hlsli: one packed uint per curve, see PackWidthCapCapJoin. A
-// fractional width is drawn at the nearest whole pixel.
+// SolidCurveStyle in solid_common.hlsli: the style word as is.
 void BezierSolidRenderer::AllocateStyleBuffer(const GraphicsDevice& device, uint32_t curves_required) {
 	curve_styles.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(curves_required)));
 }
 
 void BezierSolidRenderer::UploadStyles(GraphicsDeviceContext* context) {
-	// The style word is already stored in exactly this form.
 	curve_styles->Upload(std::span<const uint32_t>{ style_words }, context);
 }
 
@@ -40,14 +38,10 @@ void BezierSolidRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& 
 
 	UploadCameraData(view_proj, context);
 
-	// No compute work at all: no "calc", "scan" or "pattern" metric, so those rows stay empty in the
-	// profiler window. solid_vert evaluates the curve per vertex instead of reading a point pass's
-	// output, so there is no separate calc cost to report.
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	// Same slot numbers as the patterned renderer's curve_vs for t1, t3..t7, so the two vertex shaders
-	// stay easy to diff; t0, t2, t8 and t9 are the patterned renderer's alone and unbound here.
+	// Same slots as the patterned renderer's curve_vs.
 	curve_begins->Bind(ShaderStage::Vertex, 1, context);
 	BindCurveData(context, 3, 5, 7);                         // t3 control points, t5 colours, t7 indices
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
