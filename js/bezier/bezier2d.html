@@ -1,0 +1,510 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bezier 2D benchmark (instanced lines)</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #121214; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  pre { position: fixed; left: 8px; margin: 0; color: #e8e8e8; pointer-events: none;
+        font: 12px/1.4 Consolas, "Courier New", monospace; text-shadow: 0 0 3px #000, 0 0 2px #000; }
+  #hud { top: 6px; }
+  #help { top: 92px; background: rgba(0,0,0,0.78); padding: 8px 12px; border-radius: 4px; display: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<pre id="hud"></pre>
+<pre id="help"></pre>
+<script>
+"use strict";
+/*
+ * 2D cubic Bezier benchmark built on the instanced line technique from
+ * src/commands.js (interleavedStripRoundCapJoin): every polyline segment is one
+ * instance of a small template mesh (quad + two half discs), placed by the
+ * vertex shader using pointA/pointB read from the same buffer at two offsets.
+ *
+ * What is added on top of the original shader, without changing its math:
+ *  - many curves share one buffer; the "bridge" segment between two curves is
+ *    rejected in the vertex shader (gl_InstanceID % (N+1) == N)
+ *  - the end half-discs of the first/last segment of each curve are reshaped
+ *    into flat / round / square / triangle caps
+ *  - the template is indexed (24 unique verts instead of 54) -> less VS work
+ *  - motion in "transform" mode is a matrix uniform, so no CPU work per frame
+ */
+
+const canvas = document.getElementById("c");
+const hud = document.getElementById("hud");
+const helpEl = document.getElementById("help");
+const gl = canvas.getContext("webgl2", { antialias: true, alpha: false, depth: false, stencil: false, powerPreference: "high-performance" });
+if (!gl) { hud.textContent = "WebGL2 is not available in this browser."; throw new Error("no webgl2"); }
+const timerExt = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+
+// ---------------------------------------------------------------- shaders
+const CAP_GLSL = `
+uniform int stride;    // points per curve = segments per curve + 1
+uniform int capFront;  // 0 flat, 1 round, 2 square, 3 triangle
+uniform int capBack;
+// Pick and reshape the half-discs of the template.
+//  - first segment's start disc / last segment's end disc -> requested cap
+//  - interior joints: the original draws two half discs per joint (one from each
+//    segment). One is enough unless the turn is sharper than 90 degrees, so each
+//    joint keeps only the disc that faces the middle of the curve. That halves the
+//    join overdraw and stops discs poking out past flat/square ends when the
+//    stroke is wider than a segment is long.
+vec2 capShape(vec3 pos, int seg, bool sharpStart, bool sharpEnd) {
+  int last = stride - 2;
+  int mid = last / 2; // joints 1..mid use the previous segment's end disc
+  int style;
+  if (pos.z < 0.5) style = seg == 0 ? capFront : ((seg > mid || sharpStart) ? 1 : 0);
+  else             style = seg == last ? capBack : ((seg + 1 <= mid || sharpEnd) ? 1 : 0);
+  vec2 p = pos.xy;
+  if (style == 1) return p;
+  float r = length(p);
+  if (r < 1e-6) return p;
+  vec2 d = p / r;
+  if (style == 0) return vec2(0.0, p.y);                 // flat: disc collapses onto the end line
+  if (style == 2) return p / max(abs(d.x), abs(d.y));    // square: disc rim pushed onto a half square
+  return p / (abs(d.x) + abs(d.y));                      // triangle: rim pushed onto a half diamond
+}`;
+
+const VS = `#version 300 es
+precision highp float;
+in vec3 position;
+in vec2 pointZ, pointA, pointB, pointC; // previous, segment start, segment end, next
+uniform float width;
+uniform mat4 projection;
+${CAP_GLSL}
+void main() {
+  int seg = gl_InstanceID % stride;
+  if (seg == stride - 1) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; } // bridge between curves
+  vec2 dir = pointB - pointA;
+  vec2 p = capShape(position, seg, dot(pointA - pointZ, dir) < 0.0, dot(dir, pointC - pointB) < 0.0);
+  // --- original interleavedStripRoundCapJoin math ---
+  float len = length(dir);
+  vec2 xBasis = len > 0.0 ? dir / len : vec2(1.0, 0.0);
+  vec2 yBasis = vec2(-xBasis.y, xBasis.x);
+  vec2 offsetA = pointA + width * (p.x * xBasis + p.y * yBasis);
+  vec2 offsetB = pointB + width * (p.x * xBasis + p.y * yBasis);
+  vec2 point = mix(offsetA, offsetB, position.z);
+  gl_Position = projection * vec4(point, 0, 1);
+}`;
+
+const FS = `#version 300 es
+precision highp float;
+uniform vec4 color;
+out vec4 outColor;
+void main() { outColor = vec4(color.rgb, 0.5); } // constant alpha 0.5; only visible with blending on (x)`;
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+function makeProgram(vs, fs, attribs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  attribs.forEach((a, i) => gl.bindAttribLocation(p, i, a));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  const u = {};
+  const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
+  for (let i = 0; i < n; i++) { const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
+  return { p, u };
+}
+const prog = makeProgram(VS, FS, ["position", "pointZ", "pointA", "pointB", "pointC"]);
+
+// ------------------------------------------- template (roundCapJoinGeometry, indexed)
+function buildTemplate(res) {
+  const verts = [], index = [], map = new Map();
+  const v = (x, y, z) => {
+    x = Math.round(x * 1e6) / 1e6 + 0; y = Math.round(y * 1e6) / 1e6 + 0;
+    const k = x + "," + y + "," + z;
+    let i = map.get(k);
+    if (i === undefined) { i = verts.length / 3; verts.push(x, y, z); map.set(k, i); }
+    index.push(i);
+  };
+  v(0, -0.5, 0); v(0, -0.5, 1); v(0, 0.5, 1);
+  v(0, -0.5, 0); v(0, 0.5, 1); v(0, 0.5, 0);
+  for (let s = 0; s < res; s++) {
+    const t0 = Math.PI / 2 + (s * Math.PI) / res, t1 = Math.PI / 2 + ((s + 1) * Math.PI) / res;
+    v(0, 0, 0); v(0.5 * Math.cos(t0), 0.5 * Math.sin(t0), 0); v(0.5 * Math.cos(t1), 0.5 * Math.sin(t1), 0);
+  }
+  for (let s = 0; s < res; s++) {
+    const t0 = (3 * Math.PI) / 2 + (s * Math.PI) / res, t1 = (3 * Math.PI) / 2 + ((s + 1) * Math.PI) / res;
+    v(0, 0, 1); v(0.5 * Math.cos(t0), 0.5 * Math.sin(t0), 1); v(0.5 * Math.cos(t1), 0.5 * Math.sin(t1), 1);
+  }
+  return { verts: new Float32Array(verts), index: new Uint16Array(index) };
+}
+const CAP_RES = 8; // must be a multiple of 4 so square/triangle caps get exact corners
+const tmpl = buildTemplate(CAP_RES);
+
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const tBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, tBuf);
+gl.bufferData(gl.ARRAY_BUFFER, tmpl.verts, gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+const iBuf = gl.createBuffer();
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, iBuf);
+gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, tmpl.index, gl.STATIC_DRAW);
+const ptBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
+for (let i = 1; i <= 4; i++) { gl.enableVertexAttribArray(i); gl.vertexAttribDivisor(i, 1); }
+gl.bindVertexArray(null);
+
+// ---------------------------------------------------------------- state
+const COLORS = [[1, 1, 1, 1], [0.55, 0.8, 1, 1], [1, 0.62, 0.2, 1], [0.45, 0.9, 0.45, 1], [1, 0.55, 0.8, 1]];
+const COLOR_NAMES = ["white", "light blue", "orange", "green", "pink"];
+const CAP_NAMES = ["flat", "round", "square", "triangle"];
+const MOTION_NAMES = ["off", "circle", "rotate", "circle + rotate"];
+const SEG_OPTIONS = [8, 16, 32, 64];
+const MAX_CURVES = 1 << 19;
+
+const S = {
+  seed: 1, curves: 3000, N: 32, colorMode: 0, capFront: 1, capBack: 1, width: 0.004,
+  perCurve: false, vsync: true, showText: true, showHelp: false, blend: false,
+  motion: 0, rewrite: false, motionTime: 0,
+  bob: false, bobTime: 0,
+  cam: { x: 0, y: 0, zoom: 1, rot: 0 },
+};
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+let ctrl = null, pts = null, basis = null, bufKey = null;
+
+function generate() {
+  const rnd = mulberry32(S.seed * 7919);
+  ctrl = new Float32Array(S.curves * 8);
+  for (let i = 0; i < ctrl.length; i++) ctrl[i] = rnd() * 2 - 1;
+  rebuildPoints();
+}
+function rebuildPoints() {
+  const N1 = S.N + 1;
+  basis = new Float32Array(N1 * 4);
+  for (let k = 0; k < N1; k++) {
+    const t = k / S.N, m = 1 - t;
+    basis[k * 4] = m * m * m; basis[k * 4 + 1] = 3 * m * m * t; basis[k * 4 + 2] = 3 * m * t * t; basis[k * 4 + 3] = t * t * t;
+  }
+  // one padding point before and after so pointZ / pointC never read outside the buffer
+  pts = new Float32Array((S.curves * N1 + 2) * 2);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, pts.byteLength, gl.DYNAMIC_DRAW);
+  bufKey = null;
+}
+
+// Bounce: CPU-side up/down movement of every curve, each with its own phase,
+// so it can't be replaced by a single transform.
+const BOB_AMP = 0.12, BOB_W = Math.PI; // 2 s period
+const BOB_PHASE = 2.399963;            // golden angle, spreads phases over the curves
+
+// Evaluate every curve at N+1 points (optionally after an affine transform of its
+// control points) and upload. xf = [a, b, c, d, tx, ty]: X = a x + c y + tx, Y = b x + d y + ty
+function flatten(xf) {
+  const N1 = S.N + 1, b = basis, c = ctrl, o = pts;
+  const a = xf ? xf[0] : 1, bb = xf ? xf[1] : 0, cc = xf ? xf[2] : 0, d = xf ? xf[3] : 1, tx = xf ? xf[4] : 0, ty = xf ? xf[5] : 0;
+  const bt = S.bobTime;
+  let w = 2; // skip the leading padding point
+  for (let i = 0, n = S.curves; i < n; i++) {
+    const k = i * 8;
+    let x0 = c[k], y0 = c[k + 1], x1 = c[k + 2], y1 = c[k + 3], x2 = c[k + 4], y2 = c[k + 5], x3 = c[k + 6], y3 = c[k + 7];
+    if (bt !== 0) { // bounce: each curve moves up and down with its own phase
+      const oy = BOB_AMP * (Math.sin(BOB_W * bt + i * BOB_PHASE) - Math.sin(i * BOB_PHASE));
+      y0 += oy; y1 += oy; y2 += oy; y3 += oy;
+    }
+    if (xf) {
+      let t;
+      t = a * x0 + cc * y0 + tx; y0 = bb * x0 + d * y0 + ty; x0 = t;
+      t = a * x1 + cc * y1 + tx; y1 = bb * x1 + d * y1 + ty; x1 = t;
+      t = a * x2 + cc * y2 + tx; y2 = bb * x2 + d * y2 + ty; x2 = t;
+      t = a * x3 + cc * y3 + tx; y3 = bb * x3 + d * y3 + ty; x3 = t;
+    }
+    for (let j = 0, q = 0; j < N1; j++, q += 4) {
+      const b0 = b[q], b1 = b[q + 1], b2 = b[q + 2], b3 = b[q + 3];
+      o[w++] = b0 * x0 + b1 * x1 + b2 * x2 + b3 * x3;
+      o[w++] = b0 * y0 + b1 * y1 + b2 * y2 + b3 * y3;
+    }
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
+  gl.bufferSubData(gl.ARRAY_BUFFER, 0, o);
+}
+
+function motionXf() {
+  const t = S.motionTime, R = 0.15;
+  let ang = 0, tx = 0, ty = 0;
+  // when paused, the last active mode is kept with frozen time, so the picture stays put
+  if (S.lastMotion & 1) { const w = (2 * Math.PI * t) / 8; tx = R * Math.cos(w) - R; ty = R * Math.sin(w); }
+  if (S.lastMotion & 2) ang = 0.3 * t;
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return [c, s, -s, c, tx, ty];
+}
+S.lastMotion = 0;
+
+// ---------------------------------------------------------------- camera
+function projectionMatrix(xf) {
+  const w = canvas.width, h = canvas.height, md = Math.min(w, h);
+  const sx = md / w / 1.1, sy = md / h / 1.1, z = S.cam.zoom;
+  const cr = Math.cos(S.cam.rot), sr = Math.sin(S.cam.rot);
+  // M = model linear part, mt = model translation
+  const ma = xf ? xf[0] : 1, mb = xf ? xf[1] : 0, mc = xf ? xf[2] : 0, md2 = xf ? xf[3] : 1;
+  const mtx = (xf ? xf[4] : 0) - S.cam.x, mty = (xf ? xf[5] : 0) - S.cam.y;
+  // V = diag(sx,sy) * z * R(rot)
+  const v00 = sx * z * cr, v01 = -sx * z * sr, v10 = sy * z * sr, v11 = sy * z * cr;
+  const l00 = v00 * ma + v01 * mb, l01 = v00 * mc + v01 * md2;
+  const l10 = v10 * ma + v11 * mb, l11 = v10 * mc + v11 * md2;
+  const t0 = v00 * mtx + v01 * mty, t1 = v10 * mtx + v11 * mty;
+  return new Float32Array([l00, l10, 0, 0, l01, l11, 0, 0, 0, 0, 1, 0, t0, t1, 0, 1]);
+}
+function panPixels(dx, dy) { // css pixels, y down
+  const md = Math.min(canvas.clientWidth, canvas.clientHeight);
+  const k = (2 * 1.1) / md / S.cam.zoom;
+  const ux = dx * k, uy = -dy * k;
+  const c = Math.cos(-S.cam.rot), s = Math.sin(-S.cam.rot);
+  S.cam.x -= c * ux - s * uy; S.cam.y -= s * ux + c * uy;
+}
+function resetCamera() { S.cam = { x: 0, y: 0, zoom: 1, rot: 0 }; }
+
+// ---------------------------------------------------------------- drawing
+let lastDraw = { calls: 0, inst: 0 };
+function groupStart(g) { return Math.floor((g * S.curves) / 5); }
+
+function drawCurves(projection) {
+  gl.useProgram(prog.p);
+  gl.bindVertexArray(vao);
+  gl.bindBuffer(gl.ARRAY_BUFFER, ptBuf);
+  const u = prog.u;
+  gl.uniformMatrix4fv(u.projection, false, projection);
+  gl.uniform1f(u.width, S.width);
+  gl.uniform1i(u.stride, S.N + 1);
+  gl.uniform1i(u.capFront, S.capFront);
+  gl.uniform1i(u.capBack, S.capBack);
+  const N1 = S.N + 1, ptBytes = 8, idxCount = tmpl.index.length;
+  let calls = 0, inst = 0, lastCol = -1;
+  const drawRange = (start, count, col) => {
+    const off = start * N1 * ptBytes; // = padding point before this range's first point
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, 0, off);               // pointZ
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 0, off + ptBytes);     // pointA
+    gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 0, off + 2 * ptBytes); // pointB
+    gl.vertexAttribPointer(4, 2, gl.FLOAT, false, 0, off + 3 * ptBytes); // pointC
+    if (col !== lastCol) { gl.uniform4fv(u.color, COLORS[col]); lastCol = col; }
+    const n = count * N1 - 1; // drop the trailing bridge
+    gl.drawElementsInstanced(gl.TRIANGLES, idxCount, gl.UNSIGNED_SHORT, 0, n);
+    calls++; inst += n;
+  };
+  if (S.colorMode === 0) {
+    for (let g = 0; g < 5; g++) {
+      const s = groupStart(g), e = groupStart(g + 1);
+      if (e <= s) continue;
+      if (S.perCurve) for (let i = s; i < e; i++) drawRange(i, 1, g);
+      else drawRange(s, e - s, g);
+    }
+  } else {
+    const col = S.colorMode - 1;
+    if (S.perCurve) for (let i = 0; i < S.curves; i++) drawRange(i, 1, col);
+    else drawRange(0, S.curves, col);
+  }
+  gl.bindVertexArray(null);
+  lastDraw = { calls, inst };
+}
+
+// ---------------------------------------------------------------- timing
+const stats = {};
+let statGen = 0;
+function resetStats() {
+  Object.assign(stats, { t0: performance.now(), frames: 0, frameSum: 0, cpuSum: 0, gpuSum: 0, gpuN: 0, updSum: 0, updN: 0 });
+  statGen++;
+}
+resetStats();
+let shown = { gpu: NaN, cpu: NaN, frame: NaN, upd: NaN };
+
+const freeQ = [], pendingQ = [];
+function gpuBegin() {
+  if (!timerExt || pendingQ.length > 8) return null;
+  const q = freeQ.pop() || gl.createQuery();
+  gl.beginQuery(timerExt.TIME_ELAPSED_EXT, q);
+  return q;
+}
+function gpuEnd(q) { if (q) { gl.endQuery(timerExt.TIME_ELAPSED_EXT); pendingQ.push({ q, gen: statGen }); } }
+function gpuPoll() {
+  if (!timerExt) return;
+  const disjoint = gl.getParameter(timerExt.GPU_DISJOINT_EXT);
+  while (pendingQ.length) {
+    const p = pendingQ[0];
+    if (!gl.getQueryParameter(p.q, gl.QUERY_RESULT_AVAILABLE)) break;
+    const ns = gl.getQueryParameter(p.q, gl.QUERY_RESULT);
+    pendingQ.shift(); freeQ.push(p.q);
+    if (!disjoint && p.gen === statGen) { stats.gpuSum += ns / 1e6; stats.gpuN++; }
+  }
+}
+
+// ---------------------------------------------------------------- HUD
+const fmt = (v) => (isFinite(v) ? v.toFixed(3) + " ms" : "--");
+function hudText() {
+  const colour = S.colorMode === 0 ? "mixed" : COLOR_NAMES[S.colorMode - 1];
+  const fps = isFinite(shown.frame) && shown.frame > 0 ? (1000 / shown.frame).toFixed(1) : "--";
+  const gpu = timerExt ? fmt(shown.gpu) : "n/a (no EXT_disjoint_timer_query_webgl2)";
+  const upd = (S.rewrite && S.motion) || S.bob ? "  |  CPU update: " + fmt(shown.upd) : "";
+  const bob = S.bob ? "on" : S.bobTime ? "paused" : "off";
+  return [
+    `${S.curves} curves  |  colour: ${colour}  |  caps front: ${CAP_NAMES[S.capFront]}  back: ${CAP_NAMES[S.capBack]}  |  width: ${S.width.toPrecision(3)}`,
+    `GPU render: ${gpu}  |  CPU submit: ${fmt(shown.cpu)}  |  frame: ${fmt(shown.frame)} (${fps} fps)`,
+    `motion: ${MOTION_NAMES[S.motion]}  |  apply: ${S.rewrite ? "rewrite control points" : "transform"}  |  bounce (CPU): ${bob}${upd}`,
+    `draw: instanced strips, ${S.perCurve ? "one curve per draw" : "batched per colour"} (${lastDraw.calls} draw calls, ${lastDraw.inst.toLocaleString()} segment instances)  |  ${S.N} segs/curve  |  vsync ${S.vsync ? "on" : "off (uncapped loop)"}  |  alpha blend ${S.blend ? "on" : "off"}`,
+  ].join("\n");
+}
+helpEl.textContent = [
+  "p        colour: mixed -> white -> light blue -> orange -> green -> pink",
+  "c / C    front / back cap: flat, round, square, triangle",
+  "< / >    thinner / thicker strokes   (also , and .)",
+  "[ / ]    halve / double the number of curves",
+  "n        segments per curve: 8 / 16 / 32 / 64",
+  "r        new random curves",
+  "i        batched per colour  /  one draw call per curve",
+  "m        motion: off -> circle -> rotate -> circle + rotate",
+  "u        apply motion: transform  /  rewrite control points",
+  "b        bounce: curves move up and down, moved on the CPU every frame",
+  "v        vsync on (requestAnimationFrame) / off (uncapped loop)",
+  "x        alpha blending on / off (curves output alpha 0.5)",
+  "t        hide / show text      h  this help      Esc  close help",
+  "",
+  "left-drag pan  |  shift+drag zoom  |  ctrl+drag rotate  |  wheel zoom",
+  "arrows pan  |  + / - zoom  |  q / e rotate  |  space / Home reset camera",
+].join("\n");
+
+// ---------------------------------------------------------------- loop
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  const w = Math.max(1, Math.round(canvas.clientWidth * dpr)), h = Math.max(1, Math.round(canvas.clientHeight * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+}
+
+const channel = new MessageChannel();
+channel.port1.onmessage = frame;
+function schedule() { if (S.vsync) requestAnimationFrame(frame); else channel.port2.postMessage(0); }
+
+let lastT = performance.now();
+function frame() {
+  const now = performance.now();
+  const dt = now - lastT; lastT = now;
+  resize();
+
+  if (S.motion) { S.motionTime += Math.min(dt, 100) / 1000; S.lastMotion = S.motion; }
+  const xf = S.motionTime !== 0 ? motionXf() : null;
+
+  // keep the point buffer in sync with the motion mode
+  if (S.bob) S.bobTime += Math.min(dt, 100) / 1000;
+  const key = (S.rewrite && xf ? "r" + S.motionTime + ":" + S.lastMotion : "id") + "|b" + S.bobTime;
+  if (key !== bufKey) {
+    const t0 = performance.now();
+    flatten(S.rewrite ? xf : null);
+    const t1 = performance.now();
+    if ((S.rewrite && S.motion) || S.bob) { stats.updSum += t1 - t0; stats.updN++; }
+    bufKey = key;
+  }
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.07, 0.07, 0.08, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.disable(gl.DEPTH_TEST);
+  gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+
+  if (S.blend) { gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); }
+  else gl.disable(gl.BLEND);
+
+  const proj = projectionMatrix(S.rewrite ? null : xf);
+  const c0 = performance.now();
+  const q = gpuBegin();
+  drawCurves(proj);
+  gpuEnd(q);
+  stats.cpuSum += performance.now() - c0;
+  gpuPoll();
+
+  stats.frames++; stats.frameSum += dt;
+  if (now - stats.t0 >= 500 && stats.frames > 1) {
+    shown = {
+      gpu: stats.gpuN ? stats.gpuSum / stats.gpuN : NaN,
+      cpu: stats.cpuSum / stats.frames,
+      frame: stats.frameSum / stats.frames,
+      upd: stats.updN ? stats.updSum / stats.updN : NaN,
+    };
+    stats.t0 = now; stats.frames = 0; stats.frameSum = 0; stats.cpuSum = 0; stats.gpuSum = 0; stats.gpuN = 0; stats.updSum = 0; stats.updN = 0;
+    if (S.showText) hud.textContent = hudText();
+  }
+  schedule();
+}
+
+function changed() { resetStats(); shown = { gpu: NaN, cpu: NaN, frame: NaN, upd: NaN }; if (S.showText) hud.textContent = hudText(); }
+
+// ---------------------------------------------------------------- input
+const NO_RESET_KEYS = new Set(["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-", "_", "q", "e", " ", "Home", "h", "t", "Escape"]);
+window.addEventListener("keydown", (e) => {
+  const k = e.key;
+  let handled = true;
+  switch (k) {
+    case "p": S.colorMode = (S.colorMode + 1) % 6; break;
+    case "c": S.capFront = (S.capFront + 1) % 4; break;
+    case "C": S.capBack = (S.capBack + 1) % 4; break;
+    case "<": case ",": S.width = Math.max(1e-5, S.width / 1.25); break;
+    case ">": case ".": S.width = Math.min(1, S.width * 1.25); break;
+    case "[": if (S.curves > 1) { S.curves = Math.max(1, S.curves >> 1); generate(); } break;
+    case "]": if (S.curves < MAX_CURVES) { S.curves = Math.min(MAX_CURVES, S.curves * 2); generate(); } break;
+    case "n": case "N": S.N = SEG_OPTIONS[(SEG_OPTIONS.indexOf(S.N) + 1) % SEG_OPTIONS.length]; rebuildPoints(); break;
+    case "r": S.seed++; generate(); break;
+    case "i": S.perCurve = !S.perCurve; break;
+    case "m": S.motion = (S.motion + 1) % 4; break;
+    case "u": S.rewrite = !S.rewrite; break;
+    case "b": S.bob = !S.bob; break;
+    case "v": S.vsync = !S.vsync; break;
+    case "x": S.blend = !S.blend; break;
+    case "t": S.showText = !S.showText; hud.style.display = S.showText ? "" : "none"; if (!S.showText) helpEl.style.display = "none"; break;
+    case "h": S.showHelp = !S.showHelp; helpEl.style.display = S.showHelp && S.showText ? "block" : "none"; break;
+    case "Escape": S.showHelp = false; helpEl.style.display = "none"; break;
+    case "ArrowLeft": panPixels(-40, 0); break;
+    case "ArrowRight": panPixels(40, 0); break;
+    case "ArrowUp": panPixels(0, -40); break;
+    case "ArrowDown": panPixels(0, 40); break;
+    case "+": case "=": S.cam.zoom *= 1.2; break;
+    case "-": case "_": S.cam.zoom /= 1.2; break;
+    case "q": S.cam.rot += Math.PI / 36; break;
+    case "e": S.cam.rot -= Math.PI / 36; break;
+    case " ": case "Home": resetCamera(); break;
+    default: handled = false;
+  }
+  if (handled) {
+    e.preventDefault();
+    // camera moves and help/text toggles don't invalidate the averages
+    if (!NO_RESET_KEYS.has(k)) changed();
+  }
+});
+
+let drag = null;
+canvas.addEventListener("pointerdown", (e) => { if (e.button === 0) { drag = { x: e.clientX, y: e.clientY }; canvas.setPointerCapture(e.pointerId); } });
+canvas.addEventListener("pointerup", () => { drag = null; });
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag = { x: e.clientX, y: e.clientY };
+  if (e.shiftKey) S.cam.zoom *= Math.exp(-dy * 0.01);
+  else if (e.ctrlKey) S.cam.rot += dx * 0.01;
+  else panPixels(dx, dy);
+});
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); S.cam.zoom *= Math.exp(-e.deltaY * 0.0015); }, { passive: false });
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+generate();
+resize();
+hud.textContent = hudText();
+schedule();
+</script>
+</body>
+</html>

@@ -81,7 +81,7 @@ namespace
 	}
 }
 
-void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
+void App::BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset)
 {
 	scene.x_offset = x_offset;
 
@@ -140,7 +140,7 @@ void App::BuildScene(BezierRendererBase& renderer, Scene& scene, float x_offset)
 	}
 }
 
-void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_spacing)
+void App::AddTestCurves(CurveRenderer& renderer, Scene& scene)
 {
 	const auto cap_front = static_cast<CurveCap>(style_cap_front);
 	const auto cap_back = static_cast<CurveCap>(link_caps ? style_cap_front : style_cap_back);
@@ -181,13 +181,14 @@ void App::AddTestCurves(BezierRendererBase& renderer, Scene& scene, bool force_s
 
 		// The properties are the ones the window is showing - only the geometry is random. Everything
 		// here is what ApplyStyle() would push anyway, set at Add time so a curve looks right on the
-		// frame it appears rather than on the next one.
+		// frame it appears rather than on the next one - and, in the BezierRenderer, lands straight in
+		// the backend the current pattern picks instead of being moved there on the next Draw().
 		data.width = style_width;
 		data.cap_front = cap_front;
 		data.cap_back = cap_back;
 		data.join = static_cast<CurveJoin>(style_join);
 		data.dash_length = style_dash_length;
-		data.spacing = (style_patterned || force_spacing) ? style_spacing : 0.0f;
+		data.spacing = style_patterned ? style_spacing : 0.0f;
 		data.min_height = style_min_height;
 		data.max_height = style_max_height;
 		data.resolution = resolution;
@@ -318,8 +319,8 @@ void App::PoseScene(Scene& scene)
 
 	// --- test curves: static geometry, slid into this copy's column ------------------------------
 	// They do not animate; the only thing this loop does is re-apply x_offset, so that a test batch
-	// added while (say) all three renderers were visible stays in its own column after one is
-	// unticked and the layout re-centres. Colours were fixed at Add time and are left alone.
+	// added while both renderers were visible stays in its own column after one is unticked and the
+	// layout re-centres. Colours were fixed at Add time and are left alone.
 	for (auto& test : scene.test_curves)
 	{
 		XMFLOAT3 placed[4];
@@ -335,7 +336,7 @@ void App::PoseScene(Scene& scene)
 	}
 }
 
-void App::ApplyStyle(Scene& scene, bool force_spacing)
+void App::ApplyStyle(Scene& scene)
 {
 	const auto cap_front = static_cast<CurveCap>(style_cap_front);
 	const auto cap_back = static_cast<CurveCap>(link_caps ? style_cap_front : style_cap_back);
@@ -350,12 +351,11 @@ void App::ApplyStyle(Scene& scene, bool force_spacing)
 		if (!keep_own_caps)
 			target.Cap(cap_front, cap_back);
 		target.Join(static_cast<CurveJoin>(style_join));
+		// Spacing and dash length decide the backend in the BezierRenderer (KindOf in bezier.h): spacing
+		// 0 is solid, dash length 0 dots, both set dashes. The setters only record the values; a curve
+		// whose kind changed moves on the renderer's next Draw(). The line renderer ignores both.
 		target.DashLength(style_dash_length);
-		// Spacing 0 is how a curve comes out solid in the first two renderers: pattern_ini counts no
-		// centres for it, and the pixel shader leaves the body alone. BezierDotRenderer has no solid
-		// state to fall back to - dot_scene passes force_spacing = true so its spacing stays live even
-		// while "Patterned" (which only means something for the first two renderers) is unticked.
-		target.Spacing((style_patterned || force_spacing) ? style_spacing : 0.0f);
+		target.Spacing(style_patterned ? style_spacing : 0.0f);
 		target.HeightRange(style_min_height, style_max_height);
 
 		// Resolution changes force a layout rebuild, so only push it when it actually moved rather
@@ -417,37 +417,27 @@ SDL_AppResult App::Init()
 	ImGui_ImplDX11_Init(device->get(), device->ImmediateContext()->get());
 
 	camera.SetProj(viewport_width / viewport_height, 0.1f, 1000.0f);
-	// Far enough back that all three copies of the scene fit side by side. The orbital manipulator
+	// Far enough back that the copies of the scene fit side by side. The orbital manipulator
 	// picks its orbit distance up from this, so change it here rather than in OrbitalCamera.
 	camera.SetView(XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, -19.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });
 	orbital_manipulator.SetCamera(&camera);
 	buffer_camera = std::make_unique<Axodox::Graphics::ConstantBuffer>(*device, camera.GetData());
 
-	patterned_renderer = std::make_unique<BezierRenderer>(*device);
-	solid_renderer = std::make_unique<BezierSolidRenderer>(*device);
-	dot_renderer = std::make_unique<BezierDotRenderer>(*device);
+	curve_renderer = std::make_unique<BezierRenderer>(*device);
 	line_renderer = std::make_unique<BezierLineRenderer>(*device);
 
-	patterned_renderer->SetViewport(viewport_width, viewport_height);
-	solid_renderer->SetViewport(viewport_width, viewport_height);
-	dot_renderer->SetViewport(viewport_width, viewport_height);
+	curve_renderer->SetViewport(viewport_width, viewport_height);
 	line_renderer->SetViewport(viewport_width, viewport_height);
 
 	// Initial offsets here only need to be valid enough for BuildScene()'s local coordinates to stay
 	// inside their box; Update() recomputes the real layout (which depends on which renderers are
 	// visible) before the first frame is drawn.
-	BuildScene(*patterned_renderer, patterned_scene, -compare_offset);
-	BuildScene(*solid_renderer, solid_scene, 0.0f);
-	BuildScene(*dot_renderer, dot_scene, compare_offset);
-	BuildScene(*line_renderer, line_scene, 2.0f * compare_offset);
+	BuildScene(*curve_renderer, curve_scene, -0.5f * compare_offset);
+	BuildScene(*line_renderer, line_scene, 0.5f * compare_offset);
 
-	PoseScene(patterned_scene);
-	PoseScene(solid_scene);
-	PoseScene(dot_scene);
+	PoseScene(curve_scene);
 	PoseScene(line_scene);
-	ApplyStyle(patterned_scene, true);
-	ApplyStyle(solid_scene);
-	ApplyStyle(dot_scene, true);
+	ApplyStyle(curve_scene);
 	ApplyStyle(line_scene);
 
 	return SDL_APP_CONTINUE;
@@ -466,16 +456,16 @@ void App::Update(float delta)
 		repose = true;
 	}
 
-	// Evenly space whichever of the three are visible, in the fixed left-to-right order patterned /
-	// solid / dots, centred on the origin. A hidden renderer's offset doesn't matter - it is never
-	// drawn - but its scene is still kept current below, same as before.
+	// Evenly space whichever columns are visible, in the fixed left-to-right order Bezier / Lines,
+	// centred on the origin. A hidden renderer's offset doesn't matter - it is never drawn - but its
+	// scene is still kept current below, same as before.
 	{
-		const bool visible[4] = { draw_patterned, draw_solid, draw_dots, draw_lines };
-		const int visible_count = int(draw_patterned) + int(draw_solid) + int(draw_dots) + int(draw_lines);
+		const bool visible[ColumnCount] = { draw_curves, draw_lines };
+		const int visible_count = int(draw_curves) + int(draw_lines);
 
-		float offsets[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+		float offsets[ColumnCount] = { 0.0f, 0.0f };
 		int slot = 0;
-		for (int i = 0; i < 4; ++i)
+		for (int i = 0; i < ColumnCount; ++i)
 		{
 			if (!visible[i]) continue;
 			offsets[i] = visible_count > 1 ? (float(slot) - (visible_count - 1) * 0.5f) * compare_offset : 0.0f;
@@ -484,8 +474,8 @@ void App::Update(float delta)
 
 		// A moved column has to be re-posed even while paused, otherwise the curves stay behind at the
 		// old offset - so ticking a renderer or dragging the comparison gap counts as a scene change.
-		Scene* scenes[4] = { &patterned_scene, &solid_scene, &dot_scene, &line_scene };
-		for (int i = 0; i < 4; ++i)
+		Scene* scenes[ColumnCount] = { &curve_scene, &line_scene };
+		for (int i = 0; i < ColumnCount; ++i)
 		{
 			if (scenes[i]->x_offset == offsets[i]) continue;
 			scenes[i]->x_offset = offsets[i];
@@ -493,8 +483,9 @@ void App::Update(float delta)
 		}
 	}
 
-	// All three copies are kept up to date even while hidden: the setters only raise dirty flags, and
-	// the actual upload happens inside Draw(), which a hidden renderer never reaches.
+	// Both copies are kept up to date even while hidden: the setters only raise dirty flags, and the
+	// actual upload (and, in the BezierRenderer, any move between backends) happens inside Draw(),
+	// which a hidden renderer never reaches.
 	//
 	// Both passes call touch() on every curve they visit, and need_upload is coarse - one touched
 	// curve re-uploads the entire buffer - so neither runs unless something actually changed. That is
@@ -502,17 +493,13 @@ void App::Update(float delta)
 	// once the scene is a few thousand curves deep.
 	if (repose)
 	{
-		PoseScene(patterned_scene);
-		PoseScene(solid_scene);
-		PoseScene(dot_scene);
+		PoseScene(curve_scene);
 		PoseScene(line_scene);
 	}
 
 	if (style_dirty)
 	{
-		ApplyStyle(patterned_scene, true);
-		ApplyStyle(solid_scene);
-		ApplyStyle(dot_scene, true);
+		ApplyStyle(curve_scene);
 		ApplyStyle(line_scene);
 		style_dirty = false;
 	}
@@ -533,24 +520,20 @@ void App::Gui()
 		ImGui::TextDisabled("Paused now skips the per-frame re-upload entirely.");
 
 		ImGui::SeparatorText("Renderers");
-		ImGui::Checkbox("Patterned", &draw_patterned);
-		ImGui::SameLine();
-		ImGui::Checkbox("Solid", &draw_solid);
-		ImGui::SameLine();
-		ImGui::Checkbox("Dots", &draw_dots);
+		ImGui::Checkbox("Bezier", &draw_curves);
 		ImGui::SameLine();
 		ImGui::Checkbox("Lines", &draw_lines);
 
-		// Not "each" any more - the Test screen adds to one renderer at a time, so the three counts
-		// are allowed to differ and it matters which is which.
-		ImGui::TextDisabled("curves: %u / %u / %u / %u  (%u total)",
-			unsigned(patterned_renderer->Count()),
-			unsigned(solid_renderer->Count()),
-			unsigned(dot_renderer->Count()),
-			unsigned(line_renderer->Count()),
-			unsigned(patterned_renderer->Count() + solid_renderer->Count() + dot_renderer->Count() + line_renderer->Count()));
+		// The Test screen adds to one renderer at a time, so the two counts are allowed to differ. The
+		// Bezier renderer's split is where its curves were routed by the last Draw().
+		ImGui::TextDisabled("curves: Bezier %u (solid %u / patterned %u / dots %u), Lines %u",
+			unsigned(curve_renderer->Count()),
+			unsigned(curve_renderer->Count(CurveKind::Solid)),
+			unsigned(curve_renderer->Count(CurveKind::Patterned)),
+			unsigned(curve_renderer->Count(CurveKind::Dotted)),
+			unsigned(line_renderer->Count()));
 
-		const int visible_renderer_count = int(draw_patterned) + int(draw_solid) + int(draw_dots) + int(draw_lines);
+		const int visible_renderer_count = int(draw_curves) + int(draw_lines);
 		ImGui::BeginDisabled(visible_renderer_count <= 1);
 		ImGui::SliderFloat("Comparison gap", &compare_offset, 0.0f, 14.0f, "%.1f world units");
 		ImGui::EndDisabled();
@@ -583,13 +566,12 @@ void App::Gui()
 void App::ExampleGui()
 {
 	ImGui::TextWrapped(
-		"Left to right (whichever are ticked): Patterned, Solid, Dots, Lines. BezierSolidRenderer draws "
-		"every curve solid - it has no pattern pipeline at all - so untick \"Patterned\" and those "
-		"two should look identical; any difference in cost between them is the price of the pattern "
-		"pipeline. BezierDotRenderer always draws only dots: it ignores dash length and the "
-		"\"Patterned\" checkbox entirely and places each one from its own position + direction "
-		"rather than a shared line strip - see the Pattern section below. BezierLineRenderer draws a "
-		"plain line strip widened to the stroke width: colour and width only, no caps, joins or pattern.");
+		"Left: the Bezier renderer. It sends every curve to one of three backends by its pattern - "
+		"spacing 0 to Solid, dash length 0 to Dots, both set to Patterned - and moves it there again "
+		"whenever the pattern changes, so the Pattern section below moves the whole scene from one "
+		"backend to another; the Timings window shows each backend in a column of its own. Right: "
+		"BezierLineRenderer, the hardware line primitive - colour only, 1 px, no caps, joins or "
+		"pattern - as the cost floor.");
 
 	StyleGui();
 
@@ -622,10 +604,11 @@ void App::ExampleGui()
 void App::TestGui()
 {
 	ImGui::TextWrapped(
-		"Spawns random curves into ONE renderer at a time - the three scenes are allowed to diverge, "
-		"which is the only way to give one renderer a heavier load than the others and watch the "
+		"Spawns random curves into ONE renderer at a time - the two scenes are allowed to diverge, "
+		"which is the only way to give one renderer a heavier load than the other and watch the "
 		"Timings table split. Only the geometry is random: every other property comes from the "
-		"controls below, the same ones the example scene is drawn with.");
+		"controls below, the same ones the example scene is drawn with. In the Bezier renderer the "
+		"pattern decides which backend a batch lands in, and changing it later moves the batch.");
 
 	ImGui::SeparatorText("Batch");
 	ImGui::Combo("Degree", &test_degree_index, DegreeNames, DegreeCount);
@@ -646,30 +629,20 @@ void App::TestGui()
 		"inside its own column instead of sprawling across the neighbouring one.");
 
 	ImGui::SeparatorText("Add");
-	if (ImGui::Button("Add to Patterned"))
-		AddTestCurves(*patterned_renderer, patterned_scene, true);
-	ImGui::SameLine();
-	if (ImGui::Button("Add to Solid"))
-		AddTestCurves(*solid_renderer, solid_scene, false);
-	ImGui::SameLine();
-	if (ImGui::Button("Add to Dots"))
-		AddTestCurves(*dot_renderer, dot_scene, true);
+	if (ImGui::Button("Add to Bezier"))
+		AddTestCurves(*curve_renderer, curve_scene);
 	ImGui::SameLine();
 	if (ImGui::Button("Add to Lines"))
-		AddTestCurves(*line_renderer, line_scene, false);
+		AddTestCurves(*line_renderer, line_scene);
 
-	// Rewinding the generator between the three calls makes them the SAME curves rather than three
-	// independent batches, which is the only way the three columns stay a like-for-like comparison.
-	if (ImGui::Button("Add to all four (identical curves)"))
+	// Rewinding the generator between the two calls makes them the SAME curves rather than two
+	// independent batches, which is the only way the two columns stay a like-for-like comparison.
+	if (ImGui::Button("Add to both (identical curves)"))
 	{
 		const std::mt19937 batch_start = test_rng;
-		AddTestCurves(*patterned_renderer, patterned_scene, true);
+		AddTestCurves(*curve_renderer, curve_scene);
 		test_rng = batch_start;
-		AddTestCurves(*solid_renderer, solid_scene, false);
-		test_rng = batch_start;
-		AddTestCurves(*dot_renderer, dot_scene, true);
-		test_rng = batch_start;
-		AddTestCurves(*line_renderer, line_scene, false);
+		AddTestCurves(*line_renderer, line_scene);
 	}
 
 	// Removal goes through the handles: erasing a TestCurve destroys its BezierCurve, which takes the
@@ -678,19 +651,9 @@ void App::TestGui()
 	ImGui::SeparatorText("Remove");
 	ImGui::TextDisabled("\"Last batch\" = the last `count` test curves of that renderer.");
 	const size_t batch = size_t(test_count);
-	ImGui::BeginDisabled(patterned_scene.test_curves.empty());
-	if (ImGui::Button("Last batch: Patterned"))
-		RemoveTestCurves(patterned_scene, batch);
-	ImGui::EndDisabled();
-	ImGui::SameLine();
-	ImGui::BeginDisabled(solid_scene.test_curves.empty());
-	if (ImGui::Button("Last batch: Solid"))
-		RemoveTestCurves(solid_scene, batch);
-	ImGui::EndDisabled();
-	ImGui::SameLine();
-	ImGui::BeginDisabled(dot_scene.test_curves.empty());
-	if (ImGui::Button("Last batch: Dots"))
-		RemoveTestCurves(dot_scene, batch);
+	ImGui::BeginDisabled(curve_scene.test_curves.empty());
+	if (ImGui::Button("Last batch: Bezier"))
+		RemoveTestCurves(curve_scene, batch);
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	ImGui::BeginDisabled(line_scene.test_curves.empty());
@@ -698,19 +661,15 @@ void App::TestGui()
 		RemoveTestCurves(line_scene, batch);
 	ImGui::EndDisabled();
 
-	if (ImGui::Button("Last batch from all four"))
+	if (ImGui::Button("Last batch from both"))
 	{
-		RemoveTestCurves(patterned_scene, batch);
-		RemoveTestCurves(solid_scene, batch);
-		RemoveTestCurves(dot_scene, batch);
+		RemoveTestCurves(curve_scene, batch);
 		RemoveTestCurves(line_scene, batch);
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Remove all test curves"))
 	{
-		RemoveTestCurves(patterned_scene, patterned_scene.test_curves.size());
-		RemoveTestCurves(solid_scene, solid_scene.test_curves.size());
-		RemoveTestCurves(dot_scene, dot_scene.test_curves.size());
+		RemoveTestCurves(curve_scene, curve_scene.test_curves.size());
 		RemoveTestCurves(line_scene, line_scene.test_curves.size());
 	}
 
@@ -728,19 +687,19 @@ void App::TestGui()
 	constexpr ImGuiTableFlags table_flags =
 		ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
 
-	if (ImGui::BeginTable("test_counts", 5, table_flags))
+	if (ImGui::BeginTable("test_counts", ColumnCount + 1, table_flags))
 	{
-		const Scene* scenes[4] = { &patterned_scene, &solid_scene, &dot_scene, &line_scene };
-		const char* names[4] = { "Patterned", "Solid", "Dots", "Lines" };
+		const Scene* scenes[ColumnCount] = { &curve_scene, &line_scene };
+		const char* names[ColumnCount] = { "Bezier", "Lines" };
 
 		ImGui::TableSetupColumn("");
-		for (int i = 0; i < 4; i++) ImGui::TableSetupColumn(names[i]);
+		for (int i = 0; i < ColumnCount; i++) ImGui::TableSetupColumn(names[i]);
 		ImGui::TableHeadersRow();
 
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("test curves");
-		for (int i = 0; i < 4; i++)
+		for (int i = 0; i < ColumnCount; i++)
 		{
 			ImGui::TableNextColumn();
 			ImGui::Text("%u", unsigned(scenes[i]->test_curves.size()));
@@ -749,7 +708,7 @@ void App::TestGui()
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted("their points");
-		for (int i = 0; i < 4; i++)
+		for (int i = 0; i < ColumnCount; i++)
 		{
 			ImGui::TableNextColumn();
 			ImGui::Text("%u", unsigned(sample_points(*scenes[i])));
@@ -797,21 +756,20 @@ void App::StyleGui()
 	ImGui::SeparatorText("Pattern");
 	changed |= ImGui::Checkbox("Patterned", &style_patterned);
 	ImGui::SameLine();
-	ImGui::TextDisabled("(off = spacing 0 = solid, Patterned/Solid only)");
+	ImGui::TextDisabled("(off = spacing 0 = solid)");
 
+	// Both only mean something while there is a spacing: with "Patterned" off every curve is solid.
 	ImGui::BeginDisabled(!style_patterned);
 	changed |= ImGui::SliderFloat("Dash length (px)", &style_dash_length, 0.0f, 200.0f, "%.1f");
-	ImGui::EndDisabled();
-	// Spacing is NOT gated behind style_patterned: BezierDotRenderer always reads it (ApplyStyle
-	// passes force_spacing = true for dot_scene), so leaving it live even with "Patterned" off
-	// keeps the dots column responsive instead of quietly freezing.
 	changed |= ImGui::SliderFloat("Spacing", &style_spacing, 0.05f, 2.0f, "%.2f world units");
+	ImGui::EndDisabled();
 
-	// A dot is not a mode for the first two renderers: it is a zero-length dash whose two round
-	// caps land on top of each other, leaving a disc of radius `width`. This button just sets
-	// those three values. The third renderer always draws dots regardless of dash length.
+	// A dot is a zero-length dash: its two caps meet in the middle, so Round leaves a disc of radius
+	// `width`. Dash length 0 is also what sends a curve to the Dots backend; the button sets that, the
+	// round caps, and a spacing (dots need one).
 	if (ImGui::Button("Make dots"))
 	{
+		style_patterned = true;
 		style_dash_length = 0.0f;
 		style_cap_front = int(CurveCap::Round);
 		style_cap_back = int(CurveCap::Round);
@@ -820,12 +778,16 @@ void App::StyleGui()
 	}
 	ImGui::SameLine();
 	ImGui::TextDisabled("dash length 0 + round caps");
+
+	// The same KindOf() the BezierRenderer applies, on the values ApplyStyle() pushes. The cap gallery
+	// follows the pattern too - only its caps are its own.
+	const CurveKind kind = KindOf(style_patterned ? style_spacing : 0.0f, style_dash_length);
+	ImGui::Text("Bezier renderer backend: %s", CurveKindName(kind));
 	ImGui::TextWrapped(
-		"Dash length is the pixel length of one dash, cap to cap; both of its ends wear the cap "
-		"chosen above, so 0 draws nothing unless that cap is Round (Patterned/Solid only - Dots "
-		"ignores dash length and always draws one shape per spacing interval). The cap gallery "
-		"keeps its own caps, which is why its strokes differ from everything else in all three "
-		"columns.");
+		"Spacing 0 -> Solid, dash length 0 -> Dots, both set -> Patterned. Dash length is the pixel "
+		"length of one dash, cap to cap, and both of its ends wear the cap chosen above; a dot is one "
+		"cap shape per spacing interval, so Butt draws nothing there. The cap gallery keeps its own "
+		"caps, which is why its strokes differ from everything else.");
 
 	ImGui::SeparatorText("Colour by height");
 	ImGui::TextWrapped("Min >= max blends by curve t instead of world Y.");
@@ -858,9 +820,21 @@ void App::ProfilerGui()
 		{ "total gpu", "total",   false },
 	};
 
-	BezierRendererBase* renderers[] = { patterned_renderer.get(), solid_renderer.get(), dot_renderer.get(), line_renderer.get() };
-	const char* renderer_names[] = { "Patterned", "Solid", "Dots", "Lines" };
-	const bool renderer_visible[] = { draw_patterned, draw_solid, draw_dots, draw_lines };
+	// The Bezier renderer's three backends, then the line renderer. A backend with no curves is not
+	// drawn at all (BezierRenderer skips it), so its numbers freeze the same way a hidden renderer's do.
+	const BezierRendererBase* renderers[] = {
+		&curve_renderer->Backend(CurveKind::Solid),
+		&curve_renderer->Backend(CurveKind::Patterned),
+		&curve_renderer->Backend(CurveKind::Dotted),
+		line_renderer.get()
+	};
+	const char* renderer_names[] = { "Solid", "Patterned", "Dots", "Lines" };
+	const bool renderer_visible[] = {
+		draw_curves && renderers[0]->Count() > 0,
+		draw_curves && renderers[1]->Count() > 0,
+		draw_curves && renderers[2]->Count() > 0,
+		draw_lines
+	};
 	constexpr int renderer_count = 4;
 
 	ImGui::SetNextWindowPos(ImVec2(380, 10), ImGuiCond_FirstUseEver);
@@ -912,9 +886,11 @@ void App::ProfilerGui()
 		}
 
 		ImGui::TextWrapped(
-			"GPU rows are timestamp queries read back a few frames late, so they lag the picture "
-			"slightly. \"pattern\" covers ini + calc together, and no longer carries a readback "
-			"stall on the frames that recount, so it should stay flat across a scene change.");
+			"Solid, Patterned and Dots are the Bezier renderer's backends: each draws only the curves "
+			"routed to it, and one with none is skipped (greyed). GPU rows are timestamp queries read "
+			"back a few frames late, so they lag the picture slightly. \"pattern\" covers ini + calc "
+			"together, and no longer carries a readback stall on the frames that recount, so it "
+			"should stay flat across a scene change.");
 
 		ImGui::Separator();
 		ImGui::TextUnformatted("pattern centres");
@@ -984,9 +960,7 @@ void App::Render()
 	buffer_camera->Bind(Axodox::Graphics::ShaderStage::Pixel, 0);
 
 	const auto view_proj = camera.GetViewProj();
-	if (draw_patterned) patterned_renderer->Draw(*device, view_proj);
-	if (draw_solid) solid_renderer->Draw(*device, view_proj);
-	if (draw_dots) dot_renderer->Draw(*device, view_proj);
+	if (draw_curves) curve_renderer->Draw(*device, view_proj);
 	if (draw_lines) line_renderer->Draw(*device, view_proj);
 }
 
@@ -1034,9 +1008,7 @@ SDL_AppResult App::Event(const SDL_Event& Event)
 		viewport_height = float(Event.window.data2);
 
 		camera.SetAspect(viewport_width / viewport_height);
-		patterned_renderer->SetViewport(viewport_width, viewport_height);
-		solid_renderer->SetViewport(viewport_width, viewport_height);
-		dot_renderer->SetViewport(viewport_width, viewport_height);
+		curve_renderer->SetViewport(viewport_width, viewport_height);
 		line_renderer->SetViewport(viewport_width, viewport_height);
 		swapchain->Resize();
 		depth = std::make_unique<DepthStencil2D>(*device, Texture2DDefinition{

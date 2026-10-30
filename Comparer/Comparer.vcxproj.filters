@@ -66,6 +66,9 @@
     <ClCompile Include="bezier.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="bezier_pattern.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="bezier_common.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -108,6 +111,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="bezier.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="bezier_pattern.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="bezier_solid.h">

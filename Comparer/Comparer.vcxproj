@@ -152,6 +152,7 @@
   <ItemGroup>
     <ClCompile Include="app.cpp" />
     <ClCompile Include="bezier.cpp" />
+    <ClCompile Include="bezier_pattern.cpp" />
     <ClCompile Include="bezier_common.cpp" />
     <ClCompile Include="bezier_dots.cpp" />
     <ClCompile Include="bezier_solid.cpp" />
@@ -174,6 +175,7 @@
   <ItemGroup>
     <ClInclude Include="app.h" />
     <ClInclude Include="bezier.h" />
+    <ClInclude Include="bezier_pattern.h" />
     <ClInclude Include="bezier_common.h" />
     <ClInclude Include="bezier_dots.h" />
     <ClInclude Include="bezier_solid.h" />

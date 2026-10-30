@@ -104,11 +104,9 @@ void ClearComputeBindings(GraphicsDeviceContext* context) {
 		context->BindUnorderedAccessView(nullptr, slot);
 }
 
-// t0..t8: the patterned renderer's curve_vs binds nine (see BezierRenderer::Draw).
+// The patterned renderer's curve_vs binds t0..t8.
 constexpr uint32_t vertexSrvSlots = 9u;
-// t1 pattern positions - the only pixel-stage SRV any renderer binds (the chain's end is marked in
-// that data, so no slot range or pattern offsets reach the pixel stage). Slot 0 is never bound to the
-// pixel stage, so the loop starts at 1.
+// Only t1 (pattern positions) is ever bound to the pixel stage.
 constexpr uint32_t pixelSrvSlots = 2u;
 void ClearDrawBindings(GraphicsDeviceContext* context) {
 	for (uint32_t slot = 0; slot < vertexSrvSlots; ++slot)
@@ -158,8 +156,7 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve) {
 	owners.push_back(nullptr);
 	need_resize = true;
 
-	// Registered from inside the handle's own storage. If the return is not elided, the move
-	// constructor re-points owners[index] at the moved-to handle, so either way it ends up right.
+	// If the return is not elided, the move constructor re-points owners[index].
 	BezierCurve handle{ this, index };
 	owners[index] = &handle;
 	return handle;
@@ -169,9 +166,7 @@ void BezierRendererBase::Remove(BezierCurve& curve) {
 	if (curve.renderer == this) curve.Remove();
 }
 
-// One pass, stable order - chains depend on it. Survivors slide down over the removed slots and
-// have their handle's index rewritten through `owners`. A survivor whose immediate predecessor was
-// removed is made a chain start: removal splits a chain rather than bridging the gap.
+// Stable, so chains survive. A curve right after a removed one becomes a chain start.
 void BezierRendererBase::CompactRemoved() {
 	if (removed_count == 0) return;
 
@@ -212,6 +207,31 @@ void BezierRendererBase::CompactRemoved() {
 	removed_count = 0;
 }
 
+void BezierRendererBase::MoveCurve(size_t index, BezierRendererBase& target, bool chain_start) {
+	BezierCurve* owner = owners[index];
+	assert(owner && owner->renderer == this && &target != this);
+
+	const size_t slot = target.owners.size();
+	const auto points = cubic_points.begin() + std::ptrdiff_t(index * 4u);
+	target.cubic_points.insert(target.cubic_points.end(), points, points + 4);
+	target.color_data.push_back(color_data[index]);
+	target.style_words.push_back(style_words[index]);
+	target.spacings.push_back(spacings[index]);
+	target.dash_lengths.push_back(dash_lengths[index]);
+	target.resolutions.push_back(resolutions[index]);
+	target.merged.push_back(chain_start ? uint8_t(0) : merged[index]);
+	target.owners.push_back(owner);
+	target.need_resize = true;
+
+	owner->renderer = &target;
+	owner->curve_index = slot;
+
+	// As BezierCurve::Remove(), but the handle lives on in `target`.
+	owners[index] = nullptr;
+	++removed_count;
+	need_resize = true;
+}
+
 // --- BezierCurve ----------------------------------------------------------------------------------
 
 BezierCurve::BezierCurve(BezierCurve&& other) noexcept
@@ -239,6 +259,8 @@ void BezierCurve::Remove() {
 	renderer->owners[curve_index] = nullptr;
 	++renderer->removed_count;
 	renderer->need_resize = true;
+	// The next curve may start a chain of its own now.
+	if (curve_index + 1 < renderer->owners.size()) renderer->MarkForRouting(curve_index + 1);
 	renderer = nullptr;
 }
 
@@ -265,12 +287,9 @@ bool BezierRendererBase::IsChainStart(size_t index) const {
 }
 
 void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
-	// Removal only ever raises need_resize, so this is the one place it has to be folded in - and it
-	// must happen before anything below reads the per-curve vectors.
 	CompactRemoved();
 
-	// A merged curve shares its first sample with the previous curve's last one (see
-	// merge_with_previous), so it adds one sample fewer than its resolution.
+	// A merged curve shares its first sample with the previous curve.
 	total_points = 0;
 	for (size_t curveIndex = 0; curveIndex < TotalCurves(); ++curveIndex)
 		total_points += resolutions[curveIndex] - (IsChainStart(curveIndex) ? 0u : 1u);
@@ -278,14 +297,10 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	const auto curve_count = static_cast<uint32_t>(TotalCurves());
 	if (total_points < 2u || curve_count == 0u) {
 		total_points = 0;
-		// UploadCurves, which normally recomputes it, is not reached on this path.
 		pattern_upper_bound = 0;
 		return;
 	}
 
-	// Grow when full, shrink once a quarter or less is in use - see FitCapacity(). Shrinking goes
-	// through exactly the same reset() as growing; every buffer below is rewritten from scratch by the
-	// uploads at the end of this function or by the next point pass, so nothing has to be carried over.
 	const uint32_t points_required = FitCapacity(points_allocated, total_points);
 	const uint32_t curves_required = FitCapacity(curves_allocated, curve_count);
 
@@ -314,8 +329,7 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex) {
 		const uint32_t resolution = resolutions[curveIndex];
 
-		// One begin bit per CHAIN, not per curve: the scan restarts only where a new stroke starts, so
-		// a merged curve's arc lengths carry on from the curve before it. See IsChainStart().
+		// One begin bit per chain, so arc lengths carry on across merged curves.
 		if (IsChainStart(curveIndex)) {
 			curve_begin_bits[current / 32u] |= (1u << (current % 32u));
 			for (unsigned i = 0; i < resolution; ++i)
@@ -323,12 +337,7 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 			current += resolution;
 		}
 		else {
-			// The joint sample is the previous curve's last one. It is handed to THIS curve, because a
-			// sample's owner is the curve whose interval starts there: the point pass evaluates it as
-			// this curve's t = 0 (the same point, by the shared-endpoint assumption) and measures the
-			// chord to this curve's next sample, and the vertex shaders style the segment leaving it
-			// with this curve's width and caps. The previous curve still ENDS on it - its LastIndex
-			// is unchanged - it just no longer evaluates it.
+			// The joint sample belongs to the curve that starts there; the previous one still ends on it.
 			index_map.back() = curveIndex;
 			for (unsigned i = 1; i < resolution; ++i)
 				index_map.push_back(curveIndex);
@@ -340,15 +349,25 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 	bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
 	curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
 
-	// Everything: a buffer that was just (re)allocated holds nothing yet.
 	UploadCurves(context, DirtyAll);
 }
 
+void BezierRendererBase::MarkForRouting(size_t index) {
+	if (route_all || (!route_marks.empty() && route_marks.back() == index)) return;
+	if (route_marks.size() >= owners.size()) {
+		route_all = true;
+		route_marks.clear();
+		return;
+	}
+	route_marks.push_back(static_cast<uint32_t>(index));
+}
+
 bool BezierRendererBase::UpdateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context) {
-	// CPU only: this is buffer allocation and the staging uploads, the GPU side of it is a copy the
-	// driver folds into the next pass. On a frame that changes nothing this measures the two bool
-	// tests below and nothing else, which is what makes a spike here easy to spot.
 	profiler.begin_cpu("update");
+
+	// BezierRenderer has routed by now; a compaction below would make the indices stale.
+	route_marks.clear();
+	route_all = false;
 
 	bool updated = false;
 	if (need_resize) {
@@ -359,8 +378,6 @@ bool BezierRendererBase::UpdateBuffers(const GraphicsDevice& device, GraphicsDev
 		updated = true;
 	}
 	else if (need_upload) {
-		// A need_upload with no part recorded can only come from code that sets the flag directly;
-		// treat it as "anything may have changed".
 		UploadCurves(context, upload_parts ? upload_parts : static_cast<uint8_t>(DirtyAll));
 		need_upload = false;
 		upload_parts = 0;
@@ -390,12 +407,9 @@ void BezierRendererBase::UpdatePatternBound() {
 void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t parts) {
 	if (owners.empty() || !curve_control_points) return;
 
-	// The vectors already hold the GPU form (cubic points, packed colours), so these are plain copies.
 	if (parts & DirtyPositions) {
 #ifndef NDEBUG
-		// Merging assumes the two curves meet: only the later curve's P0 is ever evaluated at the joint,
-		// so a gap would be closed silently by dropping the previous curve's real endpoint. The
-		// tolerance is relative, so it holds at any scene scale.
+		// Only the later curve's P0 is evaluated at a joint, so a gap would be closed silently.
 		for (size_t curveIndex = 1; curveIndex < owners.size(); ++curveIndex)
 			assert((IsChainStart(curveIndex) || EndpointsMeet(cubic_points[curveIndex * 4u - 1u], cubic_points[curveIndex * 4u])) &&
 				"merge_with_previous on a curve that does not start where the previous one ends");
@@ -406,7 +420,6 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 	if (parts & DirtyColors)
 		curve_colors->Upload(std::span<const UploadColorData>{ color_data }, context);
 
-	// A merged curve starts ON the previous curve's last sample (see BezierData::merge_with_previous).
 	if (parts & DirtyLayout) {
 		index_scratch.resize(owners.size());
 		uint32_t current = 0;
@@ -420,7 +433,6 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
 		curve_indices->Upload(std::span<const UploadSampleRange>{ index_scratch }, context);
 	}
 
-	// The renderer's own per-curve style (the line renderer has none - its UploadStyles is empty).
 	if (parts & DirtyStyles)
 		UploadStyles(context);
 }

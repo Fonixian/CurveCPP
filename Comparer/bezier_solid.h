@@ -1,11 +1,7 @@
 #pragma once
 #include "bezier_common.h"
 
-// Solid strokes: width, caps and joins, no pattern. The curve data is the base class's split upload
-// (control points / colours / indices, each re-sent only when its part changes); on top of it this
-// renderer keeps one packed uint of style per curve (PackWidthCapCapJoin), re-sent only when a style
-// setter fired. solid_vert evaluates every sample it needs from those buffers itself, so there is no
-// point pass and no per-sample buffer for it to fill.
+// Solid strokes (width, caps, joins). No compute passes: solid_vert evaluates the curve itself.
 class BezierSolidRenderer : public BezierRendererBase {
 public:
 	explicit BezierSolidRenderer(const Axodox::Graphics::GraphicsDevice& device);

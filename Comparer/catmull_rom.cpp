@@ -88,7 +88,7 @@ size_t CatmullRomSpline::LinksFor(size_t knot_count, SplineEnds ends) {
 	return (knot_count >= outer + 2u) ? knot_count - outer - 1u : 0u;
 }
 
-void CatmullRomSpline::Build(BezierRendererBase& target, std::span<const XMFLOAT3> knots,
+void CatmullRomSpline::Build(CurveRenderer& target, std::span<const XMFLOAT3> knots,
 	const BezierData& link_style, const CatmullRomOptions& link_options) {
 	links.clear();
 
