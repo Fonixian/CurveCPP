@@ -143,10 +143,13 @@
     <None Include="shaders\segmented_scan_common.hlsli">
       <Filter>shaders\segmented scan</Filter>
     </None>
+    <None Include="shaders\arc_pair.hlsli">
+      <Filter>shaders</Filter>
+    </None>
     <None Include="shaders\segmented_scan_local.hlsli">
       <Filter>shaders\segmented scan</Filter>
     </None>
-    <None Include="shaders\segmented_scan_add_offsets.hlsli">
+    <None Include="shaders\segmented_scan_reduce.hlsli">
       <Filter>shaders\segmented scan</Filter>
     </None>
     <None Include="shaders\paralell_scan_common.hlsli">
@@ -178,10 +181,10 @@
     <FxCompile Include="shaders\bezier\curve_ps.hlsl">
       <Filter>shaders\bezier</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_add_offsets_float.hlsl">
+    <FxCompile Include="shaders\segmented_scan_reduce_float.hlsl">
       <Filter>shaders\segmented scan</Filter>
     </FxCompile>
-    <FxCompile Include="shaders\segmented_scan_add_offsets_float2.hlsl">
+    <FxCompile Include="shaders\segmented_scan_reduce_float2.hlsl">
       <Filter>shaders\segmented scan</Filter>
     </FxCompile>
     <FxCompile Include="shaders\segmented_scan_local_float.hlsl">
@@ -230,4 +233,4 @@
       <Filter>shaders\bezier dots</Filter>
     </FxCompile>
   </ItemGroup>
-</Project>
+</Project>

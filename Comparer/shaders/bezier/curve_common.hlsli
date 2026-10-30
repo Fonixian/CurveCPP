@@ -1,6 +1,14 @@
 #ifndef CURVE_COMMON_HLSLI
 #define CURVE_COMMON_HLSLI
 
+#include "../arc_pair.hlsli"
+
+// Distances, one per sample, as the segmented scan leaves them: the arc length from the chain's start,
+// world and screen (px), each a compensated pair. ScanPair<float2> on the C++ side, i.e. the two high
+// parts first: .xy = hi (world, screen), .zw = lo (world, screen).
+float2 WorldArc(float4 distances) { return distances.xz; }
+float2 ScreenArc(float4 distances) { return distances.yw; }
+
 static const uint CurveCapButt        = 0u;
 static const uint CurveCapSquare      = 1u;
 static const uint CurveCapRound       = 2u;
@@ -25,12 +33,15 @@ struct PatternStyle {
 struct PatternedVSOutput {
     float4 Position : SV_Position;
     noperspective float4 SDF : TEXCOORD0;
-    // rgb: color. w: the pattern coordinate - the position along the chain's center grid measured
-    // in slots of PatternPosition, so floor() gives the slot directly and the coordinate never falls
-    // below the chain's first slot (see curve_vs.hlsl). The chain's last center is marked in
-    // PatternPosition itself (see curve_pattern_calc.hlsl).
+    // rgb: color. w: the pattern coordinate - the position along the chain's center grid measured in
+    // slots of PatternPosition, RELATIVE to PatternSlot below, so PatternSlot + floor() gives the slot.
+    // Kept relative so it stays a small number with a precise fraction however long the chain is; it is
+    // never below -1, and never below 0 on a chain's first curve (see curve_vs.hlsl). The chain's last
+    // center is marked in PatternPosition itself (see curve_pattern_calc.hlsl).
     noperspective float4 ColorPattern : COLOR0;
-    nointerpolation float ScreenArcBegin : TEXCOORD1;
+    // The screen arc where this segment starts (after near-plane clipping), as a compensated pair: the
+    // pixel shader only ever subtracts it from a dash center's arc, which is a pair too.
+    nointerpolation float2 ScreenArcBegin : TEXCOORD1;
     // Whether the segment has a neighbor before its start (x) and after its end (y) - no neighbor = terminus.
     nointerpolation uint2 Neighbors : TEXCOORD2;
     nointerpolation float DashLength : TEXCOORD3;
@@ -38,6 +49,9 @@ struct PatternedVSOutput {
     // Signed tan(theta/2) of the screen-space turn at the start (x, SDF.y == 0) and the end
     // (y, SDF.y == SDF.w); 0 without a neighbor. See PatternArc in curve_ps.hlsl.
     nointerpolation float2 ArcShear : TEXCOORD5;
+    // The PatternPosition slot of the curve's first grid point (PatternOffsets[curve]); ColorPattern.w
+    // counts from here.
+    nointerpolation uint PatternSlot : TEXCOORD6;
 };
 
 // Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.

@@ -416,7 +416,7 @@ SDL_AppResult App::Init()
 	ImGui_ImplSDL3_InitForD3D(window);
 	ImGui_ImplDX11_Init(device->get(), device->ImmediateContext()->get());
 
-	camera.SetProj(viewport_width / viewport_height, 0.1f, 1000.0f);
+	camera.SetProj(viewport_width / viewport_height, 0.1f, 10000.0f);
 	// Far enough back that all three copies of the scene fit side by side. The orbital manipulator
 	// picks its orbit distance up from this, so change it here rather than in OrbitalCamera.
 	camera.SetView(XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, -19.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });

@@ -1,6 +1,10 @@
 #ifndef DOT_COMMON_HLSLI
 #define DOT_COMMON_HLSLI
 
+// WorldDistances, one per sample, hold the world arc length from the chain's start as a compensated pair
+// (hi, lo) - ScanPair<float> on the C++ side. See arc_pair.hlsli.
+#include "../arc_pair.hlsli"
+
 static const uint CurveCapButt        = 0u;
 static const uint CurveCapSquare      = 1u;
 static const uint CurveCapRound       = 2u;

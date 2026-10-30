@@ -8,7 +8,7 @@ cbuffer CameraData : register(b1) {
 };
 
 
-StructuredBuffer<float2>       Distances          : register(t0); // arc length from the chain's start, per sample: x world, y screen (px)
+StructuredBuffer<float4>       Distances          : register(t0); // arc length from the chain's start, per sample: world and screen (px) as pairs (curve_common.hlsli)
 // t1 and t2 are unused (the chain ends come with SampleMap now, and the screen arc length used to have
 // its own buffer); the slot numbers match the solid renderer's.
 StructuredBuffer<Cubic>        CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
@@ -183,31 +183,37 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
     float halfWidth = HalfWidth(style.width_capcapjoin);
     float cornerT = nearSide ? t0 : t1;
 
-    float2 startDistances = Distances[sampleIndex];
-    float startWorldDistance = startDistances.x;
-    float endWorldDistance = Distances[sampleIndex + 1u].x;
+    float4 startDistances = Distances[sampleIndex];
+    float4 endDistances = Distances[sampleIndex + 1u];
 
     o.Neighbors = uint2((hasPrev || t0 > 0.0) ? 1u : 0u, (hasNext || t1 < 1.0) ? 1u : 0u);
     o.DashLength = style.dash_length;
     o.CapCapJoin = style.width_capcapjoin; // FrontCap/BackCap/Join ignore the width byte
 
-    // Pattern coordinate. Distances.x restarts at 0 at each chain, and the chain's centers sit on
+    // Pattern coordinate. The world arc restarts at 0 at each chain, and the chain's centers sit on
     // one grid, n * spacing from its start, so world arc maps to a slot of PatternPosition by
     //
-    //     slot = floor(arc / spacing) + (PatternOffsets[curve] - first grid index the curve owns)
+    //     slot = PatternOffsets[curve] + floor((arc - patternBase * spacing) / spacing)
     //
-    // The divide and the bias are both linear, so they commute with the rasterizer's interpolation
-    // and the pixel shader only has to floor() it.
+    // where patternBase is the first grid index the curve owns (the same exact mapping as
+    // curve_pattern_ini / curve_pattern_calc). The bracket is linear in arc, so it commutes with the
+    // rasterizer's interpolation: the vertex shader hands down the bracket (ColorPattern.w) and the slot
+    // it counts from (PatternSlot), and the pixel shader only floors and adds.
     //
-    // Spacing is uniform along a chain, so the bias is the same on every curve of it: the slot of
-    // grid index 0, i.e. the chain's FIRST slot. The coordinate is therefore never below the chain's
-    // first slot, and the pixel shader needs no lower bound. The upper one is marked in the pattern
-    // data itself (the chain's last center is flagged by curve_pattern_calc), so no chain range is
-    // passed down either.
-    float curveArcStart = Distances[currentRange.x].x;
-    float patternBase = (curveArcStart > 0.0) ? floor(curveArcStart / style.spacing) + 1.0 : 0.0;
-    float patternCoord = lerp(startWorldDistance, endWorldDistance, cornerT) / style.spacing
-                       + (float(PatternOffsets[currentCurve]) - patternBase);
+    // The bracket is assembled from small, precise pieces - the curve start's phase on the grid (in
+    // [-1, 0), exactly 0 on a chain's first curve) plus this corner's arc from the curve start, both
+    // taken pairwise - so its fraction does not degrade with the chain's length or its slot number.
+    // Slots are contiguous along a chain, so a bracket in [-1, 0) lands on the previous curve's last
+    // slot, which is the right one; on the chain's first curve the bracket is never negative, so the
+    // pixel shader needs no lower bound. The upper one is marked in the pattern data itself (the chain's
+    // last center is flagged by curve_pattern_calc), so no chain range is passed down either.
+    float2 curveArcStart = WorldArc(Distances[currentRange.x]);
+    float patternBase = (curveArcStart.x > 0.0) ? PairGridIndex(curveArcStart, style.spacing) + 1.0 : 0.0;
+    float phase = PairDiff(curveArcStart, PairFromProduct(patternBase, style.spacing)) / style.spacing;
+    float cornerArc = lerp(PairDiff(WorldArc(startDistances), curveArcStart),
+                           PairDiff(WorldArc(endDistances), curveArcStart), cornerT);
+    float patternCoord = phase + cornerArc / style.spacing;
+    o.PatternSlot = PatternOffsets[currentCurve];
 
     float3 color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide).rgb;
     o.ColorPattern = float4(color, patternCoord);
@@ -226,7 +232,7 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
 
     // The screen arc at the (clipped) start, measured along the screen line from where
     // curve_calc_points started measuring - never lerped by t0, which is not linear on screen.
-    o.ScreenArcBegin = startDistances.y + distance(mad(measuredStartClip.xy / measuredStartClip.w, 0.5, 0.5) * WH, startPx);
+    o.ScreenArcBegin = PairAdd(ScreenArc(startDistances), distance(mad(measuredStartClip.xy / measuredStartClip.w, 0.5, 0.5) * WH, startPx));
 
     // From the segment's own points, not the per-vertex corner frame below, so all five vertices agree.
     {

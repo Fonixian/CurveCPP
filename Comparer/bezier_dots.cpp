@@ -8,6 +8,7 @@ struct DotSample {
 	uint32_t curve_index;
 };
 static_assert(sizeof(DotSample) == 8, "DotSample must match DotSample in the shaders");
+static_assert(sizeof(ScanPair<float>) == 8, "distances must match StructuredBuffer<float2> WorldDistances in the dot shaders");
 
 BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
 	: BezierRendererBase(device), draw_args{ device },
@@ -31,7 +32,9 @@ BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device)
 void BezierDotRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
 	AllocateSampleMap(device, points_required);   // point pass
 	AllocateChainBegins(device, points_required); // distance scan
-	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
+	// Compensated pairs (hi, lo) of world arc length: the point pass writes segment lengths into hi, the
+	// scan turns them into cumulative arcs (SegmentedScan.h, dot_common.hlsli).
+	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<ScanPair<float>>(points_required)));
 }
 
 void BezierDotRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {

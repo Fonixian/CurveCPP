@@ -44,7 +44,7 @@ public:
 	XMMATRIX m_projMatrix;
 
 	float m_zNear = 0.01f;
-	float m_zFar = 100.0f;
+	float m_zFar = 1000.0f;
 
 	float m_angle = DirectX::XMConvertToRadians(45.0f);
 	float m_aspect = 1.0f;

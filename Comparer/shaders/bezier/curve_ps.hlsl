@@ -32,14 +32,18 @@
 #define CURVE_PATTERN_BISECTOR 1
 #endif
 
-// Screen arc of every dash center, one sorted run per chain, each starting again at arc 0. The LAST
-// center of each chain has its sign bit set (curve_pattern_calc.hlsl): the slot after a flagged one
-// belongs to the next chain, and so does the slot before a chain's first center. That is how a pixel
-// stays inside its own chain without being handed the chain's slot range.
-StructuredBuffer<float> PatternPosition : register(t1);
+// Screen arc of every dash center as a compensated pair (hi, lo), one sorted run per chain, each starting
+// again at arc 0. The LAST center of each chain has the sign bit of its hi set (curve_pattern_calc.hlsl):
+// the slot after a flagged one belongs to the next chain, and so does the slot before a chain's first
+// center. That is how a pixel stays inside its own chain without being handed the chain's slot range.
+//
+// Centers are only ever used relative to something else on the same chain - the segment's start arc, or
+// the neighbouring center - and those differences are taken pairwise, so they stay as precise as the
+// (small) difference itself however long the chain gets.
+StructuredBuffer<float2> PatternPosition : register(t1);
 
-bool IsChainLastCenter(float stored) { return (asuint(stored) & 0x80000000u) != 0u; }
-float CenterArc(float stored) { return asfloat(asuint(stored) & 0x7FFFFFFFu); }
+bool IsChainLastCenter(float2 stored) { return (asuint(stored.x) & 0x80000000u) != 0u; }
+float2 CenterArc(float2 stored) { return float2(asfloat(asuint(stored.x) & 0x7FFFFFFFu), stored.y); }
 
 float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap) {
     float d;
@@ -91,13 +95,13 @@ float PatternArc(float localArc, float lateral, float segmentLength, float halfW
 // Distance between the two centers around this pixel. At the chain's last center there is no next
 // one, so it looks back instead - unless the center before it is another chain's last, i.e. this is
 // the chain's only center (or slot 0), in which case there is nothing to measure against.
-float PatternCenterSpan(int slot0, bool isLast0, float center0, float center1) {
+float PatternCenterSpan(int slot0, bool isLast0, float2 center0, float2 center1) {
     if (!isLast0)
-        return abs(center1 - center0);
+        return abs(PairDiff(center1, center0));
     if (slot0 > 0) {
-        float previous = PatternPosition[uint(slot0 - 1)];
+        float2 previous = PatternPosition[uint(slot0 - 1)];
         if (!IsChainLastCenter(previous))
-            return abs(center0 - previous);
+            return abs(PairDiff(center0, previous));
     }
     return 0.0;
 }
@@ -109,20 +113,23 @@ float PatternArcScale(float centerSpan, float dashLength, float halfWidth, uint 
 }
 #endif
 
-// patternArc: the screen arc in the pattern's frame. patternCoord: the slot coordinate from the vertex shader.
-float PatternSDF(float lateral, float patternArc, float patternCoord, float dashLength, float halfWidth, uint capCapJoin) {
-    // The coordinate starts at the chain's first slot (curve_vs.hlsl), so there is no lower bound to
-    // apply; the max() only keeps a stray negative value from wrapping around as an unsigned index.
-    int slot0 = max(int(floor(patternCoord)), 0);
+// segmentArc: the screen arc in the pattern's frame, relative to arcBegin, the segment's start arc (a pair).
+// patternSlot + floor(patternCoord): the slot, see curve_vs.hlsl.
+float PatternSDF(float lateral, float segmentArc, float2 arcBegin, uint patternSlot, float patternCoord, float dashLength, float halfWidth, uint capCapJoin) {
+    // The coordinate never reaches below the chain's first slot (curve_vs.hlsl), so there is no lower
+    // bound to apply; the max() only keeps a stray negative value from wrapping around as an unsigned index.
+    int slot0 = max(int(patternSlot) + int(floor(patternCoord)), 0);
 
-    float stored0 = PatternPosition[uint(slot0)];
+    float2 stored0 = PatternPosition[uint(slot0)];
     bool isLast0 = IsChainLastCenter(stored0);
-    float center0 = CenterArc(stored0);
+    float2 center0 = CenterArc(stored0);
     // After the chain's last center comes another chain's first one: don't read it, pair the center with itself.
-    float center1 = isLast0 ? center0 : CenterArc(PatternPosition[uint(slot0 + 1)]);
+    float2 center1 = isLast0 ? center0 : CenterArc(PatternPosition[uint(slot0 + 1)]);
 
-    float arc0 = patternArc - center0;
-    float arc1 = patternArc - center1;
+    // The pixel's offset from each center: the pixel's arc from the segment start, minus the center's -
+    // the latter taken pairwise, as it is the difference of two arcs from the chain's start.
+    float arc0 = segmentArc - PairDiff(center0, arcBegin);
+    float arc1 = segmentArc - PairDiff(center1, arcBegin);
     float arcDist = (abs(arc0) <= abs(arc1)) ? arc0 : arc1;
     // arcDist is signed from the dash's center, so its sign picks the end (as in dot_ps.hlsl).
     uint cap = (arcDist < 0.0) ? FrontCap(capCapJoin) : BackCap(capCapJoin);
@@ -163,24 +170,26 @@ float4 main(PatternedVSOutput input) : SV_Target {
     else if (atEndCap)
         sdf = max(sdf, CurveCapSDF(coord, overshoot, halfWidth, endCap));
 
-    // The pattern is the one thing that spans segments, so it gets the seam-consistent arc.
+    // The pattern is the one thing that spans segments, so it gets the seam-consistent arc. Measured
+    // from the segment start (input.ScreenArcBegin), which keeps it a small, precise number; PatternSDF
+    // relates it to the dash centers pairwise.
 #if CURVE_PATTERN_BISECTOR
-    float patternArc = input.ScreenArcBegin + PatternArc(
-        localArc, lateral, segmentLength, halfWidth, input.ArcShear);
+    float segmentArc = PatternArc(localArc, lateral, segmentLength, halfWidth, input.ArcShear);
 #else
-    float patternArc = currentArc;
+    float segmentArc = localArc;
 #endif
 
 #if CURVE_PATTERN_CLAMP_TO_SEGMENT
-    // [ScreenArcBegin, ScreenArcBegin + segmentLength] is this segment's arc range: B is where it
-    // starts, C where the next segment begins. Only clamped at ends that have a neighbour.
+    // [0, segmentLength] from the segment start is this segment's arc range: B is where it starts, C
+    // where the next segment begins. Only clamped at ends that have a neighbour.
     {
-        const float arcLo = (input.Neighbors.x != 0u) ? input.ScreenArcBegin : -1e30;
-        const float arcHi = (input.Neighbors.y != 0u) ? input.ScreenArcBegin + segmentLength : 1e30;
-        patternArc = clamp(patternArc, arcLo, arcHi);
+        const float arcLo = (input.Neighbors.x != 0u) ? 0.0 : -1e30;
+        const float arcHi = (input.Neighbors.y != 0u) ? segmentLength : 1e30;
+        segmentArc = clamp(segmentArc, arcLo, arcHi);
     }
 #endif
-    sdf = max(sdf, PatternSDF(lateral, patternArc, input.ColorPattern.w, input.DashLength, halfWidth, input.CapCapJoin));
+    sdf = max(sdf, PatternSDF(lateral, segmentArc, input.ScreenArcBegin, input.PatternSlot, input.ColorPattern.w,
+                              input.DashLength, halfWidth, input.CapCapJoin));
 
     if (sdf > 0.5) discard;
     return float4(input.ColorPattern.rgb, saturate(0.5 - sdf));

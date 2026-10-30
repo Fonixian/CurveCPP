@@ -3,6 +3,8 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
+static_assert(sizeof(ScanPair<XMFLOAT2>) == 16, "distances must match StructuredBuffer<float4> Distances in the curve shaders");
+
 BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 	: BezierRendererBase(device),
 	  distance_scan{ device, maxElementCount },
@@ -25,7 +27,9 @@ BezierRenderer::BezierRenderer(const GraphicsDevice& device)
 void BezierRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required) {
 	AllocateSampleMap(device, points_required);   // point pass and curve-body draw
 	AllocateChainBegins(device, points_required); // distance scan, curve_pattern_calc
-	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
+	// Compensated pairs (hi, lo) of (world, screen) arc length: the point pass writes the segment lengths
+	// into hi, the scan turns them into cumulative arcs (SegmentedScan.h, curve_common.hlsli).
+	distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<ScanPair<XMFLOAT2>>(points_required)));
 }
 
 void BezierRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required) {
@@ -58,7 +62,7 @@ void BezierRenderer::RunPointPass(GraphicsDeviceContext* context) {
 	curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: one 3x4 per curve, columns P0..P3
 	bezier_data_map->Bind(ShaderStage::Compute, 1, context);      // t1: owning curve per sample
 	curve_indices->Bind(ShaderStage::Compute, 2, context);        // t2: sample range per curve
-	distances->BindUnordered(0, context);                         // u0: (world, screen) per sample
+	distances->BindUnordered(0, context);                         // u0: (world, screen) per sample, as pairs
 
 	profiler.begin_gpu("calc");
 	calc_points->Run({ GroupCount(total_points, 256u), 1u, 1u }, context);
@@ -76,7 +80,7 @@ void BezierRenderer::AllocatePatternBuffer(const GraphicsDevice& device) {
 	const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
 	if (patterns && patterns_allocated == required) return;
 
-	patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(required)));
+	patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(required))); // screen arc per centre, (hi, lo)
 	patterns_allocated = required;
 }
 
@@ -151,7 +155,7 @@ void BezierRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_
 	profiler.begin_gpu("draw");
 	curve_draw.Bind(context);
 
-	distances->BindOrdered(ShaderStage::Vertex, 0, context);           // t0: cumulative arc length per sample, float2 (world, screen px)
+	distances->BindOrdered(ShaderStage::Vertex, 0, context);           // t0: cumulative arc length per sample, (world, screen px) pairs
 	BindCurveData(context, 3, 5, 7);                                   // t3 control points, t5 colours, t7 indices
 	bezier_data_map->Bind(ShaderStage::Vertex, 4, context);            // t4: curve + continuation per sample
 	curve_styles->Bind(ShaderStage::Vertex, 6, context);               // t6: width_capcapjoin / spacing / dash length

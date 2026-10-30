@@ -1,0 +1,330 @@
+#include "solid_common.hlsli"
+
+// Drawn as DrawInstanced(5, total_points) with a TRIANGLESTRIP, one instance per sample: instance i is
+// the segment from sample i to i + 1. The instance on a curve's last sample would be the step to the
+// next curve, so it is culled straight after the map and range loads (see bezier_common.h):
+//
+//                0 ----------------- 2
+//                |                   |  \
+//     start  ->  +  ---- segment --- +    4      <- 4: extra vertex that fills the
+//    (sample i)  |                   |  /             outer side of the join at the end
+//                1 ----------------- 3
+//                               end (sample i+1)
+//
+// Vertices 0, 1 sit on the segment's start ("near side"), 2, 3, 4 on its end ("far side").
+// Each vertex works in a LOCAL frame centered on the end point it sits on (the "corner"):
+//
+//     prevCorner  ----------->  corner  ----------->  nextCorner
+//                 dirIn                 dirOut
+//
+// so for near-side vertices the segment is seen backwards, and "right" means the opposite
+// physical side from the near side. In its local frame, 0, 3 and 4 offset to the right and
+// 1, 2 to the left - which physically puts 0 and 2 on one side of the stroke, 1 and 3 on the other.
+//
+// Who covers what at a joint (turn = angle between the two segments, inner = the side it turns to):
+//   miter fits, turn <= 90:  both ends on the miter, split along the bisector, v4 = v3
+//   miter fits, turn  > 90:  bevel - the incoming far end takes the whole outer wedge with v4, both
+//                            inner vertices on the inner miter
+//   miter overlaps (halfWidth * tan(turn/2) runs past either segment's far end):
+//                turn <= 90: outer vertex stays on the miter, inner vertex on the segment's own corner
+//                turn  > 90: incoming far end = bevel point, bevel tip (v4) and its inner edge run out
+//                            to the outgoing segment's outer edge, so the whole join is in this strip;
+//                            outgoing near end = its own plain corners
+//   no neighbour: the end is shaped like the cap the pixel shader cuts (a tip on v4 at the far end)
+
+// AA ramp kept past a cap's edge, in px (the pixel shader fades sdf 0 -> 0.5). 0.5 keeps a butt end's
+// fringe exactly as before.
+#ifndef SOLID_CAP_FRINGE
+#define SOLID_CAP_FRINGE 0.5
+#endif
+
+// Where the miter overlaps, let the outgoing segment's near inner corner slide forward along its own
+// inner edge, handing the triangle it skips to the incoming segment (which keeps its whole rectangle).
+#ifndef SOLID_OVERLAP_HANDOFF
+#define SOLID_OVERLAP_HANDOFF 1
+#endif
+
+cbuffer CameraData : register(b1) {
+    float4x4 VP;
+    float2 WH;
+    uint TotalPointCount;
+    uint TotalCurveCount;
+};
+
+// One row per coordinate, one column per control point: row x = (P0.x, P1.x, P2.x, P3.x), likewise y
+// and z, so P3 sits in the .w of every row. row_major so the rows sit in memory in that order, matching
+// the CPU's XMFLOAT3X4 whatever the compiler's default matrix packing is. 48 B, three 16-byte loads.
+struct Cubic {
+    row_major float3x4 P;
+};
+
+StructuredBuffer<Cubic>  CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<uint>   SampleMap          : register(t4); // per sample: curve | SegmentHasPrev | SegmentHasNext
+StructuredBuffer<uint4>  CurveColors        : register(t5); // color1, color2, height1, height2 (for interpolation based on height)
+StructuredBuffer<uint>   CurveStyles        : register(t6); // width << 24 | front_cap << 16 | back_cap << 8 | join
+StructuredBuffer<uint2>  CurveIndices       : register(t7); // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
+
+Cubic LoadCubic(uint curveIndex) {
+    return CurveControlPoints[curveIndex];
+}
+
+float3 EvaluateBezier(Cubic c, float t) {
+    // Bernstein form
+    float s   = 1.0 - t;
+    float st3 = 3.0 * s * t;
+    return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
+}
+
+// [range.x, range.y] -> [0.0, 1.0]
+float SampleT(uint2 range, uint sampleIndex) {
+    return float(sampleIndex - range.x) / float(range.y - range.x);
+}
+
+// Blends color based on clipping and height or t
+float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float t1, bool nearSide) {
+    float minHeight = asfloat(colorData.z);
+    float maxHeight = asfloat(colorData.w);
+    float3 colorA = UnpackColorBits(colorData.x).rgb;
+    float3 colorB = UnpackColorBits(colorData.y).rgb;
+    float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
+    float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
+    return float4(lerp(colorA, colorB, blend), 1.0);
+}
+
+float4 SidePlaneDistances(float4 p) { return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww); }
+float2 DepthPlaneDistances(float4 p) { return float2(p.z, p.w - p.z); }
+
+float Max4(float4 v) { return max(max(v.x, v.y), max(v.z, v.w)); }
+float Min4(float4 v) { return min(min(v.x, v.y), min(v.z, v.w)); }
+float Max2(float2 v) { return max(v.x, v.y); }
+float Min2(float2 v) { return min(v.x, v.y); }
+
+// Clips the segment start -> end against the frustum.
+bool ClipSegment(inout float4 start, inout float4 end, out float t0, out float t1) {
+    t0 = 0.0;
+    t1 = 1.0;
+
+    if (isnan(start.x) || isnan(end.x)) return false;
+
+    float4 sideStart = SidePlaneDistances(start), sideEnd = SidePlaneDistances(end);
+    float2 depthStart = DepthPlaneDistances(start), depthEnd = DepthPlaneDistances(end);
+
+    if (any(min(sideStart, sideEnd) < 0.0) || any(min(depthStart, depthEnd) < 0.0)) {
+        if (any(max(sideStart, sideEnd) < 0.0) || any(max(depthStart, depthEnd) < 0.0)) return false;
+
+        float4 sideDelta = sideEnd - sideStart;
+        float4 sideT = -sideStart / sideDelta;
+        t0 = max(0.0, Max4((sideDelta > 0.0) ? sideT : 0.0));
+        t1 = min(1.0, Min4((sideDelta < 0.0) ? sideT : 1.0));
+
+        float2 depthDelta = depthEnd - depthStart;
+        float2 depthT = -depthStart / depthDelta;
+        t0 = max(t0, Max2((depthDelta > 0.0) ? depthT : 0.0));
+        t1 = min(t1, Min2((depthDelta < 0.0) ? depthT : 1.0));
+
+        if (t0 >= t1) return false;
+
+        float4 start0 = start, end0 = end;
+        start = lerp(start0, end0, t0);
+        end = lerp(start0, end0, t1);
+    }
+
+    return true;
+}
+
+// Near end of an overlapping joint, inner vertex: how far (px) it may slide forward along this segment's
+// inner edge while the triangle it gives up stays inside the previous segment's rectangle (which that
+// segment's far end keeps whole). Capped at half this segment so it can't cross the far end's vertex.
+float NearInnerAdvance(float cosTurn, float sinTurn, float halfWidth, float prevLength, float thisLength) {
+    float reach = prevLength - halfWidth * sinTurn; // < 0: our inner corner lies past the previous segment's start
+    float advance = min(0.5 * thisLength, halfWidth * sinTurn / max(1.0 + cosTurn, 1e-7)); // hw * tan(turn / 2)
+    advance = min(advance, (cosTurn < 0.0) ? reach / -cosTurn : halfWidth * sinTurn / max(cosTurn, 1e-7));
+    return (reach >= 0.0) ? advance : 0.0;
+}
+
+SolidVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID) {
+    SolidVSOutput o = (SolidVSOutput)0;
+    bool nearSide = vertexId < 2u;
+
+    // The segment starting on this sample: its curve, and whether the stroke goes on past either end.
+    uint entry = SampleMap[sampleIndex];
+    uint currentCurve = entry & SegmentCurveMask;
+    uint2 currentRange = CurveIndices[currentCurve];
+    if (sampleIndex == currentRange.y) { // the curve's last sample starts no segment
+        o.Position = 0.0 / 0.0;
+        return o;
+    }
+    bool hasPrev = (entry & SegmentHasPrev) != 0u; // segment before the start
+    bool hasNext = (entry & SegmentHasNext) != 0u; // segment after the end
+    bool hasNeighbor = nearSide ? hasPrev : hasNext;
+
+    Cubic currentCubic = LoadCubic(currentCurve);
+
+    float tStart = SampleT(currentRange, sampleIndex);
+    float tEnd = SampleT(currentRange, sampleIndex + 1u);
+    float3 startWorld = EvaluateBezier(currentCubic, tStart);
+    float3 endWorld = EvaluateBezier(currentCubic, tEnd);
+
+    // The neighbor normally lies on the same curve, but we allow merging neighboring curves.
+    // When merging two curves we assume one's end position is the same as the other's start, and
+    // each of them samples that joint itself - so across a joint the very next sample is the joint's
+    // other copy, i.e. this corner again. Step over it: i - 2 / i + 3 instead of i - 1 / i + 2.
+    float3 neighborWorld;
+    [branch]
+    if (hasNeighbor && (nearSide ? (sampleIndex == currentRange.x) : ((sampleIndex + 1u) == currentRange.y))) { // Crosses curve
+        uint neighborCurve = currentCurve + (nearSide ? -1u : 1u);
+        neighborWorld = EvaluateBezier(LoadCubic(neighborCurve), SampleT(CurveIndices[neighborCurve], sampleIndex + (nearSide ? -2u : 3u)));
+    } else
+        neighborWorld = EvaluateBezier(currentCubic, SampleT(currentRange, sampleIndex + (nearSide ? -1u : 2u)));
+
+    float4 startClip = mul(float4(startWorld, 1.0), VP);
+    float4 endClip = mul(float4(endWorld, 1.0), VP);
+    float4 neighborClip = mul(float4(neighborWorld, 1.0), VP);
+
+    float t0, t1;
+    if (!ClipSegment(startClip, endClip, t0, t1)) {
+        o.Position = 0.0 / 0.0;
+        return o;
+    }
+
+    float4 cornerClip = nearSide ? startClip : endClip;
+    float4 otherClip = nearSide ? endClip : startClip;
+
+    // If the frustum cut off this vertex's end, the real neighbor is off screen: put it on the
+    // other end, which makes this end look like a curve terminus
+    bool clippedEnd = nearSide ? (t0 > 0.0) : (t1 < 1.0);
+    if (clippedEnd)
+        neighborClip = otherClip;
+
+    // Pull the neighbor in front of the near plane.
+    if (Min2(neighborClip.zw) < 0.0) {
+        float2 toCorner = cornerClip.zw - neighborClip.zw;
+        float2 tPlane = -neighborClip.zw / toCorner;
+        float pull = max(0.0, max(toCorner.x > 0.0 ? tPlane.x : 0.0, toCorner.y > 0.0 ? tPlane.y : 0.0));
+        if (pull > 0.0)
+            neighborClip = lerp(neighborClip, cornerClip, pull);
+    }
+
+    uint style = CurveStyles[currentCurve];
+    float halfWidth = HalfWidth(style);
+
+    o.Color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide);
+    uint capCapJoin = Join(style);
+    capCapJoin |= (hasPrev ? CurveEndJoined : FrontCap(style)) << 16;
+    capCapJoin |= (hasNext ? CurveEndJoined : BackCap(style)) << 8;
+    o.CapCapJoin = capCapJoin;
+
+    float3 startNdc = startClip.xyz / startClip.w;
+    float3 endNdc = endClip.xyz / endClip.w;
+    float2 neighborNdc = neighborClip.xy / neighborClip.w;
+
+    o.Position = float4(nearSide ? startNdc : endNdc, 1.0);
+
+    float2 startPx = mad(startNdc.xy, 0.5, 0.5) * WH;
+    float2 endPx = mad(endNdc.xy, 0.5, 0.5) * WH;
+    float2 neighborPx = mad(neighborNdc.xy, 0.5, 0.5) * WH;
+
+    float2 corner = nearSide ? startPx : endPx;
+    float2 prevCorner = nearSide ? endPx : startPx;
+    // A neighbor sitting exactly on the corner (a duplicated sample) has no direction; 0 / 0 would cull
+    // this whole strip. Treat it as a full reversal instead, which every branch below covers.
+    bool realNeighbor = hasNeighbor && !clippedEnd && !isnan(neighborPx.x);
+    float2 nextCorner = (realNeighbor && any(neighborPx != corner)) ? neighborPx : prevCorner;
+
+    float nextLength = distance(nextCorner, corner);
+    float currentLength = distance(corner, prevCorner);
+    float2 dirOut = (nextCorner - corner) / nextLength;
+    float2 dirIn = (corner - prevCorner) / currentLength;
+
+    float2 rightOut = float2(dirOut.y, -dirOut.x);
+    float2 rightIn = float2(dirIn.y, -dirIn.x);
+
+    float cosTurn = dot(dirOut, dirIn); // 1 = straight on, -1 = full reversal
+    float sinTurn = dot(rightOut, dirIn); // signed sin of the turn, < 0 when its inner side is on the right
+    float sideSign = (vertexId == 1u || vertexId == 2u) ? -1.0 : 1.0;
+    bool innerOnRight = sinTurn < 0.0;
+    bool onInnerSide = ((vertexId == 0u) || (vertexId >= 3u)) == innerOnRight; // v4 counts with v3
+    sinTurn = abs(sinTurn);
+
+    // The inner miter lies halfWidth * tan(turn / 2) back along both segments; if that runs past either
+    // one's far end the miter split folds over. Always true for a reversal and for an end without a real
+    // neighbor (nextCorner = prevCorner gives cosTurn = -1).
+    bool overlaps = cosTurn <= -0.9996 || halfWidth * sinTurn > (1.0 + cosTurn) * min(nextLength, currentLength);
+
+    float2 offset;
+    [branch]
+    if (!hasNeighbor) {
+        // Terminus: shaped like the cap the pixel shader cuts, plus SOLID_CAP_FRINGE of its AA ramp.
+        // Two vertices at the near end can only make a straight edge; the far end has v4 for a tip.
+        uint cap = nearSide ? FrontCap(style) : BackCap(style);
+        float fringe = SOLID_CAP_FRINGE / halfWidth;
+        bool tip = (vertexId == 4u) && (cap == CurveCapRound || cap == CurveCapTriangleOut);
+        float reach = 1.0 + fringe; // square, triangle-in, and round / triangle-out at the near end
+        if (cap == CurveCapButt)
+            reach = fringe;
+        else if (!nearSide && cap == CurveCapRound) // half hexagon around the half disc: 1.73 vs 2 hw^2
+            reach = (tip ? 1.1547005 : 0.5773503) * (1.0 + fringe);
+        else if (!nearSide && cap == CurveCapTriangleOut) // the triangle itself
+            reach = tip ? 1.0 + 1.4142136 * fringe : 1.4142136 * fringe;
+        offset = reach * dirIn + (tip ? 0.0 : sideSign * rightIn);
+    } else if (!realNeighbor) {
+        // Frustum cut (or an unusable neighbor): the stroke goes on off screen, keep the old halfWidth square.
+        offset = dirIn + sideSign * rightIn;
+    } else if (cosTurn >= 0.0) {
+        // Miter. If it overlaps, the inner vertex stays on this segment's own corner instead.
+        offset = sideSign * ((overlaps && onInnerSide) ? rightIn : (rightOut + rightIn) / (1.0 + cosTurn));
+#if SOLID_OVERLAP_HANDOFF
+        if (overlaps && onInnerSide && nearSide)
+            offset -= (NearInnerAdvance(cosTurn, sinTurn, halfWidth, nextLength, currentLength) / halfWidth) * dirIn;
+#endif
+    } else {
+        // Turn beyond 90 degrees: the outer side is the bevel, two tangents around the round join,
+        // tan(turn / 4) out along each segment's outer edge.
+        float cosHalf = sqrt(saturate(0.5 + 0.5 * cosTurn));
+        float tanQuarter = sqrt((1.0 - cosHalf) / (1.0 + cosHalf));
+        float2 outerIn = innerOnRight ? -rightIn : rightIn;
+        float2 outerOut = innerOnRight ? -rightOut : rightOut;
+        if (vertexId == 4u) {
+            // Bevel tip, on the next segment's outer edge (= that segment's near outer vertex if no overlap)
+            offset = outerOut + tanQuarter * -dirOut;
+        } else if (overlaps && nearSide) {
+            // Plain corners: the previous segment's far end already holds the whole join.
+            offset = sideSign * rightIn;
+#if SOLID_OVERLAP_HANDOFF
+            if (onInnerSide)
+                offset -= (NearInnerAdvance(cosTurn, sinTurn, halfWidth, nextLength, currentLength) / halfWidth) * dirIn;
+#endif
+        } else if (!onInnerSide) {
+            // Bevel point on this segment's outer edge
+            offset = outerIn + tanQuarter * dirIn;
+        } else if (!overlaps) {
+            // Both segments meet on the inner miter
+            offset = -(outerIn + outerOut) / (1.0 + cosTurn);
+        } else {
+            // Inner edge runs on to where it crosses the next segment's outer edge line, cot(turn / 2)
+            // past the corner, so this strip holds the whole join (the next one starts flat).
+            offset = sideSign * rightIn + (sinTurn / (1.0 - cosTurn)) * dirIn;
+        }
+    }
+
+    // Arc position: measured inward from the corner, then flipped on the far side so it runs
+    // 0 at the start .. currentLength at the end for every vertex.
+    // arc values:
+    //   < 0        0            currentLength   > currentLength
+    //    |  -----  *  ------------->  *  ----------  |
+    //            start               end
+    float arc = dot(offset, dirIn) * -halfWidth;
+    if (vertexId >= 2u) arc = currentLength - arc;
+
+    // Lateral position: +-halfWidth on the strip's two edges (0, 2 one side, 1, 3 the other);
+    // vertex 4 is projected onto this segment's normal.
+    o.SDF.x = (vertexId == 4u) ? (dot(offset, rightIn) * -halfWidth)
+                               : (((vertexId & 1u) == 0u) ? halfWidth : -halfWidth);
+    o.SDF.y = arc;
+    o.SDF.zw = float2(halfWidth, currentLength);
+
+    // Offset in pixels -> NDC coordinate.
+    o.Position.xy = mad((2.0 * halfWidth) / WH, offset, o.Position.xy);
+
+    return o;
+}
