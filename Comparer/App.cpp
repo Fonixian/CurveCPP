@@ -28,6 +28,8 @@ namespace
   constexpr float PetalCenterY = 0.7f;
   constexpr float PetalRadius = 1.45f;
 
+  constexpr float HermiteRadius = 0.75f; // the Hermite loop sits inside the petal ring
+
   constexpr float RibbonY = -2.3f;
   constexpr float RibbonHalfSpan = 3.0f;
   constexpr float RibbonAmplitude = 0.55f;
@@ -102,8 +104,8 @@ void App::BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset)
     { -1.5f, WaveY + 0.7f, 0.0f },
     { 1.5f, WaveY + 0.7f, 0.0f },
     { 3.0f, WaveY - 0.5f, 0.0f });
-  wave.C0 = wave_color0;
-  wave.C1 = wave_color1;
+  wave.style.C0 = wave_color0;
+  wave.style.C1 = wave_color1;
   scene.wave = renderer.Add(wave);
 
   for (int i = 0; i < PetalCount; ++i)
@@ -112,25 +114,25 @@ void App::BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset)
       { PetalRadius, PetalCenterY, 0.0f },
       { PetalRadius, PetalCenterY, 0.0f },
       { PetalRadius, PetalCenterY, 0.0f });
-    petal.C0 = petal_color;
-    petal.C1 = petal_color;
+    petal.style.C0 = petal_color;
+    petal.style.C1 = petal_color;
     scene.petals[i] = renderer.Add(petal);
   }
 
-  // The ribbon's links continue each other's stroke when it is merged. Every other group in the
-  // scene (wave, petals, gallery, test curves) is Added unmerged, i.e. one stroke per curve.
-  // Phantom ends because PoseScene() samples the ribbon's path one step past either end anyway.
+  // The ribbon and the Hermite loop are each one merged stroke; every other group in the scene
+  // (wave, petals, gallery, test curves) is Added unmerged, i.e. one stroke per curve.
   {
-    BezierData style;
+    BezierStyle style;
     style.C0 = ribbon_color0;
     style.C1 = ribbon_color1;
+    scene.ribbon = CatmullRomSpline(renderer, style, RibbonLinks + 1);
+  }
 
-    CatmullRomOptions options;
-    options.ends = SplineEnds::Phantom;
-    options.merged = ribbon_merged;
-
-    const XMFLOAT3 knots[RibbonLinks + 3] = {}; // all at the origin; only the count matters here
-    scene.ribbon.Build(renderer, knots, style, options);
+  {
+    BezierStyle style;
+    style.C0 = hermite_color0;
+    style.C1 = hermite_color1;
+    scene.hermite = HermiteSpline(renderer, style, HermiteLinks + 1);
   }
 
   // The cap gallery is the one group whose caps are NOT driven by the style panel: each stroke
@@ -141,11 +143,11 @@ void App::BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset)
     BezierData stroke = Linear(
       { 0.0f, GalleryBottom, 0.0f },
       { 0.0f, GalleryTop, 0.0f });
-    stroke.cap_front = GalleryFrontCap(i);
-    stroke.cap_back = GalleryBackCap(i);
-    stroke.resolution = GalleryResolution;
-    stroke.C0 = { 1.0f, 1.0f, 1.0f };
-    stroke.C1 = gallery_color;
+    stroke.style.cap_front = GalleryFrontCap(i);
+    stroke.style.cap_back = GalleryBackCap(i);
+    stroke.style.resolution = GalleryResolution;
+    stroke.style.C0 = { 1.0f, 1.0f, 1.0f };
+    stroke.style.C1 = gallery_color;
     scene.gallery[i] = renderer.Add(stroke);
   }
 }
@@ -197,21 +199,21 @@ void App::AddTestCurves(CurveRenderer& renderer, Scene& scene)
     // here is what ApplyStyle() would push anyway, set at Add time so a curve looks right on the
     // frame it appears rather than on the next one - and, in the BezierRenderer, lands straight in
     // the backend the current pattern picks instead of being moved there on the next Draw().
-    data.width = style_width;
-    data.cap_front = cap_front;
-    data.cap_back = cap_back;
-    data.join = static_cast<CurveJoin>(style_join);
-    data.dash_length = style_dash_length;
-    data.spacing = style_patterned ? style_spacing : 0.0f;
-    data.min_height = style_min_height;
-    data.max_height = style_max_height;
-    data.resolution = resolution;
+    data.style.width = style_width;
+    data.style.cap_front = cap_front;
+    data.style.cap_back = cap_back;
+    data.style.join = static_cast<CurveJoin>(style_join);
+    data.style.dash_length = style_dash_length;
+    data.style.spacing = style_patterned ? style_spacing : 0.0f;
+    data.style.min_height = style_min_height;
+    data.style.max_height = style_max_height;
+    data.style.resolution = resolution;
 
     // Hue by index so a batch is legible as separate strokes rather than one solid mass. Test
     // curves are not repainted afterwards, so this is the only place their colour is decided.
     const XMFLOAT3 color = HueColor(float(scene.test_curves.size()) * 0.137f);
-    data.C0 = color;
-    data.C1 = HueColor(float(scene.test_curves.size()) * 0.137f + 0.5f);
+    data.style.C0 = color;
+    data.style.C1 = HueColor(float(scene.test_curves.size()) * 0.137f + 0.5f);
 
     test.handle = renderer.Add(data);
     // Moved, not copied: the handle owns the curve and is move-only.
@@ -278,16 +280,13 @@ void App::PoseScene(Scene& scene)
   }
 
   // --- ribbon: a Catmull-Rom spline along a 3D path --------------------------------------------
-  // Six cubic links through seven knots. With "Merge ribbon links" on (the default) they are ONE
-  // stroke: one arc length, one pattern grid, caps only at the two far ends. With it off every link
-  // is its own stroke, which shows what caps do at an interior joint: with Butt the links meet
-  // seamlessly, with Round they bulge a little, and with Triangle out you get a visible spike at
-  // every link boundary.
+  // Six cubic links through seven points, merged into ONE stroke: one arc length, one pattern grid,
+  // caps only at the two far ends.
   {
     const float step = 1.0f / RibbonLinks;
 
-    // Defined outside [0, 1] too, which is what lets the ends use phantom knots taken from the
-    // path itself rather than mirrored ones.
+    // Defined outside [0, 1] too, which is what lets the end points come from the path itself
+    // rather than being mirrored.
     auto ribbon_point = [&](float s)
     {
       return XMFLOAT3{
@@ -297,13 +296,14 @@ void App::PoseScene(Scene& scene)
       };
     };
 
-    // Knot k sits at s = (k - 1) * step: knots 0 and RibbonLinks + 2 are the phantoms.
-    XMFLOAT3 knots[RibbonLinks + 3];
-    for (int k = 0; k < RibbonLinks + 3; ++k)
+    auto& ribbon = scene.ribbon;
+    for (size_t k = 0; k < ribbon.size(); ++k)
     {
-      knots[k] = ribbon_point(float(k - 1) * step);
+      ribbon[k] = ribbon_point(float(k) * step);
     }
-    scene.ribbon.SetKnots(knots);
+    ribbon.FrontEnd() = ribbon_point(-step);
+    ribbon.BackEnd() = ribbon_point(float(ribbon.size()) * step);
+    ribbon.Update();
 
     if (animate_colors)
     {
@@ -312,11 +312,52 @@ void App::PoseScene(Scene& scene)
       {
         colors[k] = HueColor(float(k) * step + t * 0.15f);
       }
-      scene.ribbon.KnotColors(colors);
+      ribbon.PointColors(colors);
     }
     else
     {
-      scene.ribbon.Colors(ribbon_color0, ribbon_color1);
+      ribbon.Colors(ribbon_color0, ribbon_color1);
+    }
+  }
+
+  // --- hermite: a closed loop whose tangents twist and stretch --------------------------------
+  // Knots sit on a breathing circle. Tangents along the circle, r * dtheta long, give a round loop;
+  // twisting them makes a pinwheel, shrinking them flattens it to a polygon.
+  {
+    auto& hermite = scene.hermite;
+    const size_t links = hermite.size() - 1;
+    const float step = Tau / float(links);
+    const float twist = 1.2f * sinf(t * 0.8f);
+    const float stretch = 1.0f + 0.8f * sinf(t * 1.3f);
+    const float ct = cosf(twist);
+    const float st = sinf(twist);
+
+    for (size_t k = 0; k < links; ++k)
+    {
+      const float angle = float(k) * step + t * 0.4f;
+      const float r = HermiteRadius * (1.0f + 0.2f * sinf(3.0f * angle + t * 1.1f));
+      const float tx = -sinf(angle) * r * step * stretch;
+      const float ty = cosf(angle) * r * step * stretch;
+
+      hermite[k].position = { dx + r * cosf(angle), PetalCenterY + r * sinf(angle), 0.0f };
+      hermite[k].tangent = { tx * ct - ty * st, tx * st + ty * ct, 0.0f };
+    }
+    hermite[links] = hermite[0]; // closes the loop exactly
+    hermite.Update();
+
+    if (animate_colors)
+    {
+      XMFLOAT3 colors[HermiteLinks + 1];
+      for (int k = 0; k < HermiteLinks; ++k)
+      {
+        colors[k] = HueColor(2.0f * float(k) / HermiteLinks - t * 0.2f); // one full hue period around
+      }
+      colors[HermiteLinks] = colors[0];
+      hermite.PointColors(colors);
+    }
+    else
+    {
+      hermite.Colors(hermite_color0, hermite_color1);
     }
   }
 
@@ -396,9 +437,7 @@ void App::ApplyStyle(Scene& scene)
     apply(petal, false, resolution);
   }
   apply(scene.ribbon, false, resolution);
-  // Only raises the layout flag when the value actually changes, so pushing it on every style pass
-  // costs nothing.
-  scene.ribbon.Merged(ribbon_merged);
+  apply(scene.hermite, false, resolution);
 
   // The gallery keeps the cap pair it was built with - that is the whole point of it - and stays
   // at two points, because a straight line gains nothing from subdivision.
@@ -608,16 +647,7 @@ void App::ExampleGui()
 
   StyleGui();
 
-  // Merged curves: the ribbon is the one group built as a chain. Unticked, its six links go back to
-  // six separate strokes - the comparison that used to need commenting code in and out.
-  ImGui::SeparatorText("Merged curves");
-  if (ImGui::Checkbox("Merge ribbon links", &ribbon_merged))
-  {
-    style_dirty = true;
-  }
-  ImGui::TextDisabled("Wave, petals, gallery and test curves are always separate strokes.");
-
-  // Colours belong to this screen: they drive the four hand-built groups only. Test curves get a
+  // Colours belong to this screen: they drive the hand-built groups only. Test curves get a
   // fixed hue at Add time and are never repainted.
   ImGui::SeparatorText("Colour");
   bool changed = ImGui::Checkbox("Animate colours", &animate_colors);
@@ -627,6 +657,8 @@ void App::ExampleGui()
   changed |= ImGui::ColorEdit3("Petals", &petal_color.x);
   changed |= ImGui::ColorEdit3("Ribbon A", &ribbon_color0.x);
   changed |= ImGui::ColorEdit3("Ribbon B", &ribbon_color1.x);
+  changed |= ImGui::ColorEdit3("Hermite A", &hermite_color0.x);
+  changed |= ImGui::ColorEdit3("Hermite B", &hermite_color1.x);
   changed |= ImGui::ColorEdit3("Gallery", &gallery_color.x);
   ImGui::EndDisabled();
 

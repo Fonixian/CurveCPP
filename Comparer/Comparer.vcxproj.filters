@@ -93,6 +93,9 @@
     <ClCompile Include="CatmullRomSpline.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="HermiteSpline.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.h">
@@ -150,6 +153,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="CatmullRomSpline.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="HermiteSpline.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -245,4 +251,4 @@
       <Filter>Shaders\bezier dots</Filter>
     </FxCompile>
   </ItemGroup>
-</Project>
+</Project>

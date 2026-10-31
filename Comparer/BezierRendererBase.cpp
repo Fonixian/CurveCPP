@@ -67,7 +67,7 @@ void BezierRendererBase::SetViewport(float width, float height)
 
 BezierCurve BezierRendererBase::Add(const BezierData& curve)
 {
-  assert(curve.resolution >= 2u);
+  assert(curve.style.resolution >= 2u);
 
   const size_t index = owners.size();
   cubic_points.push_back(XMFLOAT3X4{
@@ -76,18 +76,18 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve)
     curve.P0.z, curve.P1.z, curve.P2.z, curve.P3.z
   });
   color_data.push_back(UploadColorData{
-    PackFloat3ToR8G8B8A8(curve.C0), PackFloat3ToR8G8B8A8(curve.C1),
-    curve.min_height, curve.max_height
+    PackFloat3ToR8G8B8A8(curve.style.C0), PackFloat3ToR8G8B8A8(curve.style.C1),
+    curve.style.min_height, curve.style.max_height
   });
   // width << 24 | cap_front << 16 | cap_back << 8 | join - see style_words.
   style_words.push_back(
-    (static_cast<uint32_t>(std::clamp(curve.width, 0.f, 255.f) + 0.5f) << 24) |
-    (uint32_t(curve.cap_front) << 16) |
-    (uint32_t(curve.cap_back) << 8) |
-    uint32_t(curve.join));
-  spacings.push_back(curve.spacing);
-  dash_lengths.push_back(curve.dash_length);
-  resolutions.push_back(curve.resolution);
+    (static_cast<uint32_t>(std::clamp(curve.style.width, 0.f, 255.f) + 0.5f) << 24) |
+    (uint32_t(curve.style.cap_front) << 16) |
+    (uint32_t(curve.style.cap_back) << 8) |
+    uint32_t(curve.style.join));
+  spacings.push_back(curve.style.spacing);
+  dash_lengths.push_back(curve.style.dash_length);
+  resolutions.push_back(curve.style.resolution);
   merged.push_back(curve.merge_with_previous ? 1u : 0u);
   owners.push_back(nullptr);
   need_resize = true;

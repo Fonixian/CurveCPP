@@ -17,13 +17,8 @@ enum class CurveJoin : uint8_t
   Square = 1
 };
 
-struct BezierData
+struct BezierStyle
 {
-  // Always cubic: Linear() and Quadratic() raise to cubic.
-  DirectX::XMFLOAT3 P0 = { 0.f, 0.f, 0.f };
-  DirectX::XMFLOAT3 P1 = { 0.f, 0.f, 0.f };
-  DirectX::XMFLOAT3 P2 = { 0.f, 0.f, 0.f };
-  DirectX::XMFLOAT3 P3 = { 0.f, 0.f, 0.f };
   DirectX::XMFLOAT3 C0 = { 1.f, 1.f, 1.f };
   DirectX::XMFLOAT3 C1 = { 1.f, 1.f, 1.f };
   float min_height = 0.f;
@@ -35,6 +30,16 @@ struct BezierData
   float dash_length = 0.f;
   float spacing = 0.f;
   unsigned resolution = 32u;
+};
+
+struct BezierData
+{
+  // Always cubic: Linear() and Quadratic() raise to cubic.
+  DirectX::XMFLOAT3 P0 = { 0.f, 0.f, 0.f };
+  DirectX::XMFLOAT3 P1 = { 0.f, 0.f, 0.f };
+  DirectX::XMFLOAT3 P2 = { 0.f, 0.f, 0.f };
+  DirectX::XMFLOAT3 P3 = { 0.f, 0.f, 0.f };
+  BezierStyle style;
   // Continue the stroke of the curve Added just before this one (one arc length, one pattern, caps
   // only at the chain's two ends). Requires P0 == the previous P3. Merged or not, a curve owns exactly
   // `resolution` samples, so the joint is sampled twice (the previous curve's t = 1, this curve's
@@ -65,7 +70,7 @@ constexpr CurveKind KindOf(float spacing, float dash_length)
                            : CurveKind::Patterned;
 }
 
-constexpr CurveKind KindOf(const BezierData& curve)
+constexpr CurveKind KindOf(const BezierStyle& style)
 {
-  return KindOf(curve.spacing, curve.dash_length);
+  return KindOf(style.spacing, style.dash_length);
 }

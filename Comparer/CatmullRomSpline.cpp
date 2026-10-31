@@ -2,45 +2,15 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
+#include <utility>
 
 using namespace DirectX;
 
-namespace
-{
-  // Floor on a non-uniform knot interval. Two coincident knots would otherwise give 0/0 in the
-  // tangent below; with the floor the offending term is 0/eps = 0, i.e. the duplicate knot simply
-  // contributes no direction.
-  constexpr float MinKnotInterval = 1e-4f;
-
-  XMFLOAT3 Store(FXMVECTOR v)
-  {
-    XMFLOAT3 result;
-    XMStoreFloat3(&result, v);
-    return result;
-  }
-
-  float KnotInterval(FXMVECTOR a, FXMVECTOR b, float alpha)
-  {
-    const float d = XMVectorGetX(XMVector3Length(b - a));
-    return std::max(std::pow(d, alpha), MinKnotInterval);
-  }
-
-  XMFLOAT3 Mirror(const XMFLOAT3& end, const XMFLOAT3& neighbour)
-  {
-    return { 2.0f * end.x - neighbour.x, 2.0f * end.y - neighbour.y, 2.0f * end.z - neighbour.z };
-  }
-}
-
-// Uniform: the tangent at k1 is (k2 - k0) / 2 and the Hermite -> Bezier step divides it by 3, hence
-// the familiar k1 + (k2 - k0) / 6. Spelled exactly as App.cpp's ribbon used to, so it reproduces it.
-//
-// Non-uniform (Barry-Goldman, differentiated at the knot): with knot intervals d_i = |k_{i+1} - k_i|^alpha
-//
-//     m1 = (k1 - k0)/d0 - (k2 - k0)/(d0 + d1) + (k2 - k1)/d1
-//     m2 = (k2 - k1)/d1 - (k3 - k1)/(d1 + d2) + (k3 - k2)/d2
-//
-// are the tangents per unit of knot parameter; the segment spans d1 of it, so the Bezier handles are
-// k1 + m1 * d1/3 and k2 - m2 * d1/3. At alpha = 0 every d is 1 and this collapses to the uniform form.
+// Non-uniform tangents (Barry-Goldman), with knot intervals d_i = |k_{i+1} - k_i|^alpha:
+//   m1 = (k1 - k0)/d0 - (k2 - k0)/(d0 + d1) + (k2 - k1)/d1
+//   m2 = (k2 - k1)/d1 - (k3 - k1)/(d1 + d2) + (k3 - k2)/d2
+// Handles: k1 + m1 * d1/3, k2 - m2 * d1/3.
 void CatmullRomToBezier(const XMFLOAT3& k0, const XMFLOAT3& k1, const XMFLOAT3& k2, const XMFLOAT3& k3,
   float alpha, XMFLOAT3& p1, XMFLOAT3& p2)
 {
@@ -51,136 +21,188 @@ void CatmullRomToBezier(const XMFLOAT3& k0, const XMFLOAT3& k1, const XMFLOAT3& 
 
   if (alpha == 0.0f)
   {
-    p1 = Store(v1 + (v2 - v0) * (1.0f / 6.0f));
-    p2 = Store(v2 - (v3 - v1) * (1.0f / 6.0f));
+    XMStoreFloat3(&p1, v1 + (v2 - v0) * (1.0f / 6.0f));
+    XMStoreFloat3(&p2, v2 - (v3 - v1) * (1.0f / 6.0f));
     return;
   }
 
-  const float d0 = KnotInterval(v0, v1, alpha);
-  const float d1 = KnotInterval(v1, v2, alpha);
-  const float d2 = KnotInterval(v2, v3, alpha);
+  // Avoids 0/0 on coincident knots.
+  constexpr float MinKnotInterval = 1e-4f;
+  const float d0 = std::max(std::pow(XMVectorGetX(XMVector3Length(v1 - v0)), alpha), MinKnotInterval);
+  const float d1 = std::max(std::pow(XMVectorGetX(XMVector3Length(v2 - v1)), alpha), MinKnotInterval);
+  const float d2 = std::max(std::pow(XMVectorGetX(XMVector3Length(v3 - v2)), alpha), MinKnotInterval);
 
   const XMVECTOR m1 = (v1 - v0) / d0 - (v2 - v0) / (d0 + d1) + (v2 - v1) / d1;
   const XMVECTOR m2 = (v2 - v1) / d1 - (v3 - v1) / (d1 + d2) + (v3 - v2) / d2;
 
   const float handle = d1 / 3.0f;
-  p1 = Store(v1 + m1 * handle);
-  p2 = Store(v2 - m2 * handle);
+  XMStoreFloat3(&p1, v1 + m1 * handle);
+  XMStoreFloat3(&p2, v2 - m2 * handle);
 }
 
-// --- CatmullRomSpline -----------------------------------------------------------------------------
+CatmullRomSpline::CatmullRomSpline(CurveRenderer& target, const BezierStyle& link_style, size_t point_count, float link_alpha) :
+  renderer(&target),
+  points(point_count, XMFLOAT3{ 0.f, 0.f, 0.f }),
+  alpha(link_alpha),
+  style(link_style)
+{
+  assert(point_count >= 2 && "a Catmull-Rom spline needs at least 2 points");
+  AddLinks();
+}
 
 CatmullRomSpline::CatmullRomSpline(CatmullRomSpline&& other) noexcept :
-  renderer(other.renderer),
+  renderer(std::exchange(other.renderer, nullptr)),
+  points(std::move(other.points)),
+  front_end(other.front_end),
+  back_end(other.back_end),
+  alpha(other.alpha),
+  posed(std::move(other.posed)),
+  pose_all(other.pose_all),
   links(std::move(other.links)),
   style(other.style),
-  options(other.options),
-  knot_colored(other.knot_colored)
+  point_colors(std::move(other.point_colors))
 {
-  other.renderer = nullptr;
-  other.links.clear();
 }
 
 CatmullRomSpline& CatmullRomSpline::operator=(CatmullRomSpline&& other) noexcept
 {
   if (this == &other) return *this;
-  links = std::move(other.links); // destroys (removes) whatever this spline had
-  renderer = other.renderer;
+  links = std::move(other.links);
+  renderer = std::exchange(other.renderer, nullptr);
+  points = std::move(other.points);
+  front_end = other.front_end;
+  back_end = other.back_end;
+  alpha = other.alpha;
+  posed = std::move(other.posed);
+  pose_all = other.pose_all;
   style = other.style;
-  options = other.options;
-  knot_colored = other.knot_colored;
-  other.renderer = nullptr;
-  other.links.clear();
+  point_colors = std::move(other.point_colors);
   return *this;
 }
 
-size_t CatmullRomSpline::LinksFor(size_t knot_count, SplineEnds ends)
+void CatmullRomSpline::MirrorEnds()
 {
-  const size_t outer = (ends == SplineEnds::Phantom) ? 2u : 0u;
-  return (knot_count >= outer + 2u) ? knot_count - outer - 1u : 0u;
+  const size_t n = points.size();
+  const XMFLOAT3& p0 = points[0];
+  const XMFLOAT3& p1 = points[1];
+  const XMFLOAT3& q0 = points[n - 1];
+  const XMFLOAT3& q1 = points[n - 2];
+  front_end = { 2.0f * p0.x - p1.x, 2.0f * p0.y - p1.y, 2.0f * p0.z - p1.z };
+  back_end = { 2.0f * q0.x - q1.x, 2.0f * q0.y - q1.y, 2.0f * q0.z - q1.z };
 }
 
-void CatmullRomSpline::Build(CurveRenderer& target, std::span<const XMFLOAT3> knots,
-  const BezierData& link_style, const CatmullRomOptions& link_options)
+void CatmullRomSpline::Alpha(float value)
 {
-  links.clear();
-
-  renderer = &target;
-  style = link_style;
-  style.merge_with_previous = false;
-  options = link_options;
-  knot_colored = false;
-
-  const size_t count = LinksFor(knots.size(), options.ends);
-  assert(count >= 1 && "Mirror needs >= 2 knots, Phantom >= 4");
-
-  AddLinks(count);
-  Pose(knots);
+  if (value == alpha) return;
+  alpha = value;
+  pose_all = true;
 }
 
-void CatmullRomSpline::SetKnots(std::span<const XMFLOAT3> knots)
+void CatmullRomSpline::Update()
 {
-  assert(renderer && "SetKnots() before Build()");
+  const size_t n = points.size();
+  if (n < 2 || links.empty()) return;
 
-  const size_t count = LinksFor(knots.size(), options.ends);
-  assert(count >= 1 && "Mirror needs >= 2 knots, Phantom >= 4");
-
-  if (count < links.size())
+  // 0: front end, 1..n: points, n + 1: back end. Link i uses knots i..i + 3.
+  auto knot = [&](size_t j) -> const XMFLOAT3&
   {
-    // The renderer splits a chain where a curve was removed, so what is left of it stays merged
-    // and whatever followed the old tail does not get glued on.
-    links.erase(links.begin() + std::ptrdiff_t(count), links.end());
-    if (!knot_colored) ApplyGradient();
-  }
-  else if (count > links.size())
-  {
-    links.clear();
-    AddLinks(count);
-  }
-
-  Pose(knots);
-}
-
-void CatmullRomSpline::AddLinks(size_t count)
-{
-  links.reserve(count);
-  for (size_t i = 0; i < count; ++i)
-  {
-    BezierData link = style;
-    link.merge_with_previous = options.merged && i > 0;
-    link.C0 = LerpFloat3(style.C0, style.C1, float(i) / float(count));
-    link.C1 = LerpFloat3(style.C0, style.C1, float(i + 1) / float(count));
-    links.push_back(renderer->Add(link));
-  }
-}
-
-void CatmullRomSpline::Pose(std::span<const XMFLOAT3> knots)
-{
-  // Interpolated knot j, for j in [-1, n]: the outer two are the phantoms, passed in or mirrored.
-  const bool phantom = options.ends == SplineEnds::Phantom;
-  const ptrdiff_t n = ptrdiff_t(links.size()) + 1;
-  auto knot = [&](ptrdiff_t j) -> XMFLOAT3
-  {
-    if (phantom) return knots[size_t(j + 1)];
-    if (j < 0) return Mirror(knots[0], knots[1]);
-    if (j >= n) return Mirror(knots[size_t(n - 1)], knots[size_t(n - 2)]);
-    return knots[size_t(j)];
+    if (j == 0) return front_end;
+    if (j == n + 1) return back_end;
+    return points[j - 1];
   };
+
+  const bool all = pose_all || posed.size() != n + 2;
+  if (all) posed.resize(n + 2);
+
+  std::vector<bool> changed(n + 2, all);
+  if (!all)
+  {
+    for (size_t j = 0; j < n + 2; ++j) changed[j] = std::memcmp(&knot(j), &posed[j], sizeof(XMFLOAT3)) != 0;
+  }
 
   for (size_t i = 0; i < links.size(); ++i)
   {
-    const ptrdiff_t j = ptrdiff_t(i);
-    const XMFLOAT3 k0 = knot(j - 1);
-    const XMFLOAT3 k1 = knot(j);
-    const XMFLOAT3 k2 = knot(j + 1);
-    const XMFLOAT3 k3 = knot(j + 2);
+    if (!(changed[i] || changed[i + 1] || changed[i + 2] || changed[i + 3])) continue;
+
+    const XMFLOAT3& k0 = knot(i);
+    const XMFLOAT3& k1 = knot(i + 1);
+    const XMFLOAT3& k2 = knot(i + 2);
+    const XMFLOAT3& k3 = knot(i + 3);
 
     XMFLOAT3 p1;
     XMFLOAT3 p2;
-    CatmullRomToBezier(k0, k1, k2, k3, options.alpha, p1, p2);
-    // Link i ends on exactly the knot link i + 1 starts on - the same XMFLOAT3, bit for bit - which
-    // is the shared-endpoint assumption merged curves are built on.
+    CatmullRomToBezier(k0, k1, k2, k3, alpha, p1, p2);
     links[i].control_points(k1, p1, p2, k2);
+  }
+
+  for (size_t j = 0; j < n + 2; ++j) posed[j] = knot(j);
+  pose_all = false;
+}
+
+void CatmullRomSpline::Resize(size_t point_count)
+{
+  assert(point_count >= 2 && "a Catmull-Rom spline needs at least 2 points");
+  assert(renderer && "Resize() on a default-constructed spline");
+  if (point_count == points.size()) return;
+
+  const XMFLOAT3 last = points.back();
+  points.resize(point_count, last);
+  point_colors.clear();
+  pose_all = true;
+
+  const size_t link_count = point_count - 1;
+  if (link_count < links.size())
+  {
+    links.erase(links.begin() + std::ptrdiff_t(link_count), links.end());
+    ApplyColors();
+  }
+  else
+  {
+    links.clear();
+    AddLinks();
+  }
+}
+
+void CatmullRomSpline::AddLinks()
+{
+  const size_t count = points.size() - 1;
+  links.reserve(count);
+  for (size_t i = 0; i < count; ++i)
+  {
+    BezierData link;
+    link.style = style;
+    link.merge_with_previous = i > 0;
+    links.push_back(renderer->Add(link));
+  }
+  ApplyColors();
+  pose_all = true;
+}
+
+// By height every link gets the spline's end colours; by t each link gets its slice.
+void CatmullRomSpline::ApplyColors()
+{
+  const size_t count = links.size();
+  if (count == 0) return;
+
+  const bool by_point = !point_colors.empty();
+  if (HeightBlend())
+  {
+    const XMFLOAT3 C0 = by_point ? point_colors.front() : style.C0;
+    const XMFLOAT3 C1 = by_point ? point_colors.back() : style.C1;
+    for (auto& link : links) link.colors(C0, C1);
+  }
+  else if (by_point)
+  {
+    for (size_t i = 0; i < count; ++i) links[i].colors(point_colors[i], point_colors[i + 1]);
+  }
+  else
+  {
+    for (size_t i = 0; i < count; ++i)
+    {
+      links[i].colors(
+        LerpFloat3(style.C0, style.C1, float(i) / float(count)),
+        LerpFloat3(style.C0, style.C1, float(i + 1) / float(count)));
+    }
   }
 }
 
@@ -188,29 +210,26 @@ void CatmullRomSpline::Colors(const XMFLOAT3& C0, const XMFLOAT3& C1)
 {
   style.C0 = C0;
   style.C1 = C1;
-  knot_colored = false;
-  ApplyGradient();
+  point_colors.clear();
+  ApplyColors();
 }
 
-void CatmullRomSpline::ApplyGradient()
+void CatmullRomSpline::PointColors(std::span<const XMFLOAT3> colors)
 {
-  const float count = float(links.size());
-  for (size_t i = 0; i < links.size(); ++i)
-  {
-    links[i].colors(
-      LerpFloat3(style.C0, style.C1, float(i) / count),
-      LerpFloat3(style.C0, style.C1, float(i + 1) / count));
-  }
+  assert(colors.size() == points.size() && "one colour per point");
+  point_colors.assign(colors.begin(), colors.end());
+  ApplyColors();
 }
 
-void CatmullRomSpline::KnotColors(std::span<const XMFLOAT3> colors)
+void CatmullRomSpline::HeightRange(float min, float max)
 {
-  assert(colors.size() == links.size() + 1 && "one colour per interpolated knot");
-  knot_colored = true;
-  for (size_t i = 0; i < links.size(); ++i)
-  {
-    links[i].colors(colors[i], colors[i + 1]);
-  }
+  if (min == style.min_height && max == style.max_height) return;
+
+  const bool was_height = HeightBlend();
+  style.min_height = min;
+  style.max_height = max;
+  for (auto& link : links) link.HeightRange(min, max);
+  if (HeightBlend() != was_height) ApplyColors();
 }
 
 void CatmullRomSpline::Width(float value)
@@ -244,13 +263,6 @@ void CatmullRomSpline::Spacing(float value)
   for (auto& link : links) link.Spacing(value);
 }
 
-void CatmullRomSpline::HeightRange(float min, float max)
-{
-  style.min_height = min;
-  style.max_height = max;
-  for (auto& link : links) link.HeightRange(min, max);
-}
-
 void CatmullRomSpline::Resolution(unsigned value)
 {
   style.resolution = value;
@@ -258,10 +270,4 @@ void CatmullRomSpline::Resolution(unsigned value)
   {
     if (link.Resolution() != value) link.Resolution(value);
   }
-}
-
-void CatmullRomSpline::Merged(bool value)
-{
-  options.merged = value;
-  for (size_t i = 1; i < links.size(); ++i) links[i].Merged(value);
 }

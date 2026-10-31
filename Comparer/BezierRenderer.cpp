@@ -49,7 +49,7 @@ BezierCurve BezierRenderer::Add(const BezierData& curve)
   }
   else
   {
-    target = &Backend(KindOf(data));
+    target = &Backend(KindOf(data.style));
     // Nothing to continue; left set it would join whatever that backend holds last.
     data.merge_with_previous = false;
   }

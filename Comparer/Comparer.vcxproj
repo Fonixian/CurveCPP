@@ -162,6 +162,7 @@
     <ClCompile Include="BezierLineRenderer.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="CatmullRomSpline.cpp" />
+    <ClCompile Include="HermiteSpline.cpp" />
     <ClCompile Include="IndirectDrawArgs.cpp" />
     <ClCompile Include="CurveApp.cpp" />
     <ClCompile Include="OrbitalCamera.cpp" />
@@ -189,6 +190,7 @@
     <ClInclude Include="BezierLineRenderer.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="CatmullRomSpline.h" />
+    <ClInclude Include="HermiteSpline.h" />
     <ClInclude Include="IndirectDrawArgs.h" />
     <ClInclude Include="OrbitalCamera.h" />
     <ClInclude Include="Pipeline.h" />
@@ -322,4 +324,4 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
-</Project>
+</Project>

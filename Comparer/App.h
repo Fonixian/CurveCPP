@@ -5,6 +5,7 @@
 #include "BezierRenderer.h"
 #include "BezierLineRenderer.h"
 #include "CatmullRomSpline.h"
+#include "HermiteSpline.h"
 #include <vector>
 
 class App
@@ -38,6 +39,7 @@ private:
 
   static constexpr int PetalCount = 5;   // arcs chasing each other around a rotating ring
   static constexpr int RibbonLinks = 6;  // Catmull-Rom spline of cubics, waving through Z
+  static constexpr int HermiteLinks = 8; // closed Hermite loop inside the petal ring
   static constexpr int GalleryCount = 5; // one straight stroke per CurveCap value
 
   // A straight line needs no subdivision, and one segment per gallery stroke means it has exactly
@@ -73,8 +75,10 @@ private:
     float x_offset = 0.0f;
     BezierCurve wave;
     BezierCurve petals[PetalCount];
-    // RibbonLinks cubics through RibbonLinks + 1 knots, plus a phantom knot at each end.
+    // RibbonLinks cubics through RibbonLinks + 1 points, one merged stroke.
     CatmullRomSpline ribbon;
+    // HermiteLinks cubics; the last knot repeats the first, closing the loop.
+    HermiteSpline hermite;
     BezierCurve gallery[GalleryCount];
     std::vector<TestCurve> test_curves;
   };
@@ -135,18 +139,14 @@ private:
   float style_min_height = 0.0f;   // colour-by-height band; min >= max blends by curve t instead
   float style_max_height = 0.0f;
 
-  // Merged curves (BezierData::merge_with_previous). The ribbon is the only group built as a chain
-  // (CatmullRomSpline::Merged): on, its links 1.. continue link 0 and the six cubics are drawn as one
-  // stroke; off, each link is its own stroke with its own caps and its own pattern start. Everything
-  // else is always separate.
-  bool ribbon_merged = true;
-
   bool animate_colors = true;
   DirectX::XMFLOAT3 wave_color0 = { 1.0f, 0.5f, 1.0f };
   DirectX::XMFLOAT3 wave_color1 = { 0.2f, 1.0f, 0.5f };
   DirectX::XMFLOAT3 petal_color = { 1.0f, 0.6f, 0.2f };
   DirectX::XMFLOAT3 ribbon_color0 = { 0.35f, 0.75f, 1.0f };
   DirectX::XMFLOAT3 ribbon_color1 = { 0.95f, 0.35f, 0.75f };
+  DirectX::XMFLOAT3 hermite_color0 = { 0.3f, 1.0f, 0.6f };
+  DirectX::XMFLOAT3 hermite_color1 = { 1.0f, 0.95f, 0.4f };
   DirectX::XMFLOAT3 gallery_color = { 1.0f, 0.85f, 0.25f };
 
   void Update(float delta);
