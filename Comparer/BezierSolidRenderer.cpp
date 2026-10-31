@@ -11,7 +11,7 @@ BezierSolidRenderer::BezierSolidRenderer(const GraphicsDevice& device) :
   curve_draw.ps = Pipeline::getPS(device, "SolidPs.cso");
   curve_draw.states = std::make_shared<PipelineState>(PipelineState{
     BlendState{ device, BlendType::AlphaBlend },
-    DepthStencilState{ device, true, D3D11_COMPARISON_LESS },
+    DepthStencilState{ device, true, D3D11_COMPARISON_GREATER },
     RasterizerState{ device, RasterizerFlags::CullNone },
     { 1.f, 1.f, 1.f, 1.f }
   });

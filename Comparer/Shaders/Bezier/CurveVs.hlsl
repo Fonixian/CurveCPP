@@ -38,6 +38,8 @@ float4 SidePlaneDistances(float4 p)
   return mad(p.xxyy, float4(1.0, -1.0, 1.0, -1.0), p.wwww);
 }
 
+// Reversed-Z: x = distance to the far plane (z = 0; always >= 0 with the infinite far plane),
+// y = distance to the near plane (z = w).
 float2 DepthPlaneDistances(float4 p)
 {
   return float2(p.z, p.w - p.z);
@@ -102,10 +104,12 @@ bool ClipSegment(inout float4 start, inout float4 end, out float t0, out float t
 
 void PullInFront(inout float4 neighborClip, float4 cornerClip)
 {
-  if (Min2(neighborClip.zw) < 0.0)
+  // Reversed-Z: the near plane is w - z = 0, the far plane z = 0 (never reached with the infinite far).
+  float2 neighborDepth = DepthPlaneDistances(neighborClip);
+  if (Min2(neighborDepth) < 0.0)
   {
-    float2 toCorner = cornerClip.zw - neighborClip.zw;
-    float2 tPlane = -neighborClip.zw / toCorner;
+    float2 toCorner = DepthPlaneDistances(cornerClip) - neighborDepth;
+    float2 tPlane = -neighborDepth / toCorner;
     float pull = max(0.0, max(toCorner.x > 0.0 ? tPlane.x : 0.0, toCorner.y > 0.0 ? tPlane.y : 0.0));
     if (pull > 0.0)
     {

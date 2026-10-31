@@ -71,11 +71,19 @@ float SampleT(uint2 range, uint sampleIndex)
   return float(sampleIndex - range.x) / float(range.y - range.x); // Driver can cause problem if it compiles this to n * (1 / n)
 }
 
-// If `p` is behind the near plane (clip z < 0), slides it along the segment toward `other` onto the
-// plane; otherwise returns it unchanged. `other` must be in front of the plane.
+// Signed distance to the near plane. Reversed-Z: depth z/w is 1 at the near plane and falls toward
+// 0 at infinity, so "in front of the near plane" is z <= w.
+float NearPlaneDistance(float4 p)
+{
+  return p.w - p.z;
+}
+
+// If `p` is behind the near plane, slides it along the segment toward `other` onto the plane;
+// otherwise returns it unchanged. `other` must be in front of the plane.
 float4 ClipToNearPlane(float4 p, float4 other)
 {
-  return (p.z < 0.0) ? lerp(p, other, p.z / (p.z - other.z)) : p;
+  float d = NearPlaneDistance(p);
+  return (d < 0.0) ? lerp(p, other, d / (d - NearPlaneDistance(other))) : p;
 }
 
 float HalfWidth(uint style)

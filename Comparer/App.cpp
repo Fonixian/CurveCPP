@@ -486,7 +486,7 @@ SDL_AppResult App::Init()
   ImGui_ImplSDL3_InitForD3D(window);
   ImGui_ImplDX11_Init(device->get(), device->ImmediateContext()->get());
 
-  camera.SetProj(viewport_width / viewport_height, 0.1f, 1000.0f);
+  camera.SetProj(viewport_width / viewport_height, 0.1f);
   // Far enough back that the copies of the scene fit side by side. The orbital manipulator
   // picks its orbit distance up from this, so change it here rather than in OrbitalCamera.
   camera.SetView(XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, -19.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });
@@ -1065,7 +1065,7 @@ SDL_AppResult App::Iterate(float delta)
 
   auto* back = swapchain->BackBuffer();
   back->Clear({ 0.39f, 0.58f, 0.92f, 0.f });
-  depth->Clear();
+  depth->Clear(0.0f);
   device->ImmediateContext()->BindRenderTargets(back, depth.get());
   Render();
   ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());

@@ -38,7 +38,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID)
   p1 = mul(p1, VP);
 
   // Only the part in front of the near plane has a screen length.
-  if (p0.z < 0.0 && p1.z < 0.0)
+  if (NearPlaneDistance(p0) < 0.0 && NearPlaneDistance(p1) < 0.0)
   {
     Distances[pointIndex] = float2(worldLength, 0.0);
     return;

@@ -61,16 +61,8 @@ public:
 
   void SetZNear(const float _zn) noexcept;
 
-  inline float GetZFar() const
-  {
-    return m_zFar;
-  }
+  void SetProj(float _aspect, float _zn);
 
-  void SetZFar(const float _zf) noexcept;
-
-  void SetProj(float _aspect, float _zn, float _zf);
-
-  //private:
   XMVECTOR m_eye;
   XMVECTOR m_worldUp;
   XMVECTOR m_at;
@@ -78,8 +70,7 @@ public:
   XMMATRIX m_viewMatrix;
   XMMATRIX m_projMatrix;
 
-  float m_zNear = 0.01f;
-  float m_zFar = 100.0f;
+  float m_zNear = 0.1f;
 
   float m_angle = DirectX::XMConvertToRadians(45.0f);
   float m_aspect = 1.0f;
