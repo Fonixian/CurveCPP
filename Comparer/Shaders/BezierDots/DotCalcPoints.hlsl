@@ -10,21 +10,15 @@ cbuffer CameraData : register(b0)
   uint TotalCurveCount;
 };
 
-StructuredBuffer<float3> ControlPoints : register(t0);
-StructuredBuffer<uint> BezierIndexMap : register(t1);
+StructuredBuffer<Cubic> ControlPoints : register(t0); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<uint> BezierIndexMap : register(t1); // curve | segment flags per sample
 StructuredBuffer<uint2> CurveIndices : register(t2);
 
 RWStructuredBuffer<float> WorldDistances : register(u0);
 
 Cubic LoadCubic(uint curveIndex)
 {
-  uint k = curveIndex << 2u;
-  Cubic cubic;
-  cubic.P0 = ControlPoints[k];
-  cubic.P1 = ControlPoints[k + 1u];
-  cubic.P2 = ControlPoints[k + 2u];
-  cubic.P3 = ControlPoints[k + 3u];
-  return cubic;
+  return ControlPoints[curveIndex];
 }
 
 // One thread measures TWO consecutive points: i0 = 2 * id and i1 = i0 + 1. Point i's value is the
@@ -39,7 +33,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID)
   if (i0 >= TotalPointCount) return;
   uint i1 = i0 + 1u;
 
-  uint curve0 = BezierIndexMap[i0];
+  uint curve0 = BezierIndexMap[i0] & SegmentCurveMask;
   uint2 range0 = CurveIndices[curve0];
   Cubic cubic0 = LoadCubic(curve0);
 
@@ -49,7 +43,7 @@ void main(uint3 dispatchId : SV_DispatchThreadID)
 
   if (i1 >= TotalPointCount) return;
 
-  uint curve1 = BezierIndexMap[i1];
+  uint curve1 = BezierIndexMap[i1] & SegmentCurveMask;
   if (curve1 == curve0 && i1 <= range0.y)
   {
     // Same curve and i1 is not clamped, so its start position is pos1 exactly.

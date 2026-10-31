@@ -24,7 +24,7 @@ RWStructuredBuffer<float> PatternPosition : register(u0);
 // owns a centre. A curve shorter than the spacing owns none, so the chain can end in a run of empty
 // curves; this walks over those and stops at the first curve that has a centre (not the last) or at the
 // first curve that starts a new chain, which is where its begin bit is set. A merged curve's first
-// sample is the joint it shares with the curve before it, which carries no begin bit.
+// sample (its own copy of the joint with the curve before it) carries no begin bit.
 // Only the curve's last centre asks, and only once per curve - see main.
 bool NoLaterCenterInChain(uint curveIndex)
 {

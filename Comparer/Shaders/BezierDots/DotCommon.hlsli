@@ -7,6 +7,10 @@ static const uint CurveCapRound = 2u;
 static const uint CurveCapTriangleOut = 3u;
 static const uint CurveCapTriangleIn = 4u;
 
+// bezier_data_map entries (BezierRendererBase.cpp): the curve index in the low 30 bits; the top two bits
+// are segment continuation flags the stroke renderers use, dots only need the curve.
+static const uint SegmentCurveMask = 0x3FFFFFFFu;
+
 struct DotStyle
 {
   uint width_capcap; // width << 24 | front_cap << 16 | back_cap << 8; dots never join, so the low byte is 0
@@ -31,30 +35,35 @@ struct DotVSOutput
   nointerpolation uint CapCapJoin : TEXCOORD1;
 };
 
+// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed)
 {
   uint4 unpacked = uint4(packed, packed, packed, packed);
-  unpacked >>= uint4(0, 8, 16, 24);
+  unpacked >>= uint4(16, 8, 0, 24);
   unpacked &= 0xFF;
   return float4(unpacked) / 255.0;
 }
 
+// One row per coordinate, one column per control point: row x = (P0.x, P1.x, P2.x, P3.x), likewise y
+// and z, so P3 sits in the .w of every row. row_major so the rows sit in memory in that order, matching
+// the CPU's XMFLOAT3X4 whatever the compiler's default matrix packing is. 48 B, three 16-byte loads.
 struct Cubic
 {
-  float3 P0, P1, P2, P3;
+  row_major float3x4 P;
 };
 
 float3 EvaluateBezier(Cubic c, float t)
 {
   float s = 1.0 - t;
   float st3 = 3.0 * s * t;
-  return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
+  return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
 }
 
 float3 EvaluateBezierDerivative(Cubic c, float t)
 {
   float s = 1.0 - t;
-  return 3.0 * (s * s * (c.P1 - c.P0) + 2.0 * s * t * (c.P2 - c.P1) + t * t * (c.P3 - c.P2));
+  // d/dt of the Bernstein weights: 3 * (-s^2, s^2 - 2st, 2st - t^2, t^2).
+  return 3.0 * mul(c.P, float4(-s * s, s * (s - 2.0 * t), t * (2.0 * s - t), t * t));
 }
 
 float SampleT(uint2 range, uint sampleIndex)

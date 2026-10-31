@@ -17,11 +17,6 @@ public:
 
   void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
-  uint32_t PatternCapacity() const override
-  {
-    return dots_allocated;
-  }
-
 protected:
   void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override;
   void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) override;
@@ -49,8 +44,6 @@ private:
   static_assert(sizeof(UploadDotStyle) == 8, "UploadDotStyle must match DotStyle in the shaders");
 
   std::vector<UploadDotStyle> style_scratch;
-
-  uint32_t dots_allocated = 0;
 
   std::unique_ptr<Axodox::Graphics::RWStructuredBuffer> distances; // world arc length per sample
   // Per curve: dot count, scanned in place into offsets; the total sits one past the last curve.

@@ -8,29 +8,23 @@ cbuffer CameraData : register(b1)
   uint TotalCurveCount;
 };
 
-StructuredBuffer<uint> CurveBegins : register(t1);
-StructuredBuffer<float3> control_points : register(t3); // P0,P1,P2,P3; P0,P1,P2,P3; ...
-StructuredBuffer<uint> BezierIndexMap : register(t4);
+// One row per coordinate, one column per control point: row x = (P0.x, P1.x, P2.x, P3.x), likewise y
+// and z, so P3 sits in the .w of every row. row_major so the rows sit in memory in that order, matching
+// the CPU's XMFLOAT3X4 whatever the compiler's default matrix packing is. The whole cubic is one 48-byte
+// element found from the curve index alone - no lookup into `indices` has to come back first.
+struct Cubic
+{
+  row_major float3x4 P;
+};
+
+StructuredBuffer<Cubic> control_points : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<uint> SampleMap : register(t4);       // per sample: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<ColorData> colors : register(t5);
 StructuredBuffer<Indices> indices : register(t6);
 
-// The cubic's control points P0..P3 sit at a fixed stride of four, so where to read them follows
-// from the curve index alone - no lookup into `indices` has to come back first. All four loads are
-// independent and go out together.
-struct Cubic
-{
-  float3 p0, p1, p2, p3;
-};
-
 Cubic LoadCubic(uint curveIndex)
 {
-  const uint k = curveIndex << 2u;
-  Cubic c;
-  c.p0 = control_points[k];
-  c.p1 = control_points[k + 1u];
-  c.p2 = control_points[k + 2u];
-  c.p3 = control_points[k + 3u];
-  return c;
+  return control_points[curveIndex];
 }
 
 // Bernstein form, straight over the control points:
@@ -42,12 +36,12 @@ Cubic LoadCubic(uint curveIndex)
 // merged joint exact: the curve ending there evaluates P(1) = its P3, the one starting there P(0) = its
 // P0, and those are the same control point. (The monomial form K0 + K1 + K2 + K3 only got within a few
 // ulps of P3.) Cost: ~9 scalar ops for the weights plus a mul and three mads per component, against
-// Horner's three mads per component; the loads are the same four float3.
+// Horner's three mads per component; the load is one 48-byte matrix (three dot4s).
 float3 EvaluateBezier(Cubic c, float t)
 {
   const float s = 1.0 - t;
   const float st3 = 3.0 * s * t;
-  return mad(c.p3, t * t * t, mad(c.p2, st3 * t, mad(c.p1, st3 * s, c.p0 * (s * s * s))));
+  return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
 }
 
 float3 SampleColor(uint4 color, float height, float t)
@@ -62,30 +56,25 @@ float3 SampleColor(uint4 color, float height, float t)
   return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
 }
 
-// Drawn as a LINELIST of 2 * (TotalPointCount - 1) vertices: line `segment` joins sample `segment` to
-// sample `segment + 1`, and each vertex evaluates the one sample it lands on. The segments that would
-// bridge the last sample of one chain to the first sample of the next (the next sample carries a
-// CurveBegins bit) are thrown away by sending BOTH of their vertices to the same point outside the
-// clip volume, where the clipper rejects the whole line. That is the one job the old geometry shader
-// did that the rasteriser cannot; near-plane clipping it now does itself.
+// Drawn as a LINELIST of 2 * total_points vertices, one line per sample: line i runs from sample i to
+// sample i + 1 on sample i's curve, and each vertex evaluates its own end of it. The line starting on
+// a curve's last sample would be the step to the next curve (between two chains it would bridge two
+// strokes, inside a merged chain it would join the joint's two copies), so both its vertices are
+// culled - they read the same map entry, so they agree. Near-plane clipping the rasteriser does itself.
 LineVSOutput main(uint vertexId : SV_VertexID)
 {
-  LineVSOutput o;
+  LineVSOutput o = (LineVSOutput)0;
 
-  const uint segment = vertexId >> 1u;
-  const uint next = segment + 1u;
-  const bool bridge = next >= TotalPointCount || ((CurveBegins[next >> 5u] >> (next & 31u)) & 1u) != 0u;
-
-  if (bridge)
+  const uint startSample = vertexId >> 1u;
+  const uint curveIndex = SampleMap[startSample] & SegmentCurveMask;
+  const uint2 range = indices[curveIndex].first_last;
+  if (startSample == range.y)
   {
-    o.Position = float4(2.0, 2.0, 2.0, 1.0);
-    o.Color = 0.0;
+    o.Position = 0.0 / 0.0; // NaN: the whole line is discarded
     return o;
   }
+  const uint sampleIndex = startSample + (vertexId & 1u);
 
-  const uint sampleIndex = segment + (vertexId & 1u);
-  const uint curveIndex = BezierIndexMap[sampleIndex];
-  const uint2 range = indices[curveIndex].first_last;
   const float t = float(sampleIndex - range.x) / float(range.y - range.x);
   const float3 p = EvaluateBezier(LoadCubic(curveIndex), t);
 

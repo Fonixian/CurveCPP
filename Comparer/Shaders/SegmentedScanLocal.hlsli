@@ -62,28 +62,34 @@ void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
   }
 
   SCAN_VALUE_TYPE finalValue;
-  bool needsCarry;
   if (IsTopLevel != 0u)
   {
     finalValue = (localIndex == 0u || originalFlag != 0u) ? zero : gValue[src][localIndex - 1u];
-    needsCarry = gFlag[src][localIndex] == 0u;
   }
   else
   {
     finalValue = (localIndex == 0u) ? zero : gValue[src][localIndex - 1u];
-    needsCarry = (localIndex == 0u) ? true : (gFlag[src][localIndex - 1u] == 0u);
   }
 
   if (active)
   {
     Values[globalIndex] = finalValue;
-    NeedsCarry[globalIndex] = needsCarry ? 1u : 0u;
+  }
+
+  // gFlag is now the inclusive OR of the flags, so it is 0 up to the block's first begin and 1 from
+  // there on: the first begin is the one element where it steps from 0 to 1. Inactive elements have
+  // no flag, so that element is always an active one. Exactly one thread writes FirstBegin - this one,
+  // or thread 0 below when the block has no begin at all.
+  uint lastLocalIndex = blockCount - 1u;
+  if (gFlag[src][localIndex] != 0u && (localIndex == 0u || gFlag[src][localIndex - 1u] == 0u))
+  {
+    FirstBegin[blockIndex] = localIndex;
   }
 
   if (localIndex == 0u)
   {
-    uint lastLocalIndex = blockCount - 1u;
     BlockSums[blockIndex] = gValue[src][lastLocalIndex];
     BlockFlags[blockIndex] = gFlag[src][lastLocalIndex];
+    if (gFlag[src][lastLocalIndex] == 0u) FirstBegin[blockIndex] = GROUP_SIZE;
   }
 }

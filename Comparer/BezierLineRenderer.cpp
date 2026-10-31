@@ -34,17 +34,17 @@ void BezierLineRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& v
   profiler.begin_gpu("draw");
   curve_draw.Bind(context);
 
-  curve_begins->Bind(ShaderStage::Vertex, 1, context);
-  BindCurveData(context, 3, 5, 6); // t3 control points, t5 colours, t6 indices
-  bezier_data_map->Bind(ShaderStage::Vertex, 4, context);
+  BindCurveData(context, 3, 5, 6);                        // t3 control points, t5 colours, t6 indices
+  bezier_data_map->Bind(ShaderStage::Vertex, 4, context); // t4: curve per sample
 
   viewport_data->Bind(ShaderStage::Vertex, 1, context);
 
-  // One line per sample pair; LineVert drops the ones bridging two chains.
+  // One line per sample; LineVert culls the one starting on each curve's last sample, so none of them
+  // bridges two curves.
   context->get()->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
-  context->get()->Draw(2u * (total_points - 1u), 0);
+  context->get()->Draw(2u * total_points, 0);
   profiler.end_gpu("draw");
 
-  ClearDrawBindings(context);
+  UnbindShaderResources(context, ShaderStage::Vertex, { 3, 4, 5, 6 });
   EndDraw();
 }

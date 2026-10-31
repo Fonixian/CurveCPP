@@ -12,6 +12,12 @@ static const uint CurveJoinSquare = 1u;
 
 static const uint CurveEndJoined = 0xFFu;
 
+// bezier_data_map entries (BezierRendererBase.cpp), one per sample: the curve index in the low 30 bits,
+// then whether the stroke goes on past the start and past the end of the segment starting on that sample.
+static const uint SegmentCurveMask = 0x3FFFFFFFu;
+static const uint SegmentHasPrev = 0x40000000u;
+static const uint SegmentHasNext = 0x80000000u;
+
 struct SolidVSOutput
 {
   float4 Position : SV_Position;
@@ -20,10 +26,11 @@ struct SolidVSOutput
   nointerpolation uint CapCapJoin : TEXCOORD1;
 };
 
+// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed)
 {
   uint4 unpacked = uint4(packed, packed, packed, packed);
-  unpacked >>= uint4(0, 8, 16, 24);
+  unpacked >>= uint4(16, 8, 0, 24);
   unpacked &= 0xFF;
   return float4(unpacked) / 255.0;
 }

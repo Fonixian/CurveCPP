@@ -36,6 +36,8 @@ BezierDotRenderer::BezierDotRenderer(const GraphicsDevice& device) :
 
 void BezierDotRenderer::AllocatePointBuffers(const GraphicsDevice& device, uint32_t points_required)
 {
+  AllocateSampleMap(device, points_required);   // point pass
+  AllocateChainBegins(device, points_required); // distance scan
   distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(points_required)));
 }
 
@@ -76,10 +78,8 @@ void BezierDotRenderer::UploadCurves(GraphicsDeviceContext* context, uint8_t par
 
 void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context)
 {
-  ClearComputeBindings(context);
-
   viewport_data->Bind(ShaderStage::Compute, 0, context);        // b0
-  curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: P0..P3 per curve
+  curve_control_points->Bind(ShaderStage::Compute, 0, context); // t0: one 3x4 per curve, columns P0..P3
   bezier_data_map->Bind(ShaderStage::Compute, 1, context);      // t1: owning curve per sample
   curve_indices->Bind(ShaderStage::Compute, 2, context);        // t2: sample range per curve
   distances->BindUnordered(0, context);                         // u0
@@ -88,23 +88,22 @@ void BezierDotRenderer::RunPointPass(GraphicsDeviceContext* context)
   calc_points->Run({ GroupCount(total_points, 512u), 1u, 1u }, context); // 256 threads x 2 points each
   profiler.end_gpu("calc");
 
-  ClearComputeBindings(context);
+  UnbindShaderResources(context, ShaderStage::Compute, { 0, 1, 2 });
+  UnbindUnorderedAccessViews(context, { 0 });
 
   profiler.begin_gpu("scan");
   scan.Scan(*distances, *curve_begins, total_points, context);
   profiler.end_gpu("scan");
-
-  ClearComputeBindings(context);
 }
 
 // Sized from the CPU bound, never from a GPU result.
 void BezierDotRenderer::AllocateDotBuffer(const GraphicsDevice& device)
 {
-  const uint32_t required = FitCapacity(dots_allocated, pattern_upper_bound);
-  if (dots && dots_allocated == required) return;
+  const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
+  if (dots && patterns_allocated == required) return;
 
   dots.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<DotSample>(required)));
-  dots_allocated = required;
+  patterns_allocated = required;
 }
 
 // Count per curve, exclusive scan into offsets, then the total into the indirect args. No atomics,
@@ -115,8 +114,6 @@ void BezierDotRenderer::CountDots(GraphicsDeviceContext* context)
 
   if (curve_count == 0u || !dot_indices) return;
 
-  ClearComputeBindings(context);
-
   viewport_data->Bind(ShaderStage::Compute, 0, context);    // b0
   curve_indices->Bind(ShaderStage::Compute, 0, context);    // t0: sample range per curve
   distances->BindOrdered(ShaderStage::Compute, 1, context); // t1
@@ -125,11 +122,10 @@ void BezierDotRenderer::CountDots(GraphicsDeviceContext* context)
 
   dot_ini->Run({ GroupCount(curve_count, 64u), 1u, 1u }, context);
 
-  ClearComputeBindings(context);
+  UnbindShaderResources(context, ShaderStage::Compute, { 0, 1, 2 });
+  UnbindUnorderedAccessViews(context, { 0 });
 
   offset_scan.Scan(*dot_indices, curve_count, context, true);
-
-  ClearComputeBindings(context);
 
   // The scan bound its own constants at b0, so rebind.
   viewport_data->Bind(ShaderStage::Compute, 0, context); // b0
@@ -138,7 +134,7 @@ void BezierDotRenderer::CountDots(GraphicsDeviceContext* context)
 
   dot_args->Run({ 1u, 1u, 1u }, context);
 
-  ClearComputeBindings(context);
+  UnbindUnorderedAccessViews(context, { 0, 1 });
 }
 
 void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context)
@@ -146,8 +142,6 @@ void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context)
   if (pattern_upper_bound == 0 || !dots) return;
 
   const auto curve_count = static_cast<uint32_t>(TotalCurves());
-
-  ClearComputeBindings(context);
 
   viewport_data->Bind(ShaderStage::Compute, 0, context);      // b0
   curve_indices->Bind(ShaderStage::Compute, 0, context);      // t0: sample range per curve
@@ -159,7 +153,8 @@ void BezierDotRenderer::RunDotPlacementPass(GraphicsDeviceContext* context)
   // 8 threads per curve on x, 8 curves per group on y.
   dot_calc->Run({ 1u, GroupCount(curve_count, 8u), 1u }, context);
 
-  ClearComputeBindings(context);
+  UnbindShaderResources(context, ShaderStage::Compute, { 0, 1, 3, 4 });
+  UnbindUnorderedAccessViews(context, { 0 });
 }
 
 void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& view_proj)
@@ -218,6 +213,6 @@ void BezierDotRenderer::Draw(GraphicsDevice& device, const DirectX::XMMATRIX& vi
   context->get()->DrawInstancedIndirect(draw_args.get(), 0);
   profiler.end_gpu("draw");
 
-  ClearDrawBindings(context);
+  UnbindShaderResources(context, ShaderStage::Vertex, { 3, 4, 5, 6 });
   EndDraw();
 }

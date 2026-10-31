@@ -1,6 +1,8 @@
 #include "SolidCommon.hlsli"
 
-// Drawn as DrawInstanced(5, total_points - 1) with a TRIANGLESTRIP:
+// Drawn as DrawInstanced(5, total_points) with a TRIANGLESTRIP, one instance per sample: instance i is
+// the segment from sample i to i + 1. The instance on a curve's last sample would be the step to the
+// next curve, so it is culled straight after the map and range loads (see BezierRendererBase.h):
 //
 //                0 ----------------- 2
 //                |                   |  \
@@ -27,27 +29,23 @@ cbuffer CameraData : register(b1)
   uint TotalCurveCount;
 };
 
-StructuredBuffer<uint> CurveBegins : register(t1); // one bit per sample: set where a new curve chain begins
-StructuredBuffer<float3> CurveControlPoints : register(t3);
-StructuredBuffer<uint> BezierIndexMap : register(t4);
-StructuredBuffer<uint4> CurveColors : register(t5);  // color1, color2, height1, height2 (for interpolation based on height)
-StructuredBuffer<uint> CurveStyles : register(t6);   // width << 24 | front_cap << 16 | back_cap << 8 | join
-StructuredBuffer<uint2> CurveIndices : register(t7); // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
-
+// One row per coordinate, one column per control point: row x = (P0.x, P1.x, P2.x, P3.x), likewise y
+// and z, so P3 sits in the .w of every row. row_major so the rows sit in memory in that order, matching
+// the CPU's XMFLOAT3X4 whatever the compiler's default matrix packing is. 48 B, three 16-byte loads.
 struct Cubic
 {
-  float3 P0, P1, P2, P3;
+  row_major float3x4 P;
 };
+
+StructuredBuffer<Cubic> CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<uint> SampleMap : register(t4);           // per sample: curve | SegmentHasPrev | SegmentHasNext
+StructuredBuffer<uint4> CurveColors : register(t5);        // color1, color2, height1, height2 (for interpolation based on height)
+StructuredBuffer<uint> CurveStyles : register(t6);         // width << 24 | front_cap << 16 | back_cap << 8 | join
+StructuredBuffer<uint2> CurveIndices : register(t7);       // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
 
 Cubic LoadCubic(uint curveIndex)
 {
-  uint k = curveIndex << 2u;
-  Cubic c;
-  c.P0 = CurveControlPoints[k];
-  c.P1 = CurveControlPoints[k + 1u];
-  c.P2 = CurveControlPoints[k + 2u];
-  c.P3 = CurveControlPoints[k + 3u];
-  return c;
+  return CurveControlPoints[curveIndex];
 }
 
 float3 EvaluateBezier(Cubic c, float t)
@@ -55,7 +53,7 @@ float3 EvaluateBezier(Cubic c, float t)
   // Bernstein form
   float s = 1.0 - t;
   float st3 = 3.0 * s * t;
-  return mad(c.P3, t * t * t, mad(c.P2, st3 * t, mad(c.P1, st3 * s, c.P0 * (s * s * s))));
+  return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
 }
 
 // [range.x, range.y] -> [0.0, 1.0]
@@ -74,12 +72,6 @@ float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float 
   float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
   float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
   return float4(lerp(colorA, colorB, blend), 1.0);
-}
-
-bool IsCurveBegin(uint2 words, uint wordBase, uint sampleIndex)
-{
-  uint w = ((sampleIndex >> 5u) == wordBase) ? words.x : words.y;
-  return ((w >> (sampleIndex & 31u)) & 1u) != 0u;
 }
 
 float4 SidePlaneDistances(float4 p)
@@ -165,40 +157,40 @@ SolidVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID
   SolidVSOutput o = (SolidVSOutput)0;
   bool nearSide = vertexId < 2u;
 
-  uint wordBase = sampleIndex >> 5u;
-  uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
-  bool hasPrev = sampleIndex > 0u && !IsCurveBegin(beginWords, wordBase, sampleIndex);                          // segment before the start
-  bool hasNext = (sampleIndex + 2u) < TotalPointCount && !IsCurveBegin(beginWords, wordBase, sampleIndex + 2u); // segment after the end
-  bool hasNeighbor = nearSide ? hasPrev : hasNext;
-
-  if ((sampleIndex + 1u) >= TotalPointCount || IsCurveBegin(beginWords, wordBase, sampleIndex + 1u))
-  {
+  // The segment starting on this sample: its curve, and whether the stroke goes on past either end.
+  uint entry = SampleMap[sampleIndex];
+  uint currentCurve = entry & SegmentCurveMask;
+  uint2 currentRange = CurveIndices[currentCurve];
+  if (sampleIndex == currentRange.y)
+  { // the curve's last sample starts no segment
     o.Position = 0.0 / 0.0;
     return o;
   }
+  bool hasPrev = (entry & SegmentHasPrev) != 0u; // segment before the start
+  bool hasNext = (entry & SegmentHasNext) != 0u; // segment after the end
+  bool hasNeighbor = nearSide ? hasPrev : hasNext;
 
-  uint currentCurve = BezierIndexMap[sampleIndex];
   Cubic currentCubic = LoadCubic(currentCurve);
-  uint2 currentRange = CurveIndices[currentCurve];
 
   float tStart = SampleT(currentRange, sampleIndex);
   float tEnd = SampleT(currentRange, sampleIndex + 1u);
   float3 startWorld = EvaluateBezier(currentCubic, tStart);
   float3 endWorld = EvaluateBezier(currentCubic, tEnd);
 
-  // The neighbor normally lies on the same curve, but we allow merging neighboring curves
-  // When merging two curves we assume one's end position is the same as the other's start
-  uint neighborSample = sampleIndex + (nearSide ? -1u : 2u);
+  // The neighbor normally lies on the same curve, but we allow merging neighboring curves.
+  // When merging two curves we assume one's end position is the same as the other's start, and
+  // each of them samples that joint itself - so across a joint the very next sample is the joint's
+  // other copy, i.e. this corner again. Step over it: i - 2 / i + 3 instead of i - 1 / i + 2.
   float3 neighborWorld;
   [branch]
   if (hasNeighbor && (nearSide ? (sampleIndex == currentRange.x) : ((sampleIndex + 1u) == currentRange.y)))
   { // Crosses curve
     uint neighborCurve = currentCurve + (nearSide ? -1u : 1u);
-    neighborWorld = EvaluateBezier(LoadCubic(neighborCurve), SampleT(CurveIndices[neighborCurve], neighborSample));
+    neighborWorld = EvaluateBezier(LoadCubic(neighborCurve), SampleT(CurveIndices[neighborCurve], sampleIndex + (nearSide ? -2u : 3u)));
   }
   else
   {
-    neighborWorld = EvaluateBezier(currentCubic, SampleT(currentRange, neighborSample));
+    neighborWorld = EvaluateBezier(currentCubic, SampleT(currentRange, sampleIndex + (nearSide ? -1u : 2u)));
   }
 
   float4 startClip = mul(float4(startWorld, 1.0), VP);

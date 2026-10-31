@@ -858,6 +858,8 @@ void App::ProfilerGui()
 
   static constexpr TimingRow rows[] = {
     { "update", "update", true },
+    { "  points", "upload points", true },
+    { "  colors", "upload colors", true },
     { "calc", "calc", false },
     { "scan", "scan", false },
     { "pattern", "pattern", false },
@@ -937,6 +939,14 @@ void App::ProfilerGui()
       "back a few frames late, so they lag the picture slightly. \"pattern\" covers ini + calc "
       "together, and no longer carries a readback stall on the frames that recount, so it "
       "should stay flat across a scene change.");
+
+    ImGui::Separator();
+    // Min over every UpdatePatternBound() call (any renderer), per curve.
+    const double bound_min_ns = PatternBoundMinTimeNs();
+    if (std::isfinite(bound_min_ns)) ImGui::Text("pattern bound min: %.2f ns / curve", bound_min_ns);
+    else ImGui::TextDisabled("pattern bound min: not measured yet");
+    ImGui::SameLine();
+    if (ImGui::Button("Reset min")) ResetPatternBoundMinTime();
 
     ImGui::Separator();
     ImGui::TextUnformatted("pattern centres");

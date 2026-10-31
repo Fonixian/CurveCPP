@@ -22,20 +22,14 @@ cbuffer CameraData : register(b1)
   uint TotalCurveCount;
 };
 
-StructuredBuffer<float3> CurveControlPoints : register(t3);
-StructuredBuffer<DotSample> Dots : register(t4); // where SolidVert has the index map
+StructuredBuffer<Cubic> CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<DotSample> Dots : register(t4);           // where SolidVert has the sample map
 StructuredBuffer<uint4> CurveColors : register(t5);
 StructuredBuffer<DotStyle> CurveStyles : register(t6);
 
 Cubic LoadCubic(uint curveIndex)
 {
-  uint k = curveIndex << 2u;
-  Cubic c;
-  c.P0 = CurveControlPoints[k];
-  c.P1 = CurveControlPoints[k + 1u];
-  c.P2 = CurveControlPoints[k + 2u];
-  c.P3 = CurveControlPoints[k + 3u];
-  return c;
+  return CurveControlPoints[curveIndex];
 }
 
 float4 CalculateColor(uint4 colorData, float height, float t)

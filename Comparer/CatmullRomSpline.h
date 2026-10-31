@@ -92,7 +92,6 @@ public:
   void DashLength(float value);
   void Spacing(float value);
   void HeightRange(float min, float max);
-  void Dot();
   // Per link. Only links whose resolution actually differs get the (layout-changing) setter.
   void Resolution(unsigned value);
 

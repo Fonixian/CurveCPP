@@ -34,11 +34,12 @@ struct BezierData
   CurveJoin join = CurveJoin::Round;
   float dash_length = 0.f;
   float spacing = 0.f;
-  unsigned resolution = 64u;
+  unsigned resolution = 32u;
   // Continue the stroke of the curve Added just before this one (one arc length, one pattern, caps
-  // only at the chain's two ends). Requires P0 == the previous P3; the joint sample is shared, so a
-  // merged curve adds resolution - 1 samples. Ignored on curve 0. In a BezierRenderer the whole
-  // chain is routed by its first curve.
+  // only at the chain's two ends). Requires P0 == the previous P3. Merged or not, a curve owns exactly
+  // `resolution` samples, so the joint is sampled twice (the previous curve's t = 1, this curve's
+  // t = 0) and the zero-length step between the two copies is never drawn. Ignored on curve 0. In a
+  // BezierRenderer the whole chain is routed by its first curve.
   bool merge_with_previous = false;
 };
 

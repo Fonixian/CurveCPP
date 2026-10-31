@@ -47,7 +47,7 @@ SegmentedScan<T>::SegmentedScan(const GraphicsDevice& device, uint32_t maxElemen
     // One T per block, matching Values' element type (BlockSums in SegmentedScanCommon.hlsli).
     level.blockSums = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<T>(blockCount));
     level.blockFlags = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
-    level.needsCarry = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(levelCapacity));
+    level.firstBegin = std::make_unique<RWStructuredBuffer>(device, TypedCapacityOrImmutableData<uint32_t>(blockCount));
     level.constants = std::make_unique<ConstantBuffer>(device, ScanConstants{});
 
     _levels.push_back(std::move(level));
@@ -109,7 +109,7 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, 
   BindFlags(flags, context); // t0, read-only
   level.blockSums->BindUnordered(2u, context);
   level.blockFlags->BindUnordered(3u, context);
-  level.needsCarry->BindUnordered(4u, context);
+  level.firstBegin->BindUnordered(4u, context);
 
   _localScan->Run({ blockCount, 1u, 1u }, context);
 
@@ -121,7 +121,7 @@ void SegmentedScan<T>::ScanLevel(RWStructuredBuffer& values, FlagBuffer& flags, 
     level.constants->Bind(ShaderStage::Compute, 0u, context);
     values.BindUnordered(0u, context);
     level.blockSums->BindUnordered(2u, context);
-    level.needsCarry->BindUnordered(4u, context);
+    level.firstBegin->BindUnordered(4u, context);
 
     _addBlockOffsets->Run({ blockCount, 1u, 1u }, context);
   }

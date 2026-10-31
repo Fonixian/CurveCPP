@@ -1,13 +1,36 @@
 #include "BezierRendererBase.h"
 #include "BezierCurve.h"
 #include <algorithm>
-#include <bit>
 #include <cassert>
+#include <chrono>
 #include <cmath>
+#include <execution>
+#include <functional>
 #include <limits>
+#include <numeric>
 
 using namespace Axodox::Graphics;
 using namespace DirectX;
+
+// bezier_data_map entry layout - keep in step with the *Common.hlsli files.
+constexpr uint32_t SegmentHasPrev = 1u << 30;
+constexpr uint32_t SegmentHasNext = 1u << 31;
+constexpr uint32_t SegmentCurveMask = SegmentHasPrev - 1u;
+
+// Fastest UpdatePatternBound loop seen so far, in nanoseconds per curve (the loop over every curve
+// divided by the curve count, so renderers with different curve counts are comparable). Shared by all
+// renderers; infinity until the first measurement or after a reset.
+static double pattern_bound_min_ns = std::numeric_limits<double>::infinity();
+
+double PatternBoundMinTimeNs()
+{
+  return pattern_bound_min_ns;
+}
+
+void ResetPatternBoundMinTime()
+{
+  pattern_bound_min_ns = std::numeric_limits<double>::infinity();
+}
 
 BezierRendererBase::BezierRendererBase(const GraphicsDevice& device) :
   profiler(device)
@@ -47,12 +70,21 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve)
   assert(curve.resolution >= 2u);
 
   const size_t index = owners.size();
-  cubic_points.insert(cubic_points.end(), { curve.P0, curve.P1, curve.P2, curve.P3 });
+  cubic_points.push_back(XMFLOAT3X4{
+    curve.P0.x, curve.P1.x, curve.P2.x, curve.P3.x,
+    curve.P0.y, curve.P1.y, curve.P2.y, curve.P3.y,
+    curve.P0.z, curve.P1.z, curve.P2.z, curve.P3.z
+  });
   color_data.push_back(UploadColorData{
     PackFloat3ToR8G8B8A8(curve.C0), PackFloat3ToR8G8B8A8(curve.C1),
     curve.min_height, curve.max_height
   });
-  style_words.push_back(PackWidthCapCapJoin(curve));
+  // width << 24 | cap_front << 16 | cap_back << 8 | join - see style_words.
+  style_words.push_back(
+    (static_cast<uint32_t>(std::clamp(curve.width, 0.f, 255.f) + 0.5f) << 24) |
+    (uint32_t(curve.cap_front) << 16) |
+    (uint32_t(curve.cap_back) << 8) |
+    uint32_t(curve.join));
   spacings.push_back(curve.spacing);
   dash_lengths.push_back(curve.dash_length);
   resolutions.push_back(curve.resolution);
@@ -92,7 +124,7 @@ void BezierRendererBase::CompactRemoved()
 
     if (write != read)
     {
-      for (size_t i = 0; i < 4u; ++i) cubic_points[write * 4u + i] = cubic_points[read * 4u + i];
+      cubic_points[write] = cubic_points[read];
       color_data[write] = color_data[read];
       style_words[write] = style_words[read];
       spacings[write] = spacings[read];
@@ -105,7 +137,7 @@ void BezierRendererBase::CompactRemoved()
     ++write;
   }
 
-  cubic_points.resize(write * 4u);
+  cubic_points.resize(write);
   color_data.resize(write);
   style_words.resize(write);
   spacings.resize(write);
@@ -122,8 +154,7 @@ void BezierRendererBase::MoveCurve(size_t index, BezierRendererBase& target, boo
   assert(owner && owner->renderer == this && &target != this);
 
   const size_t slot = target.owners.size();
-  const auto points = cubic_points.begin() + std::ptrdiff_t(index * 4u);
-  target.cubic_points.insert(target.cubic_points.end(), points, points + 4);
+  target.cubic_points.push_back(cubic_points[index]);
   target.color_data.push_back(color_data[index]);
   target.style_words.push_back(style_words[index]);
   target.spacings.push_back(spacings[index]);
@@ -147,15 +178,25 @@ bool BezierRendererBase::IsChainStart(size_t index) const
   return index == 0 || merged[index] == 0;
 }
 
+void BezierRendererBase::AllocateSampleMap(const GraphicsDevice& device, uint32_t points_required)
+{
+  bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
+}
+
+// One bit per sample, packed 32 to a word.
+void BezierRendererBase::AllocateChainBegins(const GraphicsDevice& device, uint32_t points_required)
+{
+  curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
+}
+
 void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsDeviceContext* context)
 {
   CompactRemoved();
 
-  // A merged curve shares its first sample with the previous curve.
   total_points = 0;
   for (size_t curveIndex = 0; curveIndex < TotalCurves(); ++curveIndex)
   {
-    total_points += resolutions[curveIndex] - (IsChainStart(curveIndex) ? 0u : 1u);
+    total_points += resolutions[curveIndex];
   }
 
   const auto curve_count = static_cast<uint32_t>(TotalCurves());
@@ -171,15 +212,13 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
 
   if (points_allocated != points_required)
   {
-    curve_begins.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(std::max((points_required + 31u) / 32u, 1u))));
-    bezier_data_map.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<uint32_t>(points_required)));
     AllocatePointBuffers(device, points_required);
     points_allocated = points_required;
   }
 
   if (curves_allocated != curves_required)
   {
-    curve_control_points.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT3>(curves_required * 4u)));
+    curve_control_points.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT3X4>(curves_required)));
     curve_colors.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadColorData>(curves_required)));
     curve_indices.reset(new StructuredBuffer(device, TypedCapacityOrImmutableData<UploadSampleRange>(curves_required)));
     AllocateStyleBuffer(device, curves_required);
@@ -188,40 +227,47 @@ void BezierRendererBase::AllocateBuffers(const GraphicsDevice& device, GraphicsD
   }
 
   std::vector<uint32_t> index_map;
-  index_map.reserve(total_points);
-
-  std::vector<uint32_t> curve_begin_bits(std::max((points_allocated + 31u) / 32u, 1u), 0u);
+  std::vector<uint32_t> curve_begin_bits;
+  if (bezier_data_map) index_map.reserve(total_points);
+  if (curve_begins) curve_begin_bits.assign(std::max((points_allocated + 31u) / 32u, 1u), 0u);
 
   uint32_t current = 0;
   for (uint32_t curveIndex = 0; curveIndex < curve_count; ++curveIndex)
   {
     const uint32_t resolution = resolutions[curveIndex];
+    const bool chain_start = IsChainStart(curveIndex);
 
-    // One begin bit per chain, so arc lengths carry on across merged curves.
-    if (IsChainStart(curveIndex))
+    // One begin bit per chain, so arc lengths carry on across merged curves. A merged curve still owns
+    // all of its own samples, its first one being its own copy of the joint; the point pass measures a
+    // zero chord from the previous curve's last sample to it, so the arc length runs on unbroken.
+    if (curve_begins && chain_start)
     {
       curve_begin_bits[current / 32u] |= (1u << (current % 32u));
-      for (unsigned i = 0; i < resolution; ++i)
-      {
-        index_map.push_back(curveIndex);
-      }
-      current += resolution;
     }
-    else
+
+    // Sample j starts the curve's segment j (j < resolution - 1). Inside the curve the stroke always
+    // goes on; at its two ends only into a merged neighbour. The last sample starts no segment - the
+    // step to the next curve - so it gets the bare curve index, and the draws cull its instance.
+    if (bezier_data_map)
     {
-      // The joint sample belongs to the curve that starts there; the previous one still ends on it.
-      index_map.back() = curveIndex;
-      for (unsigned i = 1; i < resolution; ++i)
+      assert(curveIndex <= SegmentCurveMask);
+      const bool joined_after = curveIndex + 1u < curve_count && !IsChainStart(curveIndex + 1u);
+      for (uint32_t j = 0; j + 1u < resolution; ++j)
       {
-        index_map.push_back(curveIndex);
+        index_map.push_back(curveIndex |
+          ((j > 0u || !chain_start) ? SegmentHasPrev : 0u) |
+          ((j + 2u < resolution || joined_after) ? SegmentHasNext : 0u));
       }
-      current += resolution - 1u;
+      index_map.push_back(curveIndex);
     }
+
+    current += resolution;
   }
   assert(current == total_points);
+  assert(!bezier_data_map || index_map.size() == total_points);
 
-  bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
-  curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
+  if (bezier_data_map) bezier_data_map->Upload(std::span<const uint32_t>{ index_map }, context);
+  if (curve_begins) curve_begins->Upload(std::span<const uint32_t>{ curve_begin_bits }, context);
 
   UploadCurves(context, DirtyAll);
 }
@@ -275,13 +321,39 @@ void BezierRendererBase::UploadCameraData(const XMMATRIX& view_proj, GraphicsDev
   viewport_data->Upload(camera_cb_data, context);
 }
 
+// Per curve floor(control polygon / spacing) + 1, or 0 when spacing <= 0: the polygon bounds the arc
+// length, and a curve owns at most floor(own arc / spacing) + 1 centres of its chain's grid.
 void BezierRendererBase::UpdatePatternBound()
 {
-  uint64_t bound = 0;
-  for (size_t curveIndex = 0; curveIndex < owners.size(); ++curveIndex)
+  const auto start = std::chrono::steady_clock::now();
+  const uint64_t bound = std::transform_reduce(std::execution::par_unseq,
+    cubic_points.begin(), cubic_points.end(), spacings.begin(), uint64_t{ 0 },
+    std::plus<>{},
+    [](const XMFLOAT3X4& cubic, float spacing)
+    {
+      if (!(spacing > 0.f)) return static_cast<uint64_t>(0);
+
+      // One row per coordinate, so the three edge vectors P1 - P0, P2 - P1, P3 - P2 come out of one
+      // shifted subtract per row (the fourth lane is P3 - P3 = 0).
+      const XMVECTOR x = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(cubic.m[0]));
+      const XMVECTOR y = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(cubic.m[1]));
+      const XMVECTOR z = XMLoadFloat4(reinterpret_cast<const XMFLOAT4*>(cubic.m[2]));
+      const XMVECTOR dx = XMVectorSubtract(XMVectorSwizzle<1, 2, 3, 3>(x), x);
+      const XMVECTOR dy = XMVectorSubtract(XMVectorSwizzle<1, 2, 3, 3>(y), y);
+      const XMVECTOR dz = XMVectorSubtract(XMVectorSwizzle<1, 2, 3, 3>(z), z);
+      const XMVECTOR edges = XMVectorSqrt(XMVectorMultiplyAdd(dz, dz, XMVectorMultiplyAdd(dy, dy, XMVectorMultiply(dx, dx))));
+      const float polygon = XMVectorGetX(XMVector4Dot(edges, XMVectorSplatOne()));
+
+      const float centers = std::floor(polygon / spacing) + 1.f;
+      constexpr float cap = static_cast<float>(maxPatternCount);
+      return static_cast<uint64_t>(centers < cap ? centers : cap);
+    });
+  const auto elapsed = std::chrono::steady_clock::now() - start;
+
+  if (!owners.empty())
   {
-    const XMFLOAT3* p = &cubic_points[curveIndex * 4u];
-    bound += PatternCenterBound(p[0], p[1], p[2], p[3], spacings[curveIndex]);
+    const double ns_per_curve = std::chrono::duration<double, std::nano>(elapsed).count() / static_cast<double>(owners.size());
+    pattern_bound_min_ns = std::min(pattern_bound_min_ns, ns_per_curve);
   }
   pattern_upper_bound = static_cast<uint32_t>(std::min<uint64_t>(bound, maxPatternCount));
 }
@@ -293,19 +365,26 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
   if (parts & DirtyPositions)
   {
 #ifndef NDEBUG
-    // Only the later curve's P0 is evaluated at a joint, so a gap would be closed silently.
+    // The step between the previous curve's last sample and this curve's first is taken to be
+    // zero-length and never drawn, and the joins on both sides are built as if the stroke ran on
+    // unbroken, so a gap would leave a hole.
     for (size_t curveIndex = 1; curveIndex < owners.size(); ++curveIndex)
     {
-      assert((IsChainStart(curveIndex) || EndpointsMeet(cubic_points[curveIndex * 4u - 1u], cubic_points[curveIndex * 4u])) &&
+      assert((IsChainStart(curveIndex) || EndpointsMeet(cubic_points[curveIndex - 1u], cubic_points[curveIndex])) &&
         "merge_with_previous on a curve that does not start where the previous one ends");
     }
 #endif
-    curve_control_points->Upload(std::span<const XMFLOAT3>{ cubic_points }, context);
+    // CPU time of the Map(WRITE_DISCARD) + copy + Unmap, recorded only on frames that upload.
+    profiler.begin_cpu("upload points");
+    curve_control_points->Upload(std::span<const XMFLOAT3X4>{ cubic_points }, context);
+    profiler.end_cpu("upload points");
   }
 
   if (parts & DirtyColors)
   {
+    profiler.begin_cpu("upload colors");
     curve_colors->Upload(std::span<const UploadColorData>{ color_data }, context);
+    profiler.end_cpu("upload colors");
   }
 
   if (parts & DirtyLayout)
@@ -314,7 +393,7 @@ void BezierRendererBase::UploadCurves(GraphicsDeviceContext* context, uint8_t pa
     uint32_t current = 0;
     for (size_t curveIndex = 0; curveIndex < owners.size(); ++curveIndex)
     {
-      const uint32_t first = IsChainStart(curveIndex) ? current : current - 1u;
+      const uint32_t first = current;
       const uint32_t last = first + resolutions[curveIndex] - 1u;
       index_scratch[curveIndex] = UploadSampleRange{ first, last };
       current = last + 1u;

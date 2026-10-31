@@ -24,10 +24,15 @@ enum CurveDirtyBits : uint8_t
 {
   DirtyPositions = 1u << 0, // control_points()
   DirtyColors = 1u << 1,    // colors(), HeightRange()
-  DirtyStyles = 1u << 2,    // Width(), Cap(), Join(), DashLength(), Spacing(), Dot()
+  DirtyStyles = 1u << 2,    // Width(), Cap(), Join(), DashLength(), Spacing()
   DirtyLayout = 1u << 3,    // sample ranges - after a resize / relayout only
   DirtyAll = DirtyPositions | DirtyColors | DirtyStyles | DirtyLayout
 };
+
+// Fastest UpdatePatternBound loop measured so far (all renderers), in ns per curve; infinity when
+// nothing has been measured since the last reset.
+double PatternBoundMinTimeNs();
+void ResetPatternBoundMinTime();
 
 class BezierCurve;
 class BezierRenderer;
@@ -36,6 +41,14 @@ class BezierRenderer;
 // constants and the per-curve upload. Curves are kept on the CPU in their GPU form (one vector per
 // buffer), so an upload is a plain copy; each buffer is re-sent only when its CurveDirtyBits part is
 // dirty. The matching HLSL structs are in the *Common.hlsli files.
+//
+// Shaders evaluate P(t) = [P0 P1 P2 P3] * (s^3, 3s^2t, 3st^2, t^3), s = 1 - t: exact at t = 0 / 1, so
+// merged joints match bit-for-bit from both sides.
+// Sample ranges are inclusive and back to back: curve i owns [first, first + resolution - 1], t = 0..1.
+// One map serves both the point passes and the strip / line draws (bezier_data_map): entry i is the
+// owning curve of sample i plus the continuation flags of the segment that STARTS on sample i. The
+// draws go per sample, so total_points instances / lines; the one per curve that starts on the curve's
+// last sample has no segment behind it and the vertex shader culls it (sample == CurveIndices[c].y).
 class BezierRendererBase : public CurveRenderer
 {
   friend class BezierCurve;
@@ -62,17 +75,17 @@ public:
 
   void SetViewport(float width, float height) override;
 
-  // CPU upper bound on pattern centres / dots (sum of PatternCenterBound), what the pattern buffer
-  // is sized from. The control polygon bounds the arc length, so it is always enough.
+  // CPU upper bound on pattern centres / dots (floor(control polygon / spacing) + 1 per curve), what
+  // the pattern buffer is sized from. The control polygon bounds the arc length, so it is always enough.
   uint32_t PatternBound() const
   {
     return pattern_upper_bound;
   }
 
   // Allocated pattern slots; 0 for renderers without a pattern buffer.
-  virtual uint32_t PatternCapacity() const
+  uint32_t PatternCapacity() const
   {
-    return 0u;
+    return patterns_allocated;
   }
 
 protected:
@@ -87,8 +100,8 @@ protected:
 
   static_assert(sizeof(UploadColorData) == 16, "UploadColorData must match ColorData in the shaders");
 
-  // Indices in the shaders: first and last sample of the curve, inclusive. A merged curve's first
-  // is the previous curve's last.
+  // Indices in the shaders: first and last sample of the curve, inclusive. Back to back, merged or
+  // not: a curve's first sample is the one right after the previous curve's last.
   struct UploadSampleRange
   {
     uint32_t first_index;
@@ -99,9 +112,9 @@ protected:
 
   // Parallel vectors indexed by curve, in Add (= chain) order. Remove() only nulls the owners slot;
   // CompactRemoved() squeezes the vectors on the next UpdateBuffers.
-  std::vector<DirectX::XMFLOAT3> cubic_points; // 4 per curve
+  std::vector<DirectX::XMFLOAT3X4> cubic_points; // 1 per curve: rows x/y/z, columns P0..P3 (row_major float3x4 in HLSL)
   std::vector<UploadColorData> color_data;
-  std::vector<uint32_t> style_words; // PackWidthCapCapJoin
+  std::vector<uint32_t> style_words; // width << 24 | cap_front << 16 | cap_back << 8 | join (width in whole px, dots mask join)
   std::vector<float> spacings;
   std::vector<float> dash_lengths;
   std::vector<uint32_t> resolutions;
@@ -125,8 +138,12 @@ protected:
 
   uint32_t points_allocated = 0;
   uint32_t curves_allocated = 0;
+  uint32_t patterns_allocated = 0; // pattern centre / dot buffer, sized from PatternBound(); stays 0 for line and solid
 
-  std::unique_ptr<Axodox::Graphics::StructuredBuffer> bezier_data_map; // owning curve per sample
+  // Layout buffers (bezier_data_map, curve_begins): created by the renderer's AllocatePointBuffers
+  // through the Allocate* helpers below; null = this renderer does not use it, and AllocateBuffers then
+  // neither builds nor uploads it.
+  std::unique_ptr<Axodox::Graphics::StructuredBuffer> bezier_data_map; // per sample: curve | SegmentHasPrev | SegmentHasNext (of the segment starting there)
   std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_control_points;
   std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_colors;
   std::unique_ptr<Axodox::Graphics::StructuredBuffer> curve_indices;
@@ -162,6 +179,11 @@ protected:
   // first.
   virtual void UploadCurves(Axodox::Graphics::GraphicsDeviceContext* context, uint8_t parts);
 
+  // Create one layout buffer each; call them from AllocatePointBuffers for the buffers the renderer reads.
+  void AllocateSampleMap(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required);   // bezier_data_map
+  void AllocateChainBegins(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required); // curve_begins
+
+  // Also creates the layout buffers the renderer reads (it runs before AllocateBuffers builds them).
   virtual void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) {}
 
   virtual void AllocateCurveBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t curves_required) {}

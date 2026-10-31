@@ -11,6 +11,11 @@ public:
   void Draw(Axodox::Graphics::GraphicsDevice& device, const DirectX::XMMATRIX& view_proj) override;
 
 protected:
+  void AllocatePointBuffers(const Axodox::Graphics::GraphicsDevice& device, uint32_t points_required) override
+  {
+    AllocateSampleMap(device, points_required);
+  }
+
   void AllocateStyleBuffer(const Axodox::Graphics::GraphicsDevice&, uint32_t) override {}
 
   void UploadStyles(Axodox::Graphics::GraphicsDeviceContext*) override {}

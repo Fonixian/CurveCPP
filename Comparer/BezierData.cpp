@@ -14,32 +14,32 @@ const char* CurveKindName(CurveKind kind)
   return "?";
 }
 
-static BezierData FromCubic(const XMFLOAT3 (&cubic)[4])
-{
-  BezierData result;
-  result.P0 = cubic[0];
-  result.P1 = cubic[1];
-  result.P2 = cubic[2];
-  result.P3 = cubic[3];
-  return result;
-}
-
 BezierData Linear(XMFLOAT3 P0, XMFLOAT3 P1)
 {
-  XMFLOAT3 cubic[4];
-  LinearToCubic(P0, P1, cubic);
-  return FromCubic(cubic);
+  BezierData result;
+  result.P0 = P0;
+  result.P1 = LerpFloat3(P0, P1, 1.0f / 3.0f);
+  result.P2 = LerpFloat3(P0, P1, 2.0f / 3.0f);
+  result.P3 = P1;
+  return result;
 }
 
 BezierData Quadratic(XMFLOAT3 P0, XMFLOAT3 P1, XMFLOAT3 P2)
 {
-  XMFLOAT3 cubic[4];
-  QuadraticToCubic(P0, P1, P2, cubic);
-  return FromCubic(cubic);
+  BezierData result;
+  result.P0 = P0;
+  result.P1 = LerpFloat3(P0, P1, 2.0f / 3.0f);
+  result.P2 = LerpFloat3(P1, P2, 1.0f / 3.0f);
+  result.P3 = P2;
+  return result;
 }
 
 BezierData Cubic(XMFLOAT3 P0, XMFLOAT3 P1, XMFLOAT3 P2, XMFLOAT3 P3)
 {
-  const XMFLOAT3 cubic[4] = { P0, P1, P2, P3 };
-  return FromCubic(cubic);
+  BezierData result;
+  result.P0 = P0;
+  result.P1 = P1;
+  result.P2 = P2;
+  result.P3 = P3;
+  return result;
 }

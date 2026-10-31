@@ -9,10 +9,9 @@ cbuffer CameraData : register(b1)
 };
 
 StructuredBuffer<float2> Distances : register(t0); // arc length from the chain's start, per sample: x world, y screen (px)
-StructuredBuffer<uint> CurveBegins : register(t1);
-// t2 is unused (the screen arc length used to have its own buffer); the slot numbers match the solid renderer's.
-StructuredBuffer<float3> CurveControlPoints : register(t3);
-StructuredBuffer<uint> BezierIndexMap : register(t4);
+// t1 and t2 are unused (the chain ends come with SampleMap); the slot numbers match the solid renderer's.
+StructuredBuffer<Cubic> CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<uint> SampleMap : register(t4);           // per sample: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<uint4> CurveColors : register(t5);
 StructuredBuffer<PatternStyle> CurveStyles : register(t6);
 StructuredBuffer<uint2> CurveIndices : register(t7);
@@ -20,13 +19,7 @@ StructuredBuffer<uint> PatternOffsets : register(t8);
 
 Cubic LoadCubic(uint curveIndex)
 {
-  uint k = curveIndex << 2u;
-  Cubic c;
-  c.P0 = CurveControlPoints[k];
-  c.P1 = CurveControlPoints[k + 1u];
-  c.P2 = CurveControlPoints[k + 2u];
-  c.P3 = CurveControlPoints[k + 3u];
-  return c;
+  return CurveControlPoints[curveIndex];
 }
 
 float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float t1, bool nearSide)
@@ -38,12 +31,6 @@ float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float 
   float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
   float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
   return float4(lerp(colorA, colorB, blend), 1.0);
-}
-
-bool IsCurveBegin(uint2 words, uint wordBase, uint sampleIndex)
-{
-  uint w = ((sampleIndex >> 5u) == wordBase) ? words.x : words.y;
-  return ((w >> (sampleIndex & 31u)) & 1u) != 0u;
 }
 
 float4 SidePlaneDistances(float4 p)
@@ -155,38 +142,42 @@ bool InnerMiterOverlaps(float2 dirAB, float cosTurn, float2 bisector, float leng
   return l > lengthAB || l > lengthCB;
 }
 
+// Drawn as DrawInstanced(5, total_points), one instance per sample: instance i is the segment from
+// sample i to i + 1. The instance on a curve's last sample would be the step to the next curve, so it
+// is culled straight after the map and range loads - no bridge gets drawn.
 PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_InstanceID)
 {
   PatternedVSOutput o = (PatternedVSOutput)0;
   bool nearSide = vertexId < 2u;
 
-  uint wordBase = sampleIndex >> 5u;
-  uint2 beginWords = uint2(CurveBegins[wordBase], CurveBegins[wordBase + 1u]);
-  bool hasPrev = sampleIndex > 0u && !IsCurveBegin(beginWords, wordBase, sampleIndex);
-  bool hasNext = (sampleIndex + 2u) < TotalPointCount && !IsCurveBegin(beginWords, wordBase, sampleIndex + 2u);
-
-  if ((sampleIndex + 1u) >= TotalPointCount || IsCurveBegin(beginWords, wordBase, sampleIndex + 1u))
-  {
+  // The segment starting on this sample: its curve, and whether the stroke goes on past either end.
+  uint entry = SampleMap[sampleIndex];
+  uint currentCurve = entry & SegmentCurveMask;
+  uint2 currentRange = CurveIndices[currentCurve];
+  if (sampleIndex == currentRange.y)
+  { // the curve's last sample starts no segment
     o.Position = 0.0 / 0.0;
     return o;
   }
+  bool hasPrev = (entry & SegmentHasPrev) != 0u;
+  bool hasNext = (entry & SegmentHasNext) != 0u;
 
-  uint currentCurve = BezierIndexMap[sampleIndex];
   Cubic currentCubic = LoadCubic(currentCurve);
-  uint2 currentRange = CurveIndices[currentCurve];
 
   float tStart = SampleT(currentRange, sampleIndex);
   float tEnd = SampleT(currentRange, sampleIndex + 1u);
   float3 startWorld = EvaluateBezier(currentCubic, tStart);
   float3 endWorld = EvaluateBezier(currentCubic, tEnd);
 
-  // Unlike solid curve case every vertex needs BOTH neighbors
+  // Unlike solid curve case every vertex needs BOTH neighbors. Across a merged joint the very next
+  // sample is the joint's other copy, i.e. this segment's own end point again, so the neighbor is one
+  // further: i - 2 / i + 3 instead of i - 1 / i + 2.
   float3 beforeWorld;
   [branch]
   if (hasPrev && sampleIndex == currentRange.x)
   {
     uint prevCurve = currentCurve - 1u;
-    beforeWorld = EvaluateBezier(LoadCubic(prevCurve), SampleT(CurveIndices[prevCurve], sampleIndex - 1u));
+    beforeWorld = EvaluateBezier(LoadCubic(prevCurve), SampleT(CurveIndices[prevCurve], sampleIndex - 2u));
   }
   else
   {
@@ -198,7 +189,7 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
   if (hasNext && (sampleIndex + 1u) == currentRange.y)
   {
     uint nextCurve = currentCurve + 1u;
-    afterWorld = EvaluateBezier(LoadCubic(nextCurve), SampleT(CurveIndices[nextCurve], sampleIndex + 2u));
+    afterWorld = EvaluateBezier(LoadCubic(nextCurve), SampleT(CurveIndices[nextCurve], sampleIndex + 3u));
   }
   else
   {

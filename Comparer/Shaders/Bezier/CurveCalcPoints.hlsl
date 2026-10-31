@@ -11,8 +11,8 @@ cbuffer CameraData : register(b0)
   uint TotalCurveCount;
 };
 
-StructuredBuffer<float3> ControlPoints : register(t0);
-StructuredBuffer<uint> BezierIndexMap : register(t1);
+StructuredBuffer<Cubic> ControlPoints : register(t0); // one 3x4 per curve, rows x/y/z, columns P0..P3
+StructuredBuffer<uint> BezierIndexMap : register(t1); // curve | segment flags per sample
 StructuredBuffer<uint2> CurveIndices : register(t2);
 
 RWStructuredBuffer<float2> Distances : register(u0); // x: world, y: screen (px)
@@ -23,15 +23,10 @@ void main(uint3 dispatchId : SV_DispatchThreadID)
   uint pointIndex = dispatchId.x;
   if (pointIndex >= TotalPointCount) return;
 
-  const uint curveIndex = BezierIndexMap[pointIndex];
+  const uint curveIndex = BezierIndexMap[pointIndex] & SegmentCurveMask;
   const uint2 range = CurveIndices[curveIndex];
 
-  const uint k = curveIndex << 2u;
-  Cubic cubic;
-  cubic.P0 = ControlPoints[k];
-  cubic.P1 = ControlPoints[k + 1u];
-  cubic.P2 = ControlPoints[k + 2u];
-  cubic.P3 = ControlPoints[k + 3u];
+  const Cubic cubic = ControlPoints[curveIndex];
 
   const float2 t = float2(SampleT(range, pointIndex), SampleT(range, min(pointIndex + 1u, range.y)));
   float4 p0 = float4(EvaluateBezier(cubic, t.x), 1.0);
