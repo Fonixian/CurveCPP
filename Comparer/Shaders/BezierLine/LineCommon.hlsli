@@ -27,10 +27,10 @@ static const uint SegmentHasNext = 0x80000000u;
 struct LineVSOutput
 {
   float4 Position : SV_Position;
-  float3 Color : COLOR0;
+  float4 Color : COLOR0;
 };
 
-// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
+// Inverse of PackColor (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed)
 {
   return float4(

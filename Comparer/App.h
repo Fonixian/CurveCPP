@@ -124,7 +124,7 @@ private:
   float compare_offset = 7.0f;
 
   // --- runtime-editable style, applied to every curve in the scene every frame ---
-  float style_width = 10.0f; // half-width, in pixels
+  float style_width = 20.0f; // full width in pixels
   int style_cap_front = 2;   // CurveCap at the P0 end
   int style_cap_back = 0;    // CurveCap at the far end
   bool link_caps = false;    // drive both ends from the front picker
@@ -140,14 +140,14 @@ private:
   float style_max_height = 0.0f;
 
   bool animate_colors = true;
-  DirectX::XMFLOAT3 wave_color0 = { 1.0f, 0.5f, 1.0f };
-  DirectX::XMFLOAT3 wave_color1 = { 0.2f, 1.0f, 0.5f };
-  DirectX::XMFLOAT3 petal_color = { 1.0f, 0.6f, 0.2f };
-  DirectX::XMFLOAT3 ribbon_color0 = { 0.35f, 0.75f, 1.0f };
-  DirectX::XMFLOAT3 ribbon_color1 = { 0.95f, 0.35f, 0.75f };
-  DirectX::XMFLOAT3 hermite_color0 = { 0.3f, 1.0f, 0.6f };
-  DirectX::XMFLOAT3 hermite_color1 = { 1.0f, 0.95f, 0.4f };
-  DirectX::XMFLOAT3 gallery_color = { 1.0f, 0.85f, 0.25f };
+  DirectX::XMFLOAT4 wave_color0 = { 1.0f, 0.5f, 1.0f, 1.0f };
+  DirectX::XMFLOAT4 wave_color1 = { 0.2f, 1.0f, 0.5f, 1.0f };
+  DirectX::XMFLOAT4 petal_color = { 1.0f, 0.6f, 0.2f, 1.0f };
+  DirectX::XMFLOAT4 ribbon_color0 = { 0.35f, 0.75f, 1.0f, 1.0f };
+  DirectX::XMFLOAT4 ribbon_color1 = { 0.95f, 0.35f, 0.75f, 1.0f };
+  DirectX::XMFLOAT4 hermite_color0 = { 0.3f, 1.0f, 0.6f, 1.0f };
+  DirectX::XMFLOAT4 hermite_color1 = { 1.0f, 0.95f, 0.4f, 1.0f };
+  DirectX::XMFLOAT4 gallery_color = { 1.0f, 0.85f, 0.25f, 1.0f };
 
   void Update(float delta);
   void Gui();

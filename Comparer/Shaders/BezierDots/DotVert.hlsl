@@ -36,10 +36,10 @@ float4 CalculateColor(uint4 colorData, float height, float t)
 {
   float minHeight = asfloat(colorData.z);
   float maxHeight = asfloat(colorData.w);
-  float3 colorA = UnpackColorBits(colorData.x).rgb;
-  float3 colorB = UnpackColorBits(colorData.y).rgb;
+  float4 colorA = UnpackColorBits(colorData.x);
+  float4 colorB = UnpackColorBits(colorData.y);
   float blend = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
-  return float4(lerp(colorA, colorB, blend), 1.0);
+  return lerp(colorA, colorB, blend);
 }
 
 DotVSOutput main(uint vertexId : SV_VertexID, uint dotIndex : SV_InstanceID)

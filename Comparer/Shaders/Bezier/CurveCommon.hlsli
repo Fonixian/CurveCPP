@@ -18,7 +18,7 @@ static const uint SegmentHasNext = 0x80000000u;
 
 struct PatternStyle
 {
-  uint width_capcapjoin; // width << 24 | front_cap << 16 | back_cap << 8 | join
+  uint width_capcapjoin; // half_width * 4 << 24 | front_cap << 16 | back_cap << 8 | join
   float spacing;         // world arc length between dash centers; > 0
   float dash_length;     // length of one dash in pixels, not including caps
 };
@@ -27,11 +27,10 @@ struct PatternedVSOutput
 {
   float4 Position : SV_Position;
   noperspective float4 SDF : TEXCOORD0;
-  // rgb: color. w: the pattern coordinate - the position along the chain's center grid measured
-  // in slots of PatternPosition, so floor() gives the slot directly and the coordinate never falls
-  // below the chain's first slot (see CurveVs.hlsl). The chain's last center is marked in
-  // PatternPosition itself (see CurvePatternCalc.hlsl).
-  noperspective float4 ColorPattern : COLOR0;
+  noperspective float4 Color : COLOR0;
+  // Position along the chain's center grid in slots of PatternPosition: floor() is the slot, never
+  // below the chain's first slot (CurveVs.hlsl). The chain's last center is flagged in PatternPosition.
+  noperspective float PatternCoord : TEXCOORD6;
   nointerpolation float ScreenArcBegin : TEXCOORD1;
   // Whether the segment has a neighbor before its start (x) and after its end (y) - no neighbor = terminus.
   nointerpolation uint2 Neighbors : TEXCOORD2;
@@ -42,7 +41,7 @@ struct PatternedVSOutput
   nointerpolation float2 ArcShear : TEXCOORD5;
 };
 
-// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
+// Inverse of PackColor (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed)
 {
   uint4 unpacked = uint4(packed, packed, packed, packed);
@@ -88,7 +87,7 @@ float4 ClipToNearPlane(float4 p, float4 other)
 
 float HalfWidth(uint style)
 {
-  return float(style >> 24);
+  return float(style >> 24) * 0.25;
 }
 
 uint FrontCap(uint capCapJoin)

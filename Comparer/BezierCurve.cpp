@@ -108,16 +108,16 @@ void BezierCurve::control_points(const XMFLOAT3& P0, const XMFLOAT3& P1, const X
   touch(DirtyPositions);
 }
 
-XMFLOAT3 BezierCurve::C0() const
+XMFLOAT4 BezierCurve::C0() const
 {
   assert(valid());
-  return UnpackFloat3FromR8G8B8A8(renderer->color_data[curve_index].color_begin);
+  return UnpackColor(renderer->color_data[curve_index].color_begin);
 }
 
-XMFLOAT3 BezierCurve::C1() const
+XMFLOAT4 BezierCurve::C1() const
 {
   assert(valid());
-  return UnpackFloat3FromR8G8B8A8(renderer->color_data[curve_index].color_end);
+  return UnpackColor(renderer->color_data[curve_index].color_end);
 }
 
 float BezierCurve::MinHeight() const
@@ -132,12 +132,12 @@ float BezierCurve::MaxHeight() const
   return renderer->color_data[curve_index].max_height;
 }
 
-void BezierCurve::colors(const XMFLOAT3& C0, const XMFLOAT3& C1)
+void BezierCurve::colors(const XMFLOAT4& C0, const XMFLOAT4& C1)
 {
   assert(valid());
   auto& color = renderer->color_data[curve_index];
-  color.color_begin = PackFloat3ToR8G8B8A8(C0);
-  color.color_end = PackFloat3ToR8G8B8A8(C1);
+  color.color_begin = PackColor(C0);
+  color.color_end = PackColor(C1);
   touch(DirtyColors);
 }
 
@@ -152,7 +152,7 @@ void BezierCurve::HeightRange(float min, float max)
 
 float BezierCurve::Width() const
 {
-  return float(style() >> 24);
+  return UnpackWidth(style());
 }
 
 CurveCap BezierCurve::CapFront() const
@@ -187,10 +187,10 @@ CurveKind BezierCurve::Kind() const
   return KindOf(Spacing(), DashLength());
 }
 
-// Rounded to a whole pixel and clamped to [0, 255], the top byte of the style word.
+// Full width in px; stored as the half width in quarter pixels (see PackWidth).
 void BezierCurve::Width(float value)
 {
-  style() = (style() & 0x00FFFFFFu) | (static_cast<uint32_t>(std::clamp(value, 0.f, 255.f) + 0.5f) << 24);
+  style() = (style() & 0x00FFFFFFu) | PackWidth(value);
   touch(DirtyStyles);
 }
 

@@ -1,42 +1,30 @@
 #include "DotCommon.hlsli"
 
-float CurveCapSDF(float2 coord, float overshoot, float halfWidth, uint cap)
+float CapSDF(float2 coord, float overshoot, float halfWidth, uint cap)
 {
-  float d;
   switch (cap)
   {
-  case CurveCapButt:
-    d = overshoot;
-    break;
-  case CurveCapSquare:
-    d = overshoot - halfWidth;
-    break;
-  case CurveCapTriangleOut:
-    d = (coord.x + overshoot - halfWidth) * rsqrt(2.0);
-    break;
-  case CurveCapTriangleIn:
-    d = (overshoot - coord.x) * rsqrt(2.0);
-    break;
+  case CurveCapSquare: return overshoot - halfWidth;
+  case CurveCapTriangleOut: return (coord.x + overshoot - halfWidth) * rsqrt(2.0);
+  case CurveCapTriangleIn: return (overshoot - coord.x) * rsqrt(2.0);
+  default: return overshoot; // butt
   }
-  return d;
 }
 
-// A dot is a zero-length dash: the front cap shapes the half facing the curve's start, the back cap
-// the half facing its end.
+// A dot is a zero-length dash: front cap on the half facing the curve's start, back cap on the other.
+float DotSDF(float2 offset, float halfWidth, uint capCapJoin)
+{
+  float2 coord = float2(abs(offset.x), offset.y);
+  uint cap = (offset.y < 0.0) ? FrontCap(capCapJoin) : BackCap(capCapJoin);
+
+  if (cap == CurveCapRound) return length(coord) - halfWidth;
+  return max(coord.x - halfWidth, CapSDF(coord, abs(offset.y), halfWidth, cap));
+}
+
 float4 main(DotVSOutput input) : SV_Target
 {
-  // Pixels from the dot's center: across the tangent, along it (towards the curve's end is positive).
-  float lateral = input.Offset.x;
-  float along = input.Offset.y;
-  float halfWidth = HalfWidth(input.CapCapJoin);
-
-  float2 coord = float2(abs(lateral), along);
-  uint cap = (along < 0.0) ? FrontCap(input.CapCapJoin) : BackCap(input.CapCapJoin);
-
-  float sdf;
-  if (cap == CurveCapRound) sdf = length(coord) - halfWidth;
-  else sdf = max(coord.x - halfWidth, CurveCapSDF(coord, abs(along), halfWidth, cap));
-
+  float sdf = DotSDF(input.Offset, HalfWidth(input.CapCapJoin), input.CapCapJoin);
   if (sdf >= DOT_AA_RADIUS) discard;
-  return float4(input.Color.rgb, 1.0 - smoothstep(-DOT_AA_RADIUS, DOT_AA_RADIUS, sdf));
+
+  return float4(input.Color.rgb, input.Color.a * (1.0 - smoothstep(-DOT_AA_RADIUS, DOT_AA_RADIUS, sdf)));
 }

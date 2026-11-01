@@ -114,7 +114,7 @@ protected:
   // CompactRemoved() squeezes the vectors on the next UpdateBuffers.
   std::vector<DirectX::XMFLOAT3X4> cubic_points; // 1 per curve: rows x/y/z, columns P0..P3 (row_major float3x4 in HLSL)
   std::vector<UploadColorData> color_data;
-  std::vector<uint32_t> style_words; // width << 24 | cap_front << 16 | cap_back << 8 | join (width in whole px, dots mask join)
+  std::vector<uint32_t> style_words; // half_width << 24 | cap_front << 16 | cap_back << 8 | join (half width in 0.25 px, see PackWidth; dots mask join)
   std::vector<float> spacings;
   std::vector<float> dash_lengths;
   std::vector<uint32_t> resolutions;

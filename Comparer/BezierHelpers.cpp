@@ -15,18 +15,18 @@ uint32_t FitCapacity(uint32_t allocated, uint32_t required)
   return allocated;
 }
 
-uint32_t PackFloat3ToR8G8B8A8(const XMFLOAT3& color)
+uint32_t PackColor(const XMFLOAT4& color)
 {
   XMCOLOR packed;
-  XMStoreColor(&packed, XMVectorSetW(XMLoadFloat3(&color), 1.0f));
+  XMStoreColor(&packed, XMLoadFloat4(&color));
   return packed.c;
 }
 
-XMFLOAT3 UnpackFloat3FromR8G8B8A8(uint32_t color)
+XMFLOAT4 UnpackColor(uint32_t color)
 {
   const XMCOLOR packed{ color };
-  XMFLOAT3 unpacked;
-  XMStoreFloat3(&unpacked, XMLoadColor(&packed));
+  XMFLOAT4 unpacked;
+  XMStoreFloat4(&unpacked, XMLoadColor(&packed));
   return unpacked;
 }
 
@@ -35,6 +35,24 @@ XMFLOAT3 LerpFloat3(const XMFLOAT3& a, const XMFLOAT3& b, float t)
   XMFLOAT3 out;
   XMStoreFloat3(&out, XMVectorLerp(XMLoadFloat3(&a), XMLoadFloat3(&b), t));
   return out;
+}
+
+XMFLOAT4 LerpFloat4(const XMFLOAT4& a, const XMFLOAT4& b, float t)
+{
+  XMFLOAT4 out;
+  XMStoreFloat4(&out, XMVectorLerp(XMLoadFloat4(&a), XMLoadFloat4(&b), t));
+  return out;
+}
+
+uint32_t PackWidth(float width)
+{
+  const float halfWidth = std::clamp(width * 0.5f, 0.f, 255.f * halfWidthStep);
+  return static_cast<uint32_t>(halfWidth / halfWidthStep + 0.5f) << 24;
+}
+
+float UnpackWidth(uint32_t style_word)
+{
+  return float(style_word >> 24) * halfWidthStep * 2.f;
 }
 
 bool EndpointsMeet(const XMFLOAT3X4& prev, const XMFLOAT3X4& next)

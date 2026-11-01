@@ -13,7 +13,7 @@ static const uint SegmentCurveMask = 0x3FFFFFFFu;
 
 struct DotStyle
 {
-  uint width_capcap; // width << 24 | front_cap << 16 | back_cap << 8; dots never join, so the low byte is 0
+  uint width_capcap; // half_width * 4 << 24 | front_cap << 16 | back_cap << 8; dots never join, so the low byte is 0
   float spacing;     // world arc length between dot centers; <= 0 means no dots on this curve
 };
 
@@ -35,7 +35,6 @@ struct DotVSOutput
   nointerpolation uint CapCapJoin : TEXCOORD1;
 };
 
-// Inverse of PackFloat3ToR8G8B8A8 (DirectX::XMCOLOR): a << 24 | r << 16 | g << 8 | b.
 float4 UnpackColorBits(uint packed)
 {
   uint4 unpacked = uint4(packed, packed, packed, packed);
@@ -77,7 +76,7 @@ float SampleT(uint2 range, uint sampleIndex)
 
 float HalfWidth(uint style)
 {
-  return float(style >> 24);
+  return float(style >> 24) * 0.25;
 }
 
 uint FrontCap(uint capCapJoin)

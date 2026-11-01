@@ -20,10 +20,16 @@ constexpr uint32_t GroupCount(uint32_t items, uint32_t group_size)
   return (items + group_size - 1u) / group_size;
 }
 
-// DirectX::XMCOLOR packing: a << 24 | r << 16 | g << 8 | b, alpha 255.
-uint32_t PackFloat3ToR8G8B8A8(const DirectX::XMFLOAT3& color);
+uint32_t PackColor(const DirectX::XMFLOAT4& color);
+DirectX::XMFLOAT4 UnpackColor(uint32_t color);
 DirectX::XMFLOAT3 LerpFloat3(const DirectX::XMFLOAT3& a, const DirectX::XMFLOAT3& b, float t);
-DirectX::XMFLOAT3 UnpackFloat3FromR8G8B8A8(uint32_t color);
+DirectX::XMFLOAT4 LerpFloat4(const DirectX::XMFLOAT4& a, const DirectX::XMFLOAT4& b, float t);
+
+// Top byte of a style word: the HALF width in quarter pixels, so half widths 0..63.75 px in 0.25 steps
+// (full widths 0..127.5 px in 0.5 steps). Takes and returns the full width.
+constexpr float halfWidthStep = 0.25f;
+uint32_t PackWidth(float width);
+float UnpackWidth(uint32_t style_word);
 
 // Whether `prev` ends where `next` starts: P3 of `prev` (its last column) against P0 of `next` (its
 // first column). Relative tolerance; used by the merge asserts.

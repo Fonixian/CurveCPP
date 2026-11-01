@@ -46,13 +46,13 @@ public:
   void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2);
   void control_points(const DirectX::XMFLOAT3& P0, const DirectX::XMFLOAT3& P1, const DirectX::XMFLOAT3& P2, const DirectX::XMFLOAT3& P3);
 
-  // Getters return the stored, quantised values (8-bit colour, whole-pixel width).
-  DirectX::XMFLOAT3 C0() const;
-  DirectX::XMFLOAT3 C1() const;
+  // Getters return the stored, quantised values (8-bit colour, width in 0.5 px steps).
+  DirectX::XMFLOAT4 C0() const;
+  DirectX::XMFLOAT4 C1() const;
   float MinHeight() const;
   float MaxHeight() const;
 
-  void colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1);
+  void colors(const DirectX::XMFLOAT4& C0, const DirectX::XMFLOAT4& C1);
   void HeightRange(float min, float max);
 
   float Width() const;

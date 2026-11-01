@@ -26,11 +26,11 @@ float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float 
 {
   float minHeight = asfloat(colorData.z);
   float maxHeight = asfloat(colorData.w);
-  float3 colorA = UnpackColorBits(colorData.x).rgb;
-  float3 colorB = UnpackColorBits(colorData.y).rgb;
+  float4 colorA = UnpackColorBits(colorData.x);
+  float4 colorB = UnpackColorBits(colorData.y);
   float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
   float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
-  return float4(lerp(colorA, colorB, blend), 1.0);
+  return lerp(colorA, colorB, blend);
 }
 
 float4 SidePlaneDistances(float4 p)
@@ -261,8 +261,8 @@ PatternedVSOutput main(uint vertexId : SV_VertexID, uint sampleIndex : SV_Instan
   float patternCoord = lerp(startWorldDistance, endWorldDistance, cornerT) / style.spacing
     + (float(PatternOffsets[currentCurve]) - patternBase);
 
-  float3 color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide).rgb;
-  o.ColorPattern = float4(color, patternCoord);
+  o.Color = CalculateColor(CurveColors[currentCurve], float2(startWorld.y, endWorld.y), float2(tStart, tEnd), t0, t1, nearSide);
+  o.PatternCoord = patternCoord;
 
   float3 startNdc = startClip.xyz / startClip.w;
   float3 endNdc = endClip.xyz / endClip.w;

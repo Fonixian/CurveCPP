@@ -47,9 +47,9 @@ public:
   // knot_count >= 2. Growing re-Adds every link, moving the spline to the end of the draw order.
   void Resize(size_t knot_count);
 
-  void Colors(const DirectX::XMFLOAT3& C0, const DirectX::XMFLOAT3& C1);
+  void Colors(const DirectX::XMFLOAT4& C0, const DirectX::XMFLOAT4& C1);
   // One per knot. With a height range only the first and last are used.
-  void PointColors(std::span<const DirectX::XMFLOAT3> colors);
+  void PointColors(std::span<const DirectX::XMFLOAT4> colors);
   // min < max blends by height over the whole spline, otherwise by t.
   void HeightRange(float min, float max);
 
@@ -99,7 +99,7 @@ private:
 
   std::vector<BezierCurve> links;
   BezierStyle style;
-  std::vector<DirectX::XMFLOAT3> point_colors; // if empty, uses the color from style along the whole spline
+  std::vector<DirectX::XMFLOAT4> point_colors; // if empty, uses the color from style along the whole spline
 
   bool HeightBlend() const
   {

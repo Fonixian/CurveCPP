@@ -76,12 +76,12 @@ BezierCurve BezierRendererBase::Add(const BezierData& curve)
     curve.P0.z, curve.P1.z, curve.P2.z, curve.P3.z
   });
   color_data.push_back(UploadColorData{
-    PackFloat3ToR8G8B8A8(curve.style.C0), PackFloat3ToR8G8B8A8(curve.style.C1),
+    PackColor(curve.style.C0), PackColor(curve.style.C1),
     curve.style.min_height, curve.style.max_height
   });
-  // width << 24 | cap_front << 16 | cap_back << 8 | join - see style_words.
+  // half_width << 24 | cap_front << 16 | cap_back << 8 | join - see style_words.
   style_words.push_back(
-    (static_cast<uint32_t>(std::clamp(curve.style.width, 0.f, 255.f) + 0.5f) << 24) |
+    PackWidth(curve.style.width) |
     (uint32_t(curve.style.cap_front) << 16) |
     (uint32_t(curve.style.cap_back) << 8) |
     uint32_t(curve.style.join));

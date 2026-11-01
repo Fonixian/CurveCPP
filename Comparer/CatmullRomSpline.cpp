@@ -187,8 +187,8 @@ void CatmullRomSpline::ApplyColors()
   const bool by_point = !point_colors.empty();
   if (HeightBlend())
   {
-    const XMFLOAT3 C0 = by_point ? point_colors.front() : style.C0;
-    const XMFLOAT3 C1 = by_point ? point_colors.back() : style.C1;
+    const XMFLOAT4 C0 = by_point ? point_colors.front() : style.C0;
+    const XMFLOAT4 C1 = by_point ? point_colors.back() : style.C1;
     for (auto& link : links) link.colors(C0, C1);
   }
   else if (by_point)
@@ -200,13 +200,13 @@ void CatmullRomSpline::ApplyColors()
     for (size_t i = 0; i < count; ++i)
     {
       links[i].colors(
-        LerpFloat3(style.C0, style.C1, float(i) / float(count)),
-        LerpFloat3(style.C0, style.C1, float(i + 1) / float(count)));
+        LerpFloat4(style.C0, style.C1, float(i) / float(count)),
+        LerpFloat4(style.C0, style.C1, float(i + 1) / float(count)));
     }
   }
 }
 
-void CatmullRomSpline::Colors(const XMFLOAT3& C0, const XMFLOAT3& C1)
+void CatmullRomSpline::Colors(const XMFLOAT4& C0, const XMFLOAT4& C1)
 {
   style.C0 = C0;
   style.C1 = C1;
@@ -214,7 +214,7 @@ void CatmullRomSpline::Colors(const XMFLOAT3& C0, const XMFLOAT3& C1)
   ApplyColors();
 }
 
-void CatmullRomSpline::PointColors(std::span<const XMFLOAT3> colors)
+void CatmullRomSpline::PointColors(std::span<const XMFLOAT4> colors)
 {
   assert(colors.size() == points.size() && "one colour per point");
   point_colors.assign(colors.begin(), colors.end());

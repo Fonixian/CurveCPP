@@ -44,7 +44,7 @@ float3 EvaluateBezier(Cubic c, float t)
   return mul(c.P, float4(s * s * s, st3 * s, st3 * t, t * t * t));
 }
 
-float3 SampleColor(uint4 color, float height, float t)
+float4 SampleColor(uint4 color, float height, float t)
 {
   const float minHeight = asfloat(color.z);
   const float maxHeight = asfloat(color.w);
@@ -53,7 +53,7 @@ float3 SampleColor(uint4 color, float height, float t)
   {
     blend = saturate((height - minHeight) / (maxHeight - minHeight));
   }
-  return lerp(UnpackColorBits(color.x).rgb, UnpackColorBits(color.y).rgb, blend);
+  return lerp(UnpackColorBits(color.x), UnpackColorBits(color.y), blend);
 }
 
 // Drawn as a LINELIST of 2 * total_points vertices, one line per sample: line i runs from sample i to

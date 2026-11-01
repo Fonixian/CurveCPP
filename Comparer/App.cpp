@@ -59,12 +59,13 @@ namespace
   }
 
   // Hue sweep used for the animated colouring, kept in one place so every group agrees.
-  XMFLOAT3 HueColor(float hue)
+  XMFLOAT4 HueColor(float hue, float alpha = 1.0f)
   {
     return {
       cosf(hue * 3.14159f),
       cosf(hue * 3.14159f + 2.09f),
-      cosf(hue * 3.14159f + 4.19f)
+      cosf(hue * 3.14159f + 4.19f),
+      alpha
     };
   }
 
@@ -146,7 +147,7 @@ void App::BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset)
     stroke.style.cap_front = GalleryFrontCap(i);
     stroke.style.cap_back = GalleryBackCap(i);
     stroke.style.resolution = GalleryResolution;
-    stroke.style.C0 = { 1.0f, 1.0f, 1.0f };
+    stroke.style.C0 = { 1.0f, 1.0f, 1.0f, gallery_color.w };
     stroke.style.C1 = gallery_color;
     scene.gallery[i] = renderer.Add(stroke);
   }
@@ -211,7 +212,7 @@ void App::AddTestCurves(CurveRenderer& renderer, Scene& scene)
 
     // Hue by index so a batch is legible as separate strokes rather than one solid mass. Test
     // curves are not repainted afterwards, so this is the only place their colour is decided.
-    const XMFLOAT3 color = HueColor(float(scene.test_curves.size()) * 0.137f);
+    const XMFLOAT4 color = HueColor(float(scene.test_curves.size()) * 0.137f);
     data.style.C0 = color;
     data.style.C1 = HueColor(float(scene.test_curves.size()) * 0.137f + 0.5f);
 
@@ -245,12 +246,12 @@ void App::PoseScene(Scene& scene)
   {
     const float swing = sinf(t * 2.0f);
 
-    XMFLOAT3 c0 = wave_color0;
-    XMFLOAT3 c1 = wave_color1;
+    XMFLOAT4 c0 = wave_color0;
+    XMFLOAT4 c1 = wave_color1;
     if (animate_colors)
     {
-      c0 = { 1.0f - t / 10.0f, 0.5f, 1.0f };
-      c1 = { 0.2f, 1.0f, 0.5f - t / 10.0f };
+      c0 = { 1.0f - t / 10.0f, 0.5f, 1.0f, wave_color0.w };
+      c1 = { 0.2f, 1.0f, 0.5f - t / 10.0f, wave_color1.w };
     }
 
     scene.wave.control_points(
@@ -273,7 +274,7 @@ void App::PoseScene(Scene& scene)
     const XMFLOAT3 P2 = { dx + PetalRadius * cosf(nextAngle), PetalCenterY + PetalRadius * sinf(nextAngle), 0.0f };
     const XMFLOAT3 P1 = { dx + controlRadius * cosf(midAngle), PetalCenterY + controlRadius * sinf(midAngle), 0.0f };
 
-    const XMFLOAT3 color = animate_colors ? HueColor(angle / Tau) : petal_color;
+    const XMFLOAT4 color = animate_colors ? HueColor(angle / Tau, petal_color.w) : petal_color;
 
     scene.petals[i].control_points(P0, P1, P2);
     scene.petals[i].colors(color, color);
@@ -307,10 +308,10 @@ void App::PoseScene(Scene& scene)
 
     if (animate_colors)
     {
-      XMFLOAT3 colors[RibbonLinks + 1];
+      XMFLOAT4 colors[RibbonLinks + 1];
       for (int k = 0; k <= RibbonLinks; ++k)
       {
-        colors[k] = HueColor(float(k) * step + t * 0.15f);
+        colors[k] = HueColor(float(k) * step + t * 0.15f, ribbon_color0.w + (ribbon_color1.w - ribbon_color0.w) * float(k) * step);
       }
       ribbon.PointColors(colors);
     }
@@ -347,10 +348,10 @@ void App::PoseScene(Scene& scene)
 
     if (animate_colors)
     {
-      XMFLOAT3 colors[HermiteLinks + 1];
+      XMFLOAT4 colors[HermiteLinks + 1];
       for (int k = 0; k < HermiteLinks; ++k)
       {
-        colors[k] = HueColor(2.0f * float(k) / HermiteLinks - t * 0.2f); // one full hue period around
+        colors[k] = HueColor(2.0f * float(k) / HermiteLinks - t * 0.2f, hermite_color0.w); // one full hue period around
       }
       colors[HermiteLinks] = colors[0];
       hermite.PointColors(colors);
@@ -372,8 +373,8 @@ void App::PoseScene(Scene& scene)
       { x, GalleryBottom, 0.0f },
       { x, GalleryTop, 0.0f });
 
-    const XMFLOAT3 back = animate_colors ? HueColor(float(i) / GalleryCount + t * 0.1f) : gallery_color;
-    scene.gallery[i].colors({ 1.0f, 1.0f, 1.0f }, back);
+    const XMFLOAT4 back = animate_colors ? HueColor(float(i) / GalleryCount + t * 0.1f, gallery_color.w) : gallery_color;
+    scene.gallery[i].colors({ 1.0f, 1.0f, 1.0f, gallery_color.w }, back);
   }
 
   // --- test curves: static geometry, slid into this copy's column ------------------------------
@@ -652,14 +653,14 @@ void App::ExampleGui()
   ImGui::SeparatorText("Colour");
   bool changed = ImGui::Checkbox("Animate colours", &animate_colors);
   ImGui::BeginDisabled(animate_colors);
-  changed |= ImGui::ColorEdit3("Wave A", &wave_color0.x);
-  changed |= ImGui::ColorEdit3("Wave B", &wave_color1.x);
-  changed |= ImGui::ColorEdit3("Petals", &petal_color.x);
-  changed |= ImGui::ColorEdit3("Ribbon A", &ribbon_color0.x);
-  changed |= ImGui::ColorEdit3("Ribbon B", &ribbon_color1.x);
-  changed |= ImGui::ColorEdit3("Hermite A", &hermite_color0.x);
-  changed |= ImGui::ColorEdit3("Hermite B", &hermite_color1.x);
-  changed |= ImGui::ColorEdit3("Gallery", &gallery_color.x);
+  changed |= ImGui::ColorEdit4("Wave A", &wave_color0.x);
+  changed |= ImGui::ColorEdit4("Wave B", &wave_color1.x);
+  changed |= ImGui::ColorEdit4("Petals", &petal_color.x);
+  changed |= ImGui::ColorEdit4("Ribbon A", &ribbon_color0.x);
+  changed |= ImGui::ColorEdit4("Ribbon B", &ribbon_color1.x);
+  changed |= ImGui::ColorEdit4("Hermite A", &hermite_color0.x);
+  changed |= ImGui::ColorEdit4("Hermite B", &hermite_color1.x);
+  changed |= ImGui::ColorEdit4("Gallery", &gallery_color.x);
   ImGui::EndDisabled();
 
   // Colours are written by PoseScene(), which no longer runs every frame - so a picker moved while
@@ -802,7 +803,7 @@ void App::StyleGui()
   bool changed = false;
 
   ImGui::SeparatorText("Stroke");
-  changed |= ImGui::SliderFloat("Width (px)", &style_width, 1.0f, 40.0f, "%.1f");
+  changed |= ImGui::SliderFloat("Width (px)", &style_width, 0.5f, 127.5f, "%.1f");
   // Only the example groups follow this; every test curve keeps the resolution it was added with,
   // which is why the Test tab has a slider of its own for that.
   changed |= ImGui::SliderInt("Resolution (example scene)", &style_resolution, 2, 400);

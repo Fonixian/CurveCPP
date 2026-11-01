@@ -40,7 +40,7 @@ struct Cubic
 StructuredBuffer<Cubic> CurveControlPoints : register(t3); // one 3x4 per curve, rows x/y/z, columns P0..P3
 StructuredBuffer<uint> SampleMap : register(t4);           // per sample: curve | SegmentHasPrev | SegmentHasNext
 StructuredBuffer<uint4> CurveColors : register(t5);        // color1, color2, height1, height2 (for interpolation based on height)
-StructuredBuffer<uint> CurveStyles : register(t6);         // width << 24 | front_cap << 16 | back_cap << 8 | join
+StructuredBuffer<uint> CurveStyles : register(t6);         // half_width * 4 << 24 | front_cap << 16 | back_cap << 8 | join
 StructuredBuffer<uint2> CurveIndices : register(t7);       // FirstIndex, LastIndex: the curve's sample range, e.g. [0, 50] [51, 90]
 
 Cubic LoadCubic(uint curveIndex)
@@ -67,11 +67,11 @@ float4 CalculateColor(uint4 colorData, float2 height, float2 t, float t0, float 
 {
   float minHeight = asfloat(colorData.z);
   float maxHeight = asfloat(colorData.w);
-  float3 colorA = UnpackColorBits(colorData.x).rgb;
-  float3 colorB = UnpackColorBits(colorData.y).rgb;
+  float4 colorA = UnpackColorBits(colorData.x);
+  float4 colorB = UnpackColorBits(colorData.y);
   float2 blendAtEnds = (minHeight < maxHeight) ? saturate((height - minHeight) / (maxHeight - minHeight)) : t;
   float blend = lerp(blendAtEnds.x, blendAtEnds.y, nearSide ? t0 : t1);
-  return float4(lerp(colorA, colorB, blend), 1.0);
+  return lerp(colorA, colorB, blend);
 }
 
 float4 SidePlaneDistances(float4 p)

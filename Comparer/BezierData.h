@@ -19,11 +19,11 @@ enum class CurveJoin : uint8_t
 
 struct BezierStyle
 {
-  DirectX::XMFLOAT3 C0 = { 1.f, 1.f, 1.f };
-  DirectX::XMFLOAT3 C1 = { 1.f, 1.f, 1.f };
+  DirectX::XMFLOAT4 C0 = { 1.f, 1.f, 1.f, 1.f }; // rgba, not premultiplied alpha
+  DirectX::XMFLOAT4 C1 = { 1.f, 1.f, 1.f, 1.f };
   float min_height = 0.f;
   float max_height = 0.f;
-  float width = 2.f;
+  float width = 2.f; // full width in px, 0..127.5 in 0.5 steps
   CurveCap cap_front = CurveCap::Butt;
   CurveCap cap_back = CurveCap::Butt;
   CurveJoin join = CurveJoin::Round;
