@@ -4,6 +4,8 @@
 using namespace Axodox::Graphics;
 using namespace DirectX;
 
+static_assert(sizeof(ScanPair<XMFLOAT2>) == 16, "distances must match StructuredBuffer<float4> Distances in the curve shaders");
+
 BezierPatternRenderer::BezierPatternRenderer(const GraphicsDevice& device) :
   BezierRendererBase(device),
   distance_scan{ device, maxElementCount },
@@ -27,7 +29,7 @@ void BezierPatternRenderer::AllocatePointBuffers(const GraphicsDevice& device, u
 {
   AllocateSampleMap(device, points_required);   // point pass and curve-body draw
   AllocateChainBegins(device, points_required); // distance scan, CurvePatternCalc
-  distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(points_required)));
+  distances.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<ScanPair<XMFLOAT2>>(points_required)));
 }
 
 void BezierPatternRenderer::AllocateCurveBuffers(const GraphicsDevice& device, uint32_t curves_required)
@@ -91,7 +93,7 @@ void BezierPatternRenderer::AllocatePatternBuffer(const GraphicsDevice& device)
   const uint32_t required = FitCapacity(patterns_allocated, pattern_upper_bound);
   if (patterns && patterns_allocated == required) return;
 
-  patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<float>(required)));
+  patterns.reset(new RWStructuredBuffer(device, TypedCapacityOrImmutableData<XMFLOAT2>(required)));
   patterns_allocated = required;
 }
 

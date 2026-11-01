@@ -1,95 +1,81 @@
-// Local (per-block) pass of the segmented exclusive prefix sum. Define SCAN_VALUE_TYPE, then include
-// this - see SegmentedScanLocalFloat.hlsl and SegmentedScanLocalFloat2.hlsl.
+// Scan pass: scans its block, adds the carry from the earlier blocks (BlockSums, already scanned by the
+// level below) to the elements with no begin in front of them, and writes the exclusive result.
+// At the top level a begin element gets 0.
 #include "SegmentedScanCommon.hlsli"
 
-uint ReadFlag(uint index)
-{
-  if (IsTopLevel != 0u)
-  {
-    uint packedWord = Flags[index >> 5u];
-    return (packedWord >> (index & 31u)) & 1u;
-  }
-  else
-  {
-    return Flags[index];
-  }
-}
+groupshared ScanPair gValue[2][SCAN_THREADS];
+groupshared uint gFlag[2][SCAN_THREADS];
 
-groupshared SCAN_VALUE_TYPE gValue[2][GROUP_SIZE];
-groupshared uint gFlag[2][GROUP_SIZE];
-
-[numthreads(GROUP_SIZE, 1, 1)]
+[numthreads(SCAN_THREADS, 1, 1)]
 void main(uint3 groupId : SV_GroupID, uint3 groupThreadId : SV_GroupThreadID)
 {
-  const SCAN_VALUE_TYPE zero = (SCAN_VALUE_TYPE)0;
+  const ScanPair zero = (ScanPair)0;
 
   uint blockIndex = groupId.x;
-  uint localIndex = groupThreadId.x;
-  uint globalIndex = blockIndex * GROUP_SIZE + localIndex;
-  bool active = globalIndex < ElementCount;
+  uint thread = groupThreadId.x;
+  uint index0 = blockIndex * GROUP_SIZE + 2u * thread;
+  uint index1 = index0 + 1u;
+  bool active0 = index0 < ElementCount;
+  bool active1 = index1 < ElementCount;
 
-  uint blockCount = min(GROUP_SIZE, ElementCount - blockIndex * GROUP_SIZE);
-
-  SCAN_VALUE_TYPE originalValue = active ? Values[globalIndex] : zero;
-  uint originalFlag = active ? ReadFlag(globalIndex) : 0u;
+  ScanPair value0 = zero;
+  ScanPair value1 = zero;
+  uint flag0 = 0u;
+  uint flag1 = 0u;
+  if (active0)
+  {
+    value0 = Values[index0];
+    flag0 = ReadFlag(index0);
+  }
+  if (active1)
+  {
+    value1 = Values[index1];
+    flag1 = ReadFlag(index1);
+  }
 
   uint src = 0u;
-  gValue[src][localIndex] = originalValue;
-  gFlag[src][localIndex] = originalFlag;
+  gValue[src][thread] = ScanCombine(value0, value1, flag1);
+  gFlag[src][thread] = flag0 | flag1;
   GroupMemoryBarrierWithGroupSync();
 
-  for (uint offset = 1u; offset < GROUP_SIZE; offset <<= 1u)
+  // Inclusive over the threads: gValue[src][t] sums the block's elements 0 .. 2t + 1.
+  for (uint offset = 1u; offset < SCAN_THREADS; offset <<= 1u)
   {
     uint dst = 1u - src;
 
-    SCAN_VALUE_TYPE value = gValue[src][localIndex];
-    uint flag = gFlag[src][localIndex];
+    ScanPair value = gValue[src][thread];
+    uint flag = gFlag[src][thread];
 
-    if (localIndex >= offset)
+    if (thread >= offset)
     {
-      SCAN_VALUE_TYPE leftValue = gValue[src][localIndex - offset];
-      uint leftFlag = gFlag[src][localIndex - offset];
-
-      value = (flag != 0u) ? value : (leftValue + value);
-      flag = leftFlag | flag;
+      value = ScanCombine(gValue[src][thread - offset], value, flag);
+      flag |= gFlag[src][thread - offset];
     }
 
-    gValue[dst][localIndex] = value;
-    gFlag[dst][localIndex] = flag;
+    gValue[dst][thread] = value;
+    gFlag[dst][thread] = flag;
     src = dst;
 
     GroupMemoryBarrierWithGroupSync();
   }
 
-  SCAN_VALUE_TYPE finalValue;
+  ScanPair before = zero;
+  uint beforeFlag = 0u;
+  if (thread > 0u)
+  {
+    before = gValue[src][thread - 1u];
+    beforeFlag = gFlag[src][thread - 1u];
+  }
+  uint blockCount = (ElementCount + GROUP_SIZE - 1u) / GROUP_SIZE;
+  if (beforeFlag == 0u && blockCount > 1u) before = ScanAdd(BlockSums[blockIndex], before);
+
+  ScanPair through0 = ScanCombine(before, value0, flag0);
   if (IsTopLevel != 0u)
   {
-    finalValue = (localIndex == 0u || originalFlag != 0u) ? zero : gValue[src][localIndex - 1u];
-  }
-  else
-  {
-    finalValue = (localIndex == 0u) ? zero : gValue[src][localIndex - 1u];
+    if (flag0 != 0u) before = zero;
+    if (flag1 != 0u) through0 = zero;
   }
 
-  if (active)
-  {
-    Values[globalIndex] = finalValue;
-  }
-
-  // gFlag is now the inclusive OR of the flags, so it is 0 up to the block's first begin and 1 from
-  // there on: the first begin is the one element where it steps from 0 to 1. Inactive elements have
-  // no flag, so that element is always an active one. Exactly one thread writes FirstBegin - this one,
-  // or thread 0 below when the block has no begin at all.
-  uint lastLocalIndex = blockCount - 1u;
-  if (gFlag[src][localIndex] != 0u && (localIndex == 0u || gFlag[src][localIndex - 1u] == 0u))
-  {
-    FirstBegin[blockIndex] = localIndex;
-  }
-
-  if (localIndex == 0u)
-  {
-    BlockSums[blockIndex] = gValue[src][lastLocalIndex];
-    BlockFlags[blockIndex] = gFlag[src][lastLocalIndex];
-    if (gFlag[src][lastLocalIndex] == 0u) FirstBegin[blockIndex] = GROUP_SIZE;
-  }
+  if (active0) Values[index0] = before;
+  if (active1) Values[index1] = through0;
 }

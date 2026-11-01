@@ -1,6 +1,20 @@
 #ifndef CURVE_COMMON_HLSLI
 #define CURVE_COMMON_HLSLI
 
+#include "../ArcPair.hlsli"
+
+// Distances per sample: arc length from the chain's start as pairs, .xy = hi (world, screen px),
+// .zw = lo (world, screen px).
+float2 WorldArc(float4 distances)
+{
+  return distances.xz;
+}
+
+float2 ScreenArc(float4 distances)
+{
+  return distances.yw;
+}
+
 static const uint CurveCapButt = 0u;
 static const uint CurveCapSquare = 1u;
 static const uint CurveCapRound = 2u;
@@ -28,10 +42,12 @@ struct PatternedVSOutput
   float4 Position : SV_Position;
   noperspective float4 SDF : TEXCOORD0;
   noperspective float4 Color : COLOR0;
-  // Position along the chain's center grid in slots of PatternPosition: floor() is the slot, never
-  // below the chain's first slot (CurveVs.hlsl). The chain's last center is flagged in PatternPosition.
+  // Position along the chain's center grid in slots of PatternPosition, relative to PatternSlot:
+  // PatternSlot + floor() is the slot. Never below -1, never below 0 on a chain's first curve
+  // (CurveVs.hlsl). The chain's last center is flagged in PatternPosition.
   noperspective float PatternCoord : TEXCOORD6;
-  nointerpolation float ScreenArcBegin : TEXCOORD1;
+  nointerpolation uint PatternSlot : TEXCOORD7;
+  nointerpolation float2 ScreenArcBegin : TEXCOORD1; // pair
   // Whether the segment has a neighbor before its start (x) and after its end (y) - no neighbor = terminus.
   nointerpolation uint2 Neighbors : TEXCOORD2;
   nointerpolation float DashLength : TEXCOORD3;

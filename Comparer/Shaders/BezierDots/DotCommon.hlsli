@@ -1,6 +1,8 @@
 #ifndef DOT_COMMON_HLSLI
 #define DOT_COMMON_HLSLI
 
+#include "../ArcPair.hlsli"
+
 static const uint CurveCapButt = 0u;
 static const uint CurveCapSquare = 1u;
 static const uint CurveCapRound = 2u;

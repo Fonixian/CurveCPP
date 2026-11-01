@@ -21,8 +21,9 @@
 #define CURVE_PATTERN_BISECTOR 1
 #endif
 
-// Screen arc of every dash center, one sorted run per chain; the sign bit flags a chain's last center.
-StructuredBuffer<float> PatternPosition : register(t1);
+// Screen arc of every dash center as a pair, one sorted run per chain; the sign bit of hi flags a
+// chain's last center.
+StructuredBuffer<float2> PatternPosition : register(t1);
 
 float CapSDF(float2 coord, float overshoot, float halfWidth, uint cap)
 {
@@ -76,6 +77,7 @@ float BisectorArc(float localArc, float lateral, float segmentLength, float half
 }
 #endif
 
+// Screen arc from the segment start (ScreenArcBegin).
 float PatternArc(PatternedVSOutput input)
 {
   float lateral = input.SDF.x;
@@ -84,14 +86,14 @@ float PatternArc(PatternedVSOutput input)
   float segmentLength = input.SDF.w;
 
 #if CURVE_PATTERN_BISECTOR
-  float arc = input.ScreenArcBegin + BisectorArc(localArc, lateral, segmentLength, halfWidth, input.ArcShear);
+  float arc = BisectorArc(localArc, lateral, segmentLength, halfWidth, input.ArcShear);
 #else
-  float arc = input.ScreenArcBegin + localArc;
+  float arc = localArc;
 #endif
 
 #if CURVE_PATTERN_CLAMP_TO_SEGMENT
-  float arcLo = (input.Neighbors.x != 0u) ? input.ScreenArcBegin : -1e30;
-  float arcHi = (input.Neighbors.y != 0u) ? input.ScreenArcBegin + segmentLength : 1e30;
+  float arcLo = (input.Neighbors.x != 0u) ? 0.0 : -1e30;
+  float arcHi = (input.Neighbors.y != 0u) ? segmentLength : 1e30;
   arc = clamp(arc, arcLo, arcHi);
 #endif
   return arc;
@@ -99,25 +101,25 @@ float PatternArc(PatternedVSOutput input)
 
 // 3. Pattern
 
-bool IsChainLastCenter(float stored)
+bool IsChainLastCenter(float2 stored)
 {
-  return (asuint(stored) & 0x80000000u) != 0u;
+  return (asuint(stored.x) & 0x80000000u) != 0u;
 }
 
-float CenterArc(float stored)
+float2 CenterArc(float2 stored)
 {
-  return asfloat(asuint(stored) & 0x7FFFFFFFu);
+  return float2(asfloat(asuint(stored.x) & 0x7FFFFFFFu), stored.y);
 }
 
 #if CURVE_PATTERN_SHRINK_TO_FIT
 // Distance between the two centers around the pixel; at a chain's last center, to the one before it.
-float PatternCenterSpan(int slot0, bool isLast0, float center0, float center1)
+float PatternCenterSpan(int slot0, bool isLast0, float2 center0, float2 center1)
 {
-  if (!isLast0) return abs(center1 - center0);
+  if (!isLast0) return abs(PairDiff(center1, center0));
   if (slot0 > 0)
   {
-    float previous = PatternPosition[uint(slot0 - 1)];
-    if (!IsChainLastCenter(previous)) return abs(center0 - previous);
+    float2 previous = PatternPosition[uint(slot0 - 1)];
+    if (!IsChainLastCenter(previous)) return abs(PairDiff(center0, previous));
   }
   return 0.0;
 }
@@ -130,17 +132,18 @@ float PatternArcScale(float centerSpan, float dashLength, float halfWidth, uint 
 }
 #endif
 
-float PatternSDF(float lateral, float patternArc, float patternCoord, float dashLength, float halfWidth, uint capCapJoin)
+// segmentArc: the pixel's screen arc from arcBegin, the segment start.
+float PatternSDF(float lateral, float segmentArc, float2 arcBegin, uint patternSlot, float patternCoord, float dashLength, float halfWidth, uint capCapJoin)
 {
-  int slot0 = max(int(floor(patternCoord)), 0);
+  int slot0 = max(int(patternSlot) + int(floor(patternCoord)), 0);
 
-  float stored0 = PatternPosition[uint(slot0)];
+  float2 stored0 = PatternPosition[uint(slot0)];
   bool isLast0 = IsChainLastCenter(stored0);
-  float center0 = CenterArc(stored0);
-  float center1 = isLast0 ? center0 : CenterArc(PatternPosition[uint(slot0 + 1)]);
+  float2 center0 = CenterArc(stored0);
+  float2 center1 = isLast0 ? center0 : CenterArc(PatternPosition[uint(slot0 + 1)]);
 
-  float arc0 = patternArc - center0;
-  float arc1 = patternArc - center1;
+  float arc0 = segmentArc - PairDiff(center0, arcBegin);
+  float arc1 = segmentArc - PairDiff(center1, arcBegin);
   float arcDist = (abs(arc0) <= abs(arc1)) ? arc0 : arc1;
   uint cap = (arcDist < 0.0) ? FrontCap(capCapJoin) : BackCap(capCapJoin);
 
@@ -159,9 +162,9 @@ float4 main(PatternedVSOutput input) : SV_Target
   float sdf = SegmentSDF(float2(abs(lateral), input.SDF.y), input.SDF.w, halfWidth, input.Neighbors, input.CapCapJoin);
   if (sdf > 0.5) discard;
 
-  float patternArc = PatternArc(input);
+  float segmentArc = PatternArc(input);
 
-  sdf = max(sdf, PatternSDF(lateral, patternArc, input.PatternCoord, input.DashLength, halfWidth, input.CapCapJoin));
+  sdf = max(sdf, PatternSDF(lateral, segmentArc, input.ScreenArcBegin, input.PatternSlot, input.PatternCoord, input.DashLength, halfWidth, input.CapCapJoin));
   if (sdf > 0.5) discard;
 
   return float4(input.Color.rgb, input.Color.a * saturate(0.5 - sdf));

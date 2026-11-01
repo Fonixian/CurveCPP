@@ -9,16 +9,16 @@ cbuffer CameraData : register(b0)
 };
 
 StructuredBuffer<uint2> CurveIndices : register(t0);
-StructuredBuffer<float2> Distances : register(t1); // x: cumulative world arc, y: cumulative screen arc
+StructuredBuffer<float4> Distances : register(t1); // cumulative arcs as pairs, see CurveCommon.hlsli
 StructuredBuffer<uint> CurveBegins : register(t2); // one bit per sample: set where a chain starts
 StructuredBuffer<PatternStyle> CurveStyles : register(t3);
 StructuredBuffer<uint> PatternOffsets : register(t4);
 
-RWStructuredBuffer<float> PatternPosition : register(u0);
+RWStructuredBuffer<float2> PatternPosition : register(u0); // screen arc per centre, pair
 
-// The LAST centre of every chain is stored with its sign bit set (screen arcs are never negative, so the
+// The LAST centre of every chain has the sign bit of its hi set (screen arcs are never negative, so the
 // bit is free); CurvePs reads it as "the next slot belongs to another chain". That is the pixel
-// shader's only way to find the end of its chain, since it is no longer told the chain's slot range.
+// shader's only way to find the end of its chain, since it is not told the chain's slot range.
 //
 // A centre is the chain's last when it is the last one of its curve AND no later curve of the same chain
 // owns a centre. A curve shorter than the spacing owns none, so the chain can end in a run of empty
@@ -58,11 +58,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
   uint sampleEndIdx = range.y;
   float worldSpacing = CurveStyles[curveIndex].spacing;
 
-  float arcBegin = Distances[sampleStartIdx].x;
-
-  uint patternBase = (arcBegin > 0.0 && worldSpacing > 0.0)
-    ? (uint)floor(arcBegin / worldSpacing) + 1u
-    : 0u;
+  uint patternBase = PairGridCount(WorldArc(Distances[sampleStartIdx]), worldSpacing);
 
   // Only this curve's last centre can end its chain, and exactly one lane places it (the loop below
   // strides by 8), so that lane alone walks the following curves, once, before the loop. Truncation by
@@ -76,7 +72,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
   {
     uint globalIdx = patternFirst + localIdx;
 
-    float targetWorldDist = (float)(patternBase + localIdx) * worldSpacing;
+    float2 target = PairFromProduct((float)(patternBase + localIdx), worldSpacing);
 
     uint low = sampleStartIdx;
     uint high = sampleEndIdx;
@@ -85,7 +81,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     while (low <= high)
     {
       uint mid = (low + high) / 2;
-      if (Distances[mid].x <= targetWorldDist)
+      if (PairLessEqual(WorldArc(Distances[mid]), target))
       {
         sampleA = mid;
         low = mid + 1;
@@ -99,19 +95,18 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     uint sampleB = min(sampleA + 1, sampleEndIdx);
 
-    // One 8-byte load per end gives both channels.
-    float2 distA = Distances[sampleA];
-    float2 distB = Distances[sampleB];
-    float segmentLength = distB.x - distA.x;
+    float4 distA = Distances[sampleA];
+    float4 distB = Distances[sampleB];
+    float segmentLength = PairDiff(WorldArc(distB), WorldArc(distA));
 
     float segmentT = (segmentLength > 0.00001f)
-      ? (targetWorldDist - distA.x) / segmentLength
+      ? PairDiff(target, WorldArc(distA)) / segmentLength
       : 0.0f;
 
-    float center = lerp(distA.y, distB.y, saturate(segmentT));
+    float2 center = PairAdd(ScreenArc(distA), saturate(segmentT) * PairDiff(ScreenArc(distB), ScreenArc(distA)));
     if (markLast && localIdx == lastLocal)
     {
-      center = asfloat(asuint(center) | 0x80000000u);
+      center.x = asfloat(asuint(center.x) | 0x80000000u);
     }
 
     PatternPosition[globalIdx] = center;

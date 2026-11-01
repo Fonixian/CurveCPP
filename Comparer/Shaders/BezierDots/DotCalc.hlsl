@@ -9,7 +9,7 @@ cbuffer CameraData : register(b0)
 };
 
 StructuredBuffer<uint2> CurveIndices : register(t0);
-StructuredBuffer<float> WorldDistances : register(t1);
+StructuredBuffer<float2> WorldDistances : register(t1); // cumulative, pairs
 StructuredBuffer<DotStyle> CurveStyles : register(t3);
 StructuredBuffer<uint> DotOffsets : register(t4);
 
@@ -36,17 +36,13 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
   uint sampleEndIdx = range.y;
   float worldSpacing = CurveStyles[curveIndex].spacing;
 
-  float arcBegin = WorldDistances[sampleStartIdx];
-
-  uint dotBase = (arcBegin > 0.0 && worldSpacing > 0.0)
-    ? (uint)floor(arcBegin / worldSpacing) + 1u
-    : 0u;
+  uint dotBase = PairGridCount(WorldDistances[sampleStartIdx], worldSpacing);
 
   for (uint localIdx = threadLaneIdx; localIdx < dotCount; localIdx += 8)
   {
     uint globalIdx = dotFirst + localIdx;
 
-    float targetWorldDist = (float)(dotBase + localIdx) * worldSpacing;
+    float2 target = PairFromProduct((float)(dotBase + localIdx), worldSpacing);
 
     uint low = sampleStartIdx;
     uint high = sampleEndIdx;
@@ -55,7 +51,7 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
     while (low <= high)
     {
       uint mid = (low + high) / 2;
-      if (WorldDistances[mid] <= targetWorldDist)
+      if (PairLessEqual(WorldDistances[mid], target))
       {
         sampleA = mid;
         low = mid + 1;
@@ -69,12 +65,11 @@ void main(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     uint sampleB = min(sampleA + 1, sampleEndIdx);
 
-    float distA = WorldDistances[sampleA];
-    float distB = WorldDistances[sampleB];
-    float segmentLength = distB - distA;
+    float2 distA = WorldDistances[sampleA];
+    float segmentLength = PairDiff(WorldDistances[sampleB], distA);
 
     float segmentT = (segmentLength > 0.00001f)
-      ? (targetWorldDist - distA) / segmentLength
+      ? PairDiff(target, distA) / segmentLength
       : 0.0f;
 
     // The dot's curve parameter: the sample's own t plus the fraction of the way to the next one.

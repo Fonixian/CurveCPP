@@ -161,13 +161,16 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="vcpkg.json" />
+    <None Include="Shaders\ArcPair.hlsli">
+      <Filter>Shaders</Filter>
+    </None>
     <None Include="Shaders\SegmentedScanCommon.hlsli">
       <Filter>Shaders\segmented scan</Filter>
     </None>
     <None Include="Shaders\SegmentedScanLocal.hlsli">
       <Filter>Shaders\segmented scan</Filter>
     </None>
-    <None Include="Shaders\SegmentedScanAddOffsets.hlsli">
+    <None Include="Shaders\SegmentedScanReduce.hlsli">
       <Filter>Shaders\segmented scan</Filter>
     </None>
     <None Include="Shaders\ParallelScanCommon.hlsli">
@@ -199,10 +202,10 @@
     <FxCompile Include="Shaders\Bezier\CurvePs.hlsl">
       <Filter>Shaders\bezier</Filter>
     </FxCompile>
-    <FxCompile Include="Shaders\SegmentedScanAddOffsetsFloat.hlsl">
+    <FxCompile Include="Shaders\SegmentedScanReduceFloat.hlsl">
       <Filter>Shaders\segmented scan</Filter>
     </FxCompile>
-    <FxCompile Include="Shaders\SegmentedScanAddOffsetsFloat2.hlsl">
+    <FxCompile Include="Shaders\SegmentedScanReduceFloat2.hlsl">
       <Filter>Shaders\segmented scan</Filter>
     </FxCompile>
     <FxCompile Include="Shaders\SegmentedScanLocalFloat.hlsl">
