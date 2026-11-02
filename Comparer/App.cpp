@@ -1,5 +1,6 @@
 #include "App.h"
 #include <d3d11.h>
+#include <d3dcompiler.h>
 #include <DirectXMath.h>
 #include <imgui.h>
 #include "imgui_impl_sdl3.h"
@@ -7,8 +8,12 @@
 #include "Include/Axodox.Storage.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iostream>
-#include <random>
+#include <stdexcept>
+#include <string>
+
+#pragma comment(lib, "d3dcompiler.lib")
 
 using namespace Axodox::Storage;
 using namespace Axodox::Graphics;
@@ -16,450 +21,1245 @@ using namespace DirectX;
 
 namespace
 {
+  constexpr float Pi = 3.14159265359f;
   constexpr float Tau = 6.28318530718f;
 
-  // --- scene layout, in one copy's LOCAL coordinates -----------------------------------------
-  // Everything below lives in x in [-3, 3], y in [-4.4, 4.6]; the whole box is then slid sideways
-  // by Scene::x_offset. Keep new curves inside that box or the two copies will start to overlap.
-  constexpr float GalleryBottom = 3.2f; // gallery strokes run bottom (front) to top (back)
-  constexpr float GalleryTop = 4.6f;
-  constexpr float GalleryStride = 1.25f; // world units between neighbouring gallery strokes
+  constexpr float WaterLevel = -3.1f;
+  constexpr float TerrainExtent = 56.0f;
+  constexpr int TerrainCells = 320;
 
-  constexpr float PetalCenterY = 0.7f;
-  constexpr float PetalRadius = 1.45f;
+  const XMFLOAT3 PlanetCenter = { 0.0f, 3.0f, 0.0f };
+  constexpr float PlanetRadius = 2.0f;
 
-  constexpr float HermiteRadius = 0.75f; // the Hermite loop sits inside the petal ring
+  const XMFLOAT3 SunDirection = { 0.30f, 0.12f, -1.0f };
 
-  constexpr float RibbonY = -2.3f;
-  constexpr float RibbonHalfSpan = 3.0f;
-  constexpr float RibbonAmplitude = 0.55f;
-  constexpr float RibbonDepth = 2.0f; // how far the ribbon dives toward / away from the camera
+  // --- small vector helpers ----------------------------------------------------------------
+  XMFLOAT3 operator+(const XMFLOAT3& a, const XMFLOAT3& b) { return { a.x + b.x, a.y + b.y, a.z + b.z }; }
+  XMFLOAT3 operator-(const XMFLOAT3& a, const XMFLOAT3& b) { return { a.x - b.x, a.y - b.y, a.z - b.z }; }
+  XMFLOAT3 operator*(const XMFLOAT3& a, float s) { return { a.x * s, a.y * s, a.z * s }; }
 
-  constexpr float WaveY = -3.9f;
+  float Dot(const XMFLOAT3& a, const XMFLOAT3& b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
+  float Length(const XMFLOAT3& a) { return sqrtf(Dot(a, a)); }
+  XMFLOAT3 Normalize(const XMFLOAT3& a) { return a * (1.0f / std::max(Length(a), 1e-12f)); }
 
-  // Index order must match the CurveCap enum in BezierData.h.
-  const char* const CapNames[] = { "Butt", "Square", "Round", "Triangle out", "Triangle in" };
-  constexpr int CapCount = int(sizeof(CapNames) / sizeof(CapNames[0]));
-
-  // Gallery stroke i is capped `i` at the front and `i + 2` at the back, so every cap shows up
-  // once at each end and no stroke wears the same cap twice.
-  CurveCap GalleryFrontCap(int i)
+  XMFLOAT3 Transform(const XMFLOAT3& p, const XMMATRIX& m)
   {
-    return static_cast<CurveCap>(i % CapCount);
+    XMFLOAT3 result;
+    XMStoreFloat3(&result, XMVector3Transform(XMLoadFloat3(&p), m));
+    return result;
   }
 
-  CurveCap GalleryBackCap(int i)
+  XMFLOAT3 TransformDir(const XMFLOAT3& p, const XMMATRIX& m)
   {
-    return static_cast<CurveCap>((i + 2) % CapCount);
+    XMFLOAT3 result;
+    XMStoreFloat3(&result, XMVector3TransformNormal(XMLoadFloat3(&p), m));
+    return result;
   }
 
-  XMFLOAT3 Add3(const XMFLOAT3& a, const XMFLOAT3& b)
+  float Fract(float x) { return x - floorf(x); }
+  float Smoothstep(float a, float b, float x)
   {
-    return { a.x + b.x, a.y + b.y, a.z + b.z };
+    const float t = std::clamp((x - a) / (b - a), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
   }
 
-  // Hue sweep used for the animated colouring, kept in one place so every group agrees.
   XMFLOAT4 HueColor(float hue, float alpha = 1.0f)
   {
     return {
-      cosf(hue * 3.14159f),
-      cosf(hue * 3.14159f + 2.09f),
-      cosf(hue * 3.14159f + 4.19f),
+      0.5f + 0.5f * cosf(Tau * (hue + 0.00f)),
+      0.5f + 0.5f * cosf(Tau * (hue + 0.33f)),
+      0.5f + 0.5f * cosf(Tau * (hue + 0.67f)),
       alpha
     };
   }
 
-  // --- Test screen ---------------------------------------------------------------------------
-  // Index order must match App::test_degree_index; the degree is the index + 1.
-  const char* const DegreeNames[] = { "Linear (2 points)", "Quadratic (3 points)", "Cubic (4 points)" };
-  constexpr int DegreeCount = int(sizeof(DegreeNames) / sizeof(DegreeNames[0]));
-
-  // Fixed seed on purpose. A performance comparison is only worth anything if pressing Add twice in
-  // two different builds produces the same curves, so this is deterministic per run rather than
-  // seeded from the clock. It still advances between presses, so consecutive batches differ.
-  std::mt19937 test_rng{ 0x5EED1234u };
-
-  float RandRange(float low, float high)
+  XMFLOAT4 WithAlpha(XMFLOAT4 c, float a)
   {
-    return std::uniform_real_distribution<float>(low, high)(test_rng);
+    c.w = a;
+    return c;
   }
 
-  XMFLOAT3 RandInBox(const XMFLOAT3& half_extents)
+  XMFLOAT4 Scale3(XMFLOAT4 c, float s)
   {
-    return {
-      RandRange(-half_extents.x, half_extents.x),
-      RandRange(-half_extents.y, half_extents.y),
-      RandRange(-half_extents.z, half_extents.z)
-    };
-  }
-}
-
-void App::BuildScene(CurveRenderer& renderer, Scene& scene, float x_offset)
-{
-  scene.x_offset = x_offset;
-
-  // Initial poses barely matter - PoseScene() overwrites every control point and colour on the
-  // very first frame. They only have to be valid enough for Add()'s asserts.
-  BezierData wave = Cubic(
-    { -3.0f, WaveY - 0.5f, 0.0f },
-    { -1.5f, WaveY + 0.7f, 0.0f },
-    { 1.5f, WaveY + 0.7f, 0.0f },
-    { 3.0f, WaveY - 0.5f, 0.0f });
-  wave.style.C0 = wave_color0;
-  wave.style.C1 = wave_color1;
-  scene.wave = renderer.Add(wave);
-
-  for (int i = 0; i < PetalCount; ++i)
-  {
-    BezierData petal = Quadratic(
-      { PetalRadius, PetalCenterY, 0.0f },
-      { PetalRadius, PetalCenterY, 0.0f },
-      { PetalRadius, PetalCenterY, 0.0f });
-    petal.style.C0 = petal_color;
-    petal.style.C1 = petal_color;
-    scene.petals[i] = renderer.Add(petal);
+    return { c.x * s, c.y * s, c.z * s, c.w };
   }
 
-  // The ribbon and the Hermite loop are each one merged stroke; every other group in the scene
-  // (wave, petals, gallery, test curves) is Added unmerged, i.e. one stroke per curve.
+  float Hash(int x, int y)
+  {
+    uint32_t h = uint32_t(x) * 374761393u + uint32_t(y) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    h ^= h >> 16;
+    return float(h & 0xFFFFFFu) / 16777216.0f;
+  }
+
+  float Hash1(int i) { return Hash(i, 0x51ED); }
+
+  float ValueNoise(float x, float y)
+  {
+    const int ix = int(floorf(x));
+    const int iy = int(floorf(y));
+    float fx = x - float(ix);
+    float fy = y - float(iy);
+    fx = fx * fx * (3.0f - 2.0f * fx);
+    fy = fy * fy * (3.0f - 2.0f * fy);
+    const float a = Hash(ix, iy);
+    const float b = Hash(ix + 1, iy);
+    const float c = Hash(ix, iy + 1);
+    const float d = Hash(ix + 1, iy + 1);
+    return (a + (b - a) * fx) + ((c + (d - c) * fx) - (a + (b - a) * fx)) * fy;
+  }
+
+  float Fbm(float x, float y, int octaves)
+  {
+    float sum = 0.0f;
+    float amplitude = 0.5f;
+    float norm = 0.0f;
+    for (int i = 0; i < octaves; ++i)
+    {
+      sum += amplitude * ValueNoise(x, y);
+      norm += amplitude;
+      x = x * 2.03f + 17.1f;
+      y = y * 2.03f - 9.7f;
+      amplitude *= 0.5f;
+    }
+    return sum / norm;
+  }
+
+  // Valley with a lake in the middle, ridged mountains around the rim.
+  float TerrainHeight(float x, float z)
+  {
+    const float r = sqrtf(x * x + z * z);
+    const float n = Fbm(x * 0.09f, z * 0.09f, 5) * 2.0f - 1.0f;
+    float ridge = 1.0f - fabsf(Fbm(x * 0.045f + 7.0f, z * 0.045f + 3.0f, 4) * 2.0f - 1.0f);
+    ridge *= ridge;
+    const float rim = Smoothstep(9.0f, 30.0f, r);
+    return -3.0f + n * 1.3f + rim * (5.0f + 9.0f * ridge) - 1.6f * expf(-r * r / 40.0f);
+  }
+
+  float GroundHeight(float x, float z)
+  {
+    return std::max(TerrainHeight(x, z), WaterLevel);
+  }
+
+  // Cubic arc approximation: handle length 4/3 tan(delta / 4) r.
+  void PoseArc(BezierCurve* links, int count, const XMFLOAT3& center, const XMFLOAT3& u, const XMFLOAT3& v,
+    float radius, float a0, float a1, bool closed)
+  {
+    std::vector<XMFLOAT3> points(count + 1);
+    std::vector<XMFLOAT3> tangents(count + 1);
+    const float delta = (a1 - a0) / float(count);
+    for (int k = 0; k <= count; ++k)
+    {
+      const float a = a0 + delta * float(k);
+      points[k] = center + u * (radius * cosf(a)) + v * (radius * sinf(a));
+      tangents[k] = u * -sinf(a) + v * cosf(a);
+    }
+    if (closed)
+    {
+      points[count] = points[0];
+      tangents[count] = tangents[0];
+    }
+
+    const float handle = 4.0f / 3.0f * tanf(delta * 0.25f) * radius;
+    for (int k = 0; k < count; ++k)
+    {
+      links[k].control_points(points[k], points[k] + tangents[k] * handle, points[k + 1] - tangents[k + 1] * handle, points[k + 1]);
+    }
+  }
+
+  BezierStyle MakeStyle(float width, XMFLOAT4 c0, XMFLOAT4 c1, float spacing = 0.0f, float dash = 0.0f,
+    CurveCap front = CurveCap::Round, CurveCap back = CurveCap::Round, unsigned resolution = 32u,
+    CurveJoin join = CurveJoin::Round)
   {
     BezierStyle style;
-    style.C0 = ribbon_color0;
-    style.C1 = ribbon_color1;
-    scene.ribbon = CatmullRomSpline(renderer, style, RibbonLinks + 1);
+    style.width = width;
+    style.C0 = c0;
+    style.C1 = c1;
+    style.spacing = spacing;
+    style.dash_length = dash;
+    style.cap_front = front;
+    style.cap_back = back;
+    style.resolution = resolution;
+    style.join = join;
+    return style;
   }
 
+  // --- scene placement ---------------------------------------------------------------------
+  XMFLOAT3 ObeliskBase(int i)
   {
-    BezierStyle style;
-    style.C0 = hermite_color0;
-    style.C1 = hermite_color1;
-    scene.hermite = HermiteSpline(renderer, style, HermiteLinks + 1);
+    const float a = (75.0f + 90.0f * float(i)) * Pi / 180.0f;
+    const float x = 12.5f * cosf(a);
+    const float z = 12.5f * sinf(a);
+    return { x, TerrainHeight(x, z) - 0.5f, z };
   }
 
-  // The cap gallery is the one group whose caps are NOT driven by the style panel: each stroke
-  // keeps the pair it was built with, so all five caps stay on screen at once while you change
-  // everything else around them.
-  for (int i = 0; i < GalleryCount; ++i)
+  constexpr float ObeliskHeight = 6.0f;
+
+  XMFLOAT3 ObeliskTop(int i)
   {
-    BezierData stroke = Linear(
-      { 0.0f, GalleryBottom, 0.0f },
-      { 0.0f, GalleryTop, 0.0f });
-    stroke.style.cap_front = GalleryFrontCap(i);
-    stroke.style.cap_back = GalleryBackCap(i);
-    stroke.style.resolution = GalleryResolution;
-    stroke.style.C0 = { 1.0f, 1.0f, 1.0f, gallery_color.w };
-    stroke.style.C1 = gallery_color;
-    scene.gallery[i] = renderer.Add(stroke);
-  }
-}
-
-void App::AddTestCurves(CurveRenderer& renderer, Scene& scene)
-{
-  const auto cap_front = static_cast<CurveCap>(style_cap_front);
-  const auto cap_back = static_cast<CurveCap>(link_caps ? style_cap_front : style_cap_back);
-  const int degree = test_degree_index + 1;
-  const auto resolution = static_cast<unsigned>(test_resolution);
-
-  scene.test_curves.reserve(scene.test_curves.size() + size_t(test_count));
-
-  for (int i = 0; i < test_count; ++i)
-  {
-    TestCurve test;
-    test.degree = degree;
-    test.resolution = resolution;
-
-    // An origin somewhere in the box, then each control point scattered around it. Picking every
-    // control point independently across the whole box instead would give curves that all span the
-    // full extent and sit on top of each other; scattering keeps them local and lets a batch read
-    // as many separate strokes, which is what makes an overdraw difference visible.
-    const XMFLOAT3 origin = RandInBox(test_range);
-    const XMFLOAT3 spread = { test_spread, test_spread, test_spread };
-    for (int k = 0; k <= degree; ++k)
-    {
-      test.P[k] = Add3(origin, RandInBox(spread));
-    }
-
-    // Control points go in already offset into this renderer's column; PoseScene() keeps them
-    // there afterwards from the LOCAL copy held in TestCurve::P.
-    const float dx = scene.x_offset;
-    XMFLOAT3 placed[4];
-    for (int k = 0; k <= degree; ++k)
-    {
-      placed[k] = { test.P[k].x + dx, test.P[k].y, test.P[k].z };
-    }
-
-    BezierData data;
-    switch (degree)
-    {
-    case 1: data = Linear(placed[0], placed[1]); break;
-    case 2: data = Quadratic(placed[0], placed[1], placed[2]); break;
-    default: data = Cubic(placed[0], placed[1], placed[2], placed[3]); break;
-    }
-
-    // The properties are the ones the window is showing - only the geometry is random. Everything
-    // here is what ApplyStyle() would push anyway, set at Add time so a curve looks right on the
-    // frame it appears rather than on the next one - and, in the BezierRenderer, lands straight in
-    // the backend the current pattern picks instead of being moved there on the next Draw().
-    data.style.width = style_width;
-    data.style.cap_front = cap_front;
-    data.style.cap_back = cap_back;
-    data.style.join = static_cast<CurveJoin>(style_join);
-    data.style.dash_length = style_dash_length;
-    data.style.spacing = style_patterned ? style_spacing : 0.0f;
-    data.style.min_height = style_min_height;
-    data.style.max_height = style_max_height;
-    data.style.resolution = resolution;
-
-    // Hue by index so a batch is legible as separate strokes rather than one solid mass. Test
-    // curves are not repainted afterwards, so this is the only place their colour is decided.
-    const XMFLOAT4 color = HueColor(float(scene.test_curves.size()) * 0.137f);
-    data.style.C0 = color;
-    data.style.C1 = HueColor(float(scene.test_curves.size()) * 0.137f + 0.5f);
-
-    test.handle = renderer.Add(data);
-    // Moved, not copied: the handle owns the curve and is move-only.
-    scene.test_curves.push_back(std::move(test));
+    return ObeliskBase(i) + XMFLOAT3{ 0.0f, ObeliskHeight + 0.45f, 0.0f };
   }
 
-  // The new handles still have to be picked up by both per-frame passes: PoseScene() so they track
-  // their column, ApplyStyle() so a later style change reaches them.
-  scene_dirty = true;
-  style_dirty = true;
-}
-
-void App::RemoveTestCurves(Scene& scene, size_t count)
-{
-  const size_t keep = scene.test_curves.size() - std::min(count, scene.test_curves.size());
-  // Each erased TestCurve destroys its handle, which removes the curve from the renderer. The
-  // renderer only marks it and compacts on its next UpdateBuffers, so erasing a whole batch costs
-  // one pass there, not one per curve. The survivors need no re-pose or re-style: their data is
-  // untouched, only their index shifts, and the handles are told about that by the renderer.
-  scene.test_curves.erase(scene.test_curves.begin() + std::ptrdiff_t(keep), scene.test_curves.end());
-}
-
-void App::PoseScene(Scene& scene)
-{
-  const float dx = scene.x_offset;
-  const float t = animation_time;
-
-  // --- wave: one cubic swinging its two inner control points sideways -------------------------
+  XMFLOAT3 CoasterPoint(float a)
   {
-    const float swing = sinf(t * 2.0f);
-
-    XMFLOAT4 c0 = wave_color0;
-    XMFLOAT4 c1 = wave_color1;
-    if (animate_colors)
-    {
-      c0 = { 1.0f - t / 10.0f, 0.5f, 1.0f, wave_color0.w };
-      c1 = { 0.2f, 1.0f, 0.5f - t / 10.0f, wave_color1.w };
-    }
-
-    scene.wave.control_points(
-      { dx - 3.0f, WaveY - 0.5f, 0.0f },
-      { dx - 1.5f + swing, WaveY + 0.7f, 0.0f },
-      { dx + 1.5f + swing, WaveY + 0.7f, 0.0f },
-      { dx + 3.0f, WaveY - 0.5f, 0.0f });
-    scene.wave.colors(c0, c1);
+    const float r = 7.6f + 0.9f * sinf(3.0f * a);
+    const float x = r * cosf(a);
+    const float z = r * 0.85f * sinf(a);
+    const float y = -0.4f + 1.6f * sinf(2.0f * a + 0.5f) + 0.8f * sinf(5.0f * a);
+    return { x, std::max(y, GroundHeight(x, z) + 0.7f), z };
   }
 
-  // --- petals: quadratic arcs spaced around a rotating ring, with gaps between them ------------
-  for (int i = 0; i < PetalCount; ++i)
+  XMFLOAT3 CoasterSide(float a)
   {
-    const float angle = t + (Tau * i / PetalCount);
-    const float nextAngle = angle + (Tau / (2.0f * PetalCount));
-    const float midAngle = (angle + nextAngle) * 0.5f;
-    const float controlRadius = PetalRadius * 1.5f;
-
-    const XMFLOAT3 P0 = { dx + PetalRadius * cosf(angle), PetalCenterY + PetalRadius * sinf(angle), 0.0f };
-    const XMFLOAT3 P2 = { dx + PetalRadius * cosf(nextAngle), PetalCenterY + PetalRadius * sinf(nextAngle), 0.0f };
-    const XMFLOAT3 P1 = { dx + controlRadius * cosf(midAngle), PetalCenterY + controlRadius * sinf(midAngle), 0.0f };
-
-    const XMFLOAT4 color = animate_colors ? HueColor(angle / Tau, petal_color.w) : petal_color;
-
-    scene.petals[i].control_points(P0, P1, P2);
-    scene.petals[i].colors(color, color);
+    const XMFLOAT3 d = CoasterPoint(a + 0.002f) - CoasterPoint(a - 0.002f);
+    return Normalize(XMFLOAT3{ -d.z, 0.0f, d.x });
   }
 
-  // --- ribbon: a Catmull-Rom spline along a 3D path --------------------------------------------
-  // Six cubic links through seven points, merged into ONE stroke: one arc length, one pattern grid,
-  // caps only at the two far ends.
+  const XMFLOAT3 DnaBase = { 10.5f, 0.0f, 6.0f };
+  constexpr float DnaHeight = 8.5f;
+  constexpr float DnaRadius = 1.1f;
+  constexpr float DnaTurns = 2.3f;
+
+  const XMFLOAT3 TorusCenter = { -10.5f, 0.0f, -3.5f };
+  constexpr float TorusMajor = 1.8f;
+  constexpr float TorusMinor = 0.5f;
+
+  struct MoonInfo
   {
-    const float step = 1.0f / RibbonLinks;
-
-    // Defined outside [0, 1] too, which is what lets the end points come from the path itself
-    // rather than being mirrored.
-    auto ribbon_point = [&](float s)
-    {
-      return XMFLOAT3{
-        dx + (s * 2.0f - 1.0f) * RibbonHalfSpan,
-        RibbonY + RibbonAmplitude * sinf(s * Tau * 1.5f + t * 1.3f),
-        RibbonDepth * cosf(s * Tau + t * 0.7f)
-      };
-    };
-
-    auto& ribbon = scene.ribbon;
-    for (size_t k = 0; k < ribbon.size(); ++k)
-    {
-      ribbon[k] = ribbon_point(float(k) * step);
-    }
-    ribbon.FrontEnd() = ribbon_point(-step);
-    ribbon.BackEnd() = ribbon_point(float(ribbon.size()) * step);
-    ribbon.Update();
-
-    if (animate_colors)
-    {
-      XMFLOAT4 colors[RibbonLinks + 1];
-      for (int k = 0; k <= RibbonLinks; ++k)
-      {
-        colors[k] = HueColor(float(k) * step + t * 0.15f, ribbon_color0.w + (ribbon_color1.w - ribbon_color0.w) * float(k) * step);
-      }
-      ribbon.PointColors(colors);
-    }
-    else
-    {
-      ribbon.Colors(ribbon_color0, ribbon_color1);
-    }
-  }
-
-  // --- hermite: a closed loop whose tangents twist and stretch --------------------------------
-  // Knots sit on a breathing circle. Tangents along the circle, r * dtheta long, give a round loop;
-  // twisting them makes a pinwheel, shrinking them flattens it to a polygon.
-  {
-    auto& hermite = scene.hermite;
-    const size_t links = hermite.size() - 1;
-    const float step = Tau / float(links);
-    const float twist = 1.2f * sinf(t * 0.8f);
-    const float stretch = 1.0f + 0.8f * sinf(t * 1.3f);
-    const float ct = cosf(twist);
-    const float st = sinf(twist);
-
-    for (size_t k = 0; k < links; ++k)
-    {
-      const float angle = float(k) * step + t * 0.4f;
-      const float r = HermiteRadius * (1.0f + 0.2f * sinf(3.0f * angle + t * 1.1f));
-      const float tx = -sinf(angle) * r * step * stretch;
-      const float ty = cosf(angle) * r * step * stretch;
-
-      hermite[k].position = { dx + r * cosf(angle), PetalCenterY + r * sinf(angle), 0.0f };
-      hermite[k].tangent = { tx * ct - ty * st, tx * st + ty * ct, 0.0f };
-    }
-    hermite[links] = hermite[0]; // closes the loop exactly
-    hermite.Update();
-
-    if (animate_colors)
-    {
-      XMFLOAT4 colors[HermiteLinks + 1];
-      for (int k = 0; k < HermiteLinks; ++k)
-      {
-        colors[k] = HueColor(2.0f * float(k) / HermiteLinks - t * 0.2f, hermite_color0.w); // one full hue period around
-      }
-      colors[HermiteLinks] = colors[0];
-      hermite.PointColors(colors);
-    }
-    else
-    {
-      hermite.Colors(hermite_color0, hermite_color1);
-    }
-  }
-
-  // --- cap gallery: five straight strokes, one per cap pair ------------------------------------
-  // Static apart from following x_offset. The front (P0) end is white so it is obvious which cap
-  // is which way round.
-  for (int i = 0; i < GalleryCount; ++i)
-  {
-    const float x = dx + (i - (GalleryCount - 1) * 0.5f) * GalleryStride;
-
-    scene.gallery[i].control_points(
-      { x, GalleryBottom, 0.0f },
-      { x, GalleryTop, 0.0f });
-
-    const XMFLOAT4 back = animate_colors ? HueColor(float(i) / GalleryCount + t * 0.1f, gallery_color.w) : gallery_color;
-    scene.gallery[i].colors({ 1.0f, 1.0f, 1.0f, gallery_color.w }, back);
-  }
-
-  // --- test curves: static geometry, slid into this copy's column ------------------------------
-  // They do not animate; the only thing this loop does is re-apply x_offset, so that a test batch
-  // added while both renderers were visible stays in its own column after one is unticked and the
-  // layout re-centres. Colours were fixed at Add time and are left alone.
-  for (auto& test : scene.test_curves)
-  {
-    XMFLOAT3 placed[4];
-    for (int k = 0; k <= test.degree; ++k)
-    {
-      placed[k] = { test.P[k].x + dx, test.P[k].y, test.P[k].z };
-    }
-
-    switch (test.degree)
-    {
-    case 1: test.handle.control_points(placed[0], placed[1]); break;
-    case 2: test.handle.control_points(placed[0], placed[1], placed[2]); break;
-    default: test.handle.control_points(placed[0], placed[1], placed[2], placed[3]); break;
-    }
-  }
-}
-
-void App::ApplyStyle(Scene& scene)
-{
-  const auto cap_front = static_cast<CurveCap>(style_cap_front);
-  const auto cap_back = static_cast<CurveCap>(link_caps ? style_cap_front : style_cap_back);
-
-  // `target`, not `curve` - a local called `curve` would shadow nothing here today, but it does
-  // in any translation unit that also names the enums through a namespace, so keep the habit.
-  // By reference: handles own their curve, so a by-value copy is not just wasteful - it does not exist.
-  // Generic so it takes a CatmullRomSpline as well, whose setters mirror BezierCurve's.
-  auto apply = [&](auto& target, bool keep_own_caps, unsigned resolution)
-  {
-    target.Width(style_width);
-    if (!keep_own_caps)
-    {
-      target.Cap(cap_front, cap_back);
-    }
-    target.Join(static_cast<CurveJoin>(style_join));
-    // Spacing and dash length decide the backend in the BezierRenderer (KindOf in BezierData.h): spacing
-    // 0 is solid, dash length 0 dots, both set dashes. The setters only record the values; a curve
-    // whose kind changed moves on the renderer's next Draw(). The line renderer ignores both.
-    target.DashLength(style_dash_length);
-    target.Spacing(style_patterned ? style_spacing : 0.0f);
-    target.HeightRange(style_min_height, style_max_height);
-
-    // Resolution changes force a layout rebuild, so only push it when it actually moved rather
-    // than every frame.
-    if (target.Resolution() != resolution)
-    {
-      target.Resolution(resolution);
-    }
+    float radius;
+    float speed;
+    float phase;
+    float pitch;
+    float roll;
+    float size;
+    XMFLOAT4 color;
   };
 
-  const auto resolution = static_cast<unsigned>(style_resolution);
+  const MoonInfo Moons[] = {
+    { 5.3f, 0.55f, 0.0f, 0.95f, 0.20f, 0.35f, { 0.55f, 0.85f, 1.00f, 1.0f } },
+    { 6.1f, 0.38f, 2.1f, -0.45f, 0.60f, 0.45f, { 1.00f, 0.55f, 0.20f, 1.0f } },
+    { 6.9f, 0.27f, 4.0f, 0.30f, -0.75f, 0.30f, { 0.55f, 1.00f, 0.70f, 1.0f } },
+  };
 
-  apply(scene.wave, false, resolution);
-  for (auto& petal : scene.petals)
+  struct MoonFrame
   {
-    apply(petal, false, resolution);
+    XMFLOAT3 u;
+    XMFLOAT3 v;
+  };
+
+  MoonFrame MoonBasis(const MoonInfo& m)
+  {
+    const XMMATRIX rot = XMMatrixRotationRollPitchYaw(m.pitch, 0.0f, m.roll);
+    return { TransformDir({ 1.0f, 0.0f, 0.0f }, rot), TransformDir({ 0.0f, 0.0f, 1.0f }, rot) };
   }
-  apply(scene.ribbon, false, resolution);
-  apply(scene.hermite, false, resolution);
 
-  // The gallery keeps the cap pair it was built with - that is the whole point of it - and stays
-  // at two points, because a straight line gains nothing from subdivision.
-  for (auto& stroke : scene.gallery)
+  struct GlossySphere
   {
-    apply(stroke, true, GalleryResolution);
+    float x, z, r;
+    XMFLOAT4 color;
+    float gloss;
+    float spec;
+  };
+
+  const GlossySphere Spheres[] = {
+    { -9.0f, 8.0f, 1.25f, { 0.85f, 0.86f, 0.90f, 1.0f }, 160.0f, 1.0f },
+    { -7.0f, 9.6f, 0.80f, { 1.00f, 0.72f, 0.20f, 1.0f }, 90.0f, 0.8f },
+    { -10.8f, 10.0f, 0.70f, { 0.85f, 0.10f, 0.20f, 1.0f }, 60.0f, 0.6f },
+    { -6.6f, 7.0f, 0.55f, { 0.10f, 0.75f, 0.45f, 1.0f }, 60.0f, 0.6f },
+    { -11.2f, 6.8f, 0.90f, { 0.20f, 0.30f, 0.95f, 1.0f }, 120.0f, 0.7f },
+    { -8.2f, 11.0f, 0.45f, { 0.75f, 0.30f, 0.95f, 1.0f }, 60.0f, 0.6f },
+  };
+
+  // --- shaders -----------------------------------------------------------------------------
+  const char* const ShaderSource = R"HLSL(
+cbuffer FrameCB : register(b0)
+{
+  row_major float4x4 VP;
+  row_major float4x4 InvVP;
+  float4 Eye;
+  float4 SunDir;
+  float4 Misc; // x time, y water level
+};
+
+cbuffer ObjectCB : register(b1)
+{
+  row_major float4x4 World;
+  float4 Color;
+  float4 Color2;
+  float4 Params; // x material, y gloss, z specular
+};
+
+struct VSIn
+{
+  float3 pos : POSITION;
+  float3 nrm : NORMAL;
+};
+
+struct VSOut
+{
+  float4 pos : SV_Position;
+  float3 wpos : TEXCOORD0;
+  float3 nrm : TEXCOORD1;
+  float3 lpos : TEXCOORD2;
+};
+
+float Hash3(float3 p)
+{
+  p = frac(p * 0.3183099 + 0.1);
+  p *= 17.0;
+  return frac(p.x * p.y * p.z * (p.x + p.y + p.z));
+}
+
+float3 Sky(float3 d)
+{
+  float3 sun = normalize(SunDir.xyz);
+  float up = d.y;
+  float3 zenith = float3(0.03, 0.04, 0.14);
+  float3 mid = float3(0.22, 0.12, 0.34);
+  float3 horizon = float3(1.25, 0.50, 0.28);
+  float3 col;
+  if (up > 0.0)
+    col = lerp(lerp(horizon, mid, saturate(up * 4.0)), zenith, saturate(up * 1.8 - 0.25));
+  else
+    col = lerp(horizon * 0.55, float3(0.05, 0.04, 0.07), saturate(-up * 5.0));
+
+  float s = saturate(dot(d, sun));
+  col += float3(1.0, 0.45, 0.18) * pow(s, 8.0) * 0.7;
+  col += float3(1.0, 0.80, 0.55) * pow(s, 300.0) * 1.5;
+  col += float3(4.0, 3.2, 2.2) * smoothstep(0.99935, 0.9996, s);
+
+  if (up > 0.04)
+  {
+    float3 cell = floor(d * 320.0);
+    float h = Hash3(cell);
+    float twinkle = 0.6 + 0.4 * sin(Misc.x * 3.0 + h * 100.0);
+    col += step(0.9965, h) * saturate(up * 3.0 - 0.1) * twinkle * 0.9;
+  }
+  return col;
+}
+
+float3 Tone(float3 c)
+{
+  return 1.0 - exp(-c * 1.15);
+}
+
+VSOut MeshVS(VSIn i)
+{
+  VSOut o;
+  float4 w = mul(float4(i.pos, 1.0), World);
+  o.wpos = w.xyz;
+  o.nrm = mul(float4(i.nrm, 0.0), World).xyz;
+  o.lpos = i.pos;
+  o.pos = mul(w, VP);
+  return o;
+}
+
+float4 MeshPS(VSOut i) : SV_Target
+{
+  float3 n = normalize(i.nrm);
+  float3 V = normalize(Eye.xyz - i.wpos);
+  float3 L = normalize(SunDir.xyz);
+  uint kind = (uint)Params.x;
+  float time = Misc.x;
+  float waterLevel = Misc.y;
+
+  float3 albedo = Color.rgb;
+  float gloss = Params.y;
+  float spec = Params.z;
+  float alpha = Color.a;
+  float3 emissive = 0;
+
+  if (kind == 0)
+  {
+    float y = i.wpos.y;
+    float slope = 1.0 - n.y;
+    float3 sand = float3(0.55, 0.45, 0.32);
+    float3 grass = float3(0.14, 0.24, 0.12);
+    float3 rock = float3(0.28, 0.24, 0.23);
+    float3 snow = float3(0.92, 0.94, 1.0);
+    albedo = lerp(sand, grass, smoothstep(waterLevel + 0.15, waterLevel + 0.7, y));
+    albedo = lerp(albedo, rock, smoothstep(0.22, 0.42, slope));
+    albedo = lerp(albedo, snow, smoothstep(5.5, 7.0, y) * saturate(n.y * 1.6 - 0.4));
+
+    float level = y * 1.25;
+    float contour = abs(frac(level + 0.5) - 0.5);
+    float contourLine = 1.0 - smoothstep(0.0, fwidth(level) * 1.5, contour);
+    emissive += contourLine * float3(0.15, 0.55, 0.85) * 0.35 * step(waterLevel + 0.05, y);
+  }
+  else if (kind == 2)
+  {
+    float3 lp = normalize(i.lpos);
+    float lat = lp.y;
+    float lon = atan2(lp.z, lp.x) + time * 0.08;
+    float band = 0.5 + 0.5 * sin(lat * 19.0 + sin(lat * 7.0 + lon * 2.0) * 1.3);
+    albedo = lerp(Color.rgb, Color2.rgb, band);
+    float dl = lon - 1.0;
+    dl = dl - 6.2831853 * round(dl / 6.2831853);
+    float spot = exp(-((lat + 0.32) * (lat + 0.32) * 90.0 + dl * dl * 6.0));
+    albedo = lerp(albedo, float3(0.85, 0.32, 0.18), spot);
+    emissive += float3(0.35, 0.45, 1.0) * pow(1.0 - saturate(dot(n, V)), 3.0) * 0.7;
+  }
+  else if (kind == 3)
+  {
+    float2 p = i.wpos.xz;
+    n = normalize(float3(
+      sin(p.x * 1.3 + time * 1.2) * 0.035 + sin(p.y * 2.7 - time * 1.7) * 0.02,
+      1.0,
+      cos(p.y * 1.7 + time * 0.9) * 0.035 + cos(p.x * 2.3 + time * 1.4) * 0.02));
+  }
+  else if (kind == 4)
+  {
+    emissive += Color.rgb * 1.4;
   }
 
-  // Test curves follow every style control EXCEPT resolution: each keeps the one it was added with,
-  // so a scene can mix a batch at 8 points with a batch at 400 and the Timings table shows what that
-  // costs. The Stroke section's Resolution slider only ever moves the example groups.
-  for (auto& test : scene.test_curves)
+  float ndl = saturate(dot(n, L));
+  float3 H = normalize(L + V);
+  float3 sunColor = float3(1.0, 0.72, 0.50) * 1.2;
+  float3 fillDir = normalize(float3(-0.3, 0.8, 0.5));
+  float3 fillColor = float3(0.20, 0.24, 0.42);
+  float3 ambient = lerp(float3(0.08, 0.05, 0.09), float3(0.10, 0.12, 0.26), n.y * 0.5 + 0.5);
+  float fres = pow(1.0 - saturate(dot(n, V)), 5.0);
+  float3 refl = Sky(reflect(-V, n));
+
+  float3 col = albedo * (ambient + sunColor * ndl + fillColor * saturate(dot(n, fillDir)));
+  col += sunColor * spec * pow(saturate(dot(n, H)), gloss) * step(0.0, dot(n, L));
+  col += refl * lerp(0.04, 1.0, fres) * spec;
+  col += emissive;
+
+  if (kind == 3)
   {
-    apply(test.handle, false, test.resolution);
+    alpha = lerp(0.72, 0.97, fres);
+  }
+
+  float dist = length(Eye.xyz - i.wpos);
+  float fog = 1.0 - exp(-dist * dist * 0.00018);
+  float3 fogColor = Sky(normalize(float3(-V.x, 0.03, -V.z)));
+  col = lerp(col, fogColor, saturate(fog) * 0.85);
+
+  return float4(Tone(col), alpha);
+}
+
+struct SkyOut
+{
+  float4 pos : SV_Position;
+  float2 ndc : TEXCOORD0;
+};
+
+SkyOut SkyVS(uint id : SV_VertexID)
+{
+  SkyOut o;
+  float2 uv = float2((id << 1) & 2, id & 2);
+  o.pos = float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+  o.ndc = o.pos.xy;
+  return o;
+}
+
+float4 SkyPS(SkyOut i) : SV_Target
+{
+  float4 p = mul(float4(i.ndc, 1.0, 1.0), InvVP);
+  float3 d = normalize(p.xyz / p.w - Eye.xyz);
+  return float4(Tone(Sky(d)), 1.0);
+}
+)HLSL";
+
+  winrt::com_ptr<ID3DBlob> CompileShader(const char* entry, const char* target)
+  {
+    winrt::com_ptr<ID3DBlob> code;
+    winrt::com_ptr<ID3DBlob> errors;
+    const HRESULT hr = D3DCompile(ShaderSource, strlen(ShaderSource), "ShowcaseShaders", nullptr, nullptr,
+      entry, target, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, code.put(), errors.put());
+    if (FAILED(hr))
+    {
+      const std::string message = errors ? std::string(static_cast<const char*>(errors->GetBufferPointer()), errors->GetBufferSize()) : "unknown error";
+      OutputDebugStringA(message.c_str());
+      std::cerr << message << std::endl;
+      throw std::runtime_error(message);
+    }
+    return code;
+  }
+
+  struct MeshVertex
+  {
+    XMFLOAT3 position;
+    XMFLOAT3 normal;
+  };
+
+  struct FrameConstants
+  {
+    XMFLOAT4X4 VP;
+    XMFLOAT4X4 InvVP;
+    XMFLOAT4 Eye;
+    XMFLOAT4 SunDir;
+    XMFLOAT4 Misc;
+  };
+
+  struct ObjectConstants
+  {
+    XMFLOAT4X4 World;
+    XMFLOAT4 Color;
+    XMFLOAT4 Color2;
+    XMFLOAT4 Params;
+  };
+
+  void BuildSphere(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices, int stacks, int slices)
+  {
+    for (int i = 0; i <= stacks; ++i)
+    {
+      const float phi = Pi * float(i) / float(stacks);
+      for (int j = 0; j <= slices; ++j)
+      {
+        const float theta = Tau * float(j) / float(slices);
+        const XMFLOAT3 p = { sinf(phi) * cosf(theta), cosf(phi), sinf(phi) * sinf(theta) };
+        vertices.push_back({ p, p });
+      }
+    }
+    for (int i = 0; i < stacks; ++i)
+    {
+      for (int j = 0; j < slices; ++j)
+      {
+        const uint32_t a = uint32_t(i * (slices + 1) + j);
+        const uint32_t b = a + uint32_t(slices + 1);
+        indices.insert(indices.end(), { a, b, a + 1, a + 1, b, b + 1 });
+      }
+    }
+  }
+
+  void BuildTorus(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices, float major, float minor, int rings, int sides)
+  {
+    for (int i = 0; i <= rings; ++i)
+    {
+      const float u = Tau * float(i) / float(rings);
+      for (int j = 0; j <= sides; ++j)
+      {
+        const float v = Tau * float(j) / float(sides);
+        const XMFLOAT3 n = { cosf(v) * cosf(u), sinf(v), cosf(v) * sinf(u) };
+        const XMFLOAT3 p = { (major + minor * cosf(v)) * cosf(u), minor * sinf(v), (major + minor * cosf(v)) * sinf(u) };
+        vertices.push_back({ p, n });
+      }
+    }
+    for (int i = 0; i < rings; ++i)
+    {
+      for (int j = 0; j < sides; ++j)
+      {
+        const uint32_t a = uint32_t(i * (sides + 1) + j);
+        const uint32_t b = a + uint32_t(sides + 1);
+        indices.insert(indices.end(), { a, b, a + 1, a + 1, b, b + 1 });
+      }
+    }
+  }
+
+  void BuildBox(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices)
+  {
+    const XMFLOAT3 normals[6] = { { 1, 0, 0 }, { -1, 0, 0 }, { 0, 1, 0 }, { 0, -1, 0 }, { 0, 0, 1 }, { 0, 0, -1 } };
+    for (const auto& n : normals)
+    {
+      const XMFLOAT3 t = fabsf(n.y) > 0.5f ? XMFLOAT3{ 1, 0, 0 } : XMFLOAT3{ 0, 1, 0 };
+      const XMFLOAT3 b = { n.y * t.z - n.z * t.y, n.z * t.x - n.x * t.z, n.x * t.y - n.y * t.x };
+      const uint32_t base = uint32_t(vertices.size());
+      for (int k = 0; k < 4; ++k)
+      {
+        const float su = (k & 1) ? 0.5f : -0.5f;
+        const float sv = (k & 2) ? 0.5f : -0.5f;
+        vertices.push_back({ n * 0.5f + t * su + b * sv, n });
+      }
+      indices.insert(indices.end(), { base, base + 1, base + 2, base + 2, base + 1, base + 3 });
+    }
+  }
+
+  void BuildTerrain(std::vector<MeshVertex>& vertices, std::vector<uint32_t>& indices)
+  {
+    const int n = TerrainCells;
+    const float step = 2.0f * TerrainExtent / float(n);
+    const float e = step * 0.5f;
+    for (int i = 0; i <= n; ++i)
+    {
+      for (int j = 0; j <= n; ++j)
+      {
+        const float x = -TerrainExtent + step * float(j);
+        const float z = -TerrainExtent + step * float(i);
+        const float dx = TerrainHeight(x + e, z) - TerrainHeight(x - e, z);
+        const float dz = TerrainHeight(x, z + e) - TerrainHeight(x, z - e);
+        vertices.push_back({ { x, TerrainHeight(x, z), z }, Normalize(XMFLOAT3{ -dx, 2.0f * e, -dz }) });
+      }
+    }
+    for (int i = 0; i < n; ++i)
+    {
+      for (int j = 0; j < n; ++j)
+      {
+        const uint32_t a = uint32_t(i * (n + 1) + j);
+        const uint32_t b = a + uint32_t(n + 1);
+        indices.insert(indices.end(), { a, b, a + 1, a + 1, b, b + 1 });
+      }
+    }
   }
 }
+
+// --- mesh pass ---------------------------------------------------------------------------------
+
+void App::CreateMeshPass()
+{
+  auto* d3d = device->get();
+
+  auto upload = [&](GpuMesh& mesh, const std::vector<MeshVertex>& vertices, const std::vector<uint32_t>& indices)
+  {
+    D3D11_BUFFER_DESC desc = {};
+    desc.Usage = D3D11_USAGE_IMMUTABLE;
+    desc.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+    desc.ByteWidth = UINT(vertices.size() * sizeof(MeshVertex));
+    D3D11_SUBRESOURCE_DATA data = { vertices.data() };
+    winrt::check_hresult(d3d->CreateBuffer(&desc, &data, mesh.vertices.put()));
+
+    desc.BindFlags = D3D11_BIND_INDEX_BUFFER;
+    desc.ByteWidth = UINT(indices.size() * sizeof(uint32_t));
+    data.pSysMem = indices.data();
+    winrt::check_hresult(d3d->CreateBuffer(&desc, &data, mesh.indices.put()));
+    mesh.index_count = UINT(indices.size());
+  };
+
+  {
+    std::vector<MeshVertex> v;
+    std::vector<uint32_t> i;
+    BuildTerrain(v, i);
+    upload(terrain_mesh, v, i);
+  }
+  {
+    const float s = TerrainExtent;
+    std::vector<MeshVertex> v = {
+      { { -s, WaterLevel, -s }, { 0, 1, 0 } },
+      { { s, WaterLevel, -s }, { 0, 1, 0 } },
+      { { -s, WaterLevel, s }, { 0, 1, 0 } },
+      { { s, WaterLevel, s }, { 0, 1, 0 } },
+    };
+    std::vector<uint32_t> i = { 0, 2, 1, 1, 2, 3 };
+    upload(water_mesh, v, i);
+  }
+  {
+    std::vector<MeshVertex> v;
+    std::vector<uint32_t> i;
+    BuildSphere(v, i, 48, 96);
+    upload(sphere_mesh, v, i);
+  }
+  {
+    std::vector<MeshVertex> v;
+    std::vector<uint32_t> i;
+    BuildTorus(v, i, TorusMajor, TorusMinor, 128, 40);
+    upload(torus_mesh, v, i);
+  }
+  {
+    std::vector<MeshVertex> v;
+    std::vector<uint32_t> i;
+    BuildBox(v, i);
+    upload(box_mesh, v, i);
+  }
+
+  auto vs_code = CompileShader("MeshVS", "vs_5_0");
+  auto ps_code = CompileShader("MeshPS", "ps_5_0");
+  auto sky_vs_code = CompileShader("SkyVS", "vs_5_0");
+  auto sky_ps_code = CompileShader("SkyPS", "ps_5_0");
+
+  winrt::check_hresult(d3d->CreateVertexShader(vs_code->GetBufferPointer(), vs_code->GetBufferSize(), nullptr, mesh_vs.put()));
+  winrt::check_hresult(d3d->CreatePixelShader(ps_code->GetBufferPointer(), ps_code->GetBufferSize(), nullptr, mesh_ps.put()));
+  winrt::check_hresult(d3d->CreateVertexShader(sky_vs_code->GetBufferPointer(), sky_vs_code->GetBufferSize(), nullptr, sky_vs.put()));
+  winrt::check_hresult(d3d->CreatePixelShader(sky_ps_code->GetBufferPointer(), sky_ps_code->GetBufferSize(), nullptr, sky_ps.put()));
+
+  const D3D11_INPUT_ELEMENT_DESC layout[] = {
+    { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+  };
+  winrt::check_hresult(d3d->CreateInputLayout(layout, 2, vs_code->GetBufferPointer(), vs_code->GetBufferSize(), mesh_layout.put()));
+
+  {
+    D3D11_BUFFER_DESC desc = {};
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    desc.ByteWidth = sizeof(FrameConstants);
+    winrt::check_hresult(d3d->CreateBuffer(&desc, nullptr, frame_constants.put()));
+    desc.ByteWidth = sizeof(ObjectConstants);
+    winrt::check_hresult(d3d->CreateBuffer(&desc, nullptr, object_constants.put()));
+  }
+
+  {
+    D3D11_RASTERIZER_DESC desc = {};
+    desc.FillMode = D3D11_FILL_SOLID;
+    desc.CullMode = D3D11_CULL_NONE;
+    desc.DepthClipEnable = TRUE;
+    winrt::check_hresult(d3d->CreateRasterizerState(&desc, raster_state.put()));
+  }
+
+  {
+    D3D11_DEPTH_STENCIL_DESC desc = {};
+    desc.DepthEnable = FALSE;
+    desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+    desc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+    winrt::check_hresult(d3d->CreateDepthStencilState(&desc, depth_off.put()));
+    desc.DepthEnable = TRUE;
+    desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ALL;
+    desc.DepthFunc = D3D11_COMPARISON_GREATER;
+    winrt::check_hresult(d3d->CreateDepthStencilState(&desc, depth_on.put()));
+  }
+
+  {
+    D3D11_BLEND_DESC desc = {};
+    desc.RenderTarget[0].BlendEnable = FALSE;
+    desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    winrt::check_hresult(d3d->CreateBlendState(&desc, blend_opaque.put()));
+
+    auto& rt = desc.RenderTarget[0];
+    rt.BlendEnable = TRUE;
+    rt.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+    rt.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+    rt.BlendOp = D3D11_BLEND_OP_ADD;
+    rt.SrcBlendAlpha = D3D11_BLEND_ONE;
+    rt.DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+    rt.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+    winrt::check_hresult(d3d->CreateBlendState(&desc, blend_alpha.put()));
+  }
+}
+
+void App::DrawMesh(const GpuMesh& mesh, const XMMATRIX& world, const XMFLOAT4& color, const XMFLOAT4& color2, const XMFLOAT4& params)
+{
+  auto* ctx = device->ImmediateContext()->get();
+
+  ObjectConstants constants;
+  XMStoreFloat4x4(&constants.World, world);
+  constants.Color = color;
+  constants.Color2 = color2;
+  constants.Params = params;
+  ctx->UpdateSubresource(object_constants.get(), 0, nullptr, &constants, 0, 0);
+
+  ID3D11Buffer* vb = mesh.vertices.get();
+  const UINT stride = sizeof(MeshVertex);
+  const UINT offset = 0;
+  ctx->IASetVertexBuffers(0, 1, &vb, &stride, &offset);
+  ctx->IASetIndexBuffer(mesh.indices.get(), DXGI_FORMAT_R32_UINT, 0);
+  ctx->DrawIndexed(mesh.index_count, 0, 0);
+}
+
+void App::DrawEnvironment()
+{
+  auto* ctx = device->ImmediateContext()->get();
+  const float t = animation_time;
+
+  {
+    FrameConstants frame;
+    const XMMATRIX view_proj = camera.GetViewProj();
+    XMVECTOR det;
+    XMStoreFloat4x4(&frame.VP, view_proj);
+    XMStoreFloat4x4(&frame.InvVP, XMMatrixInverse(&det, view_proj));
+    XMStoreFloat4(&frame.Eye, camera.GetEye());
+    const XMFLOAT3 sun = Normalize(SunDirection);
+    frame.SunDir = { sun.x, sun.y, sun.z, 0.0f };
+    frame.Misc = { t, WaterLevel, 0.0f, 0.0f };
+    ctx->UpdateSubresource(frame_constants.get(), 0, nullptr, &frame, 0, 0);
+  }
+
+  ID3D11Buffer* cbs[] = { frame_constants.get(), object_constants.get() };
+  ctx->VSSetConstantBuffers(0, 2, cbs);
+  ctx->PSSetConstantBuffers(0, 2, cbs);
+  ctx->HSSetShader(nullptr, nullptr, 0);
+  ctx->DSSetShader(nullptr, nullptr, 0);
+  ctx->GSSetShader(nullptr, nullptr, 0);
+  ctx->RSSetState(raster_state.get());
+  ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+  const float blend_factor[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+  ctx->OMSetDepthStencilState(depth_off.get(), 0);
+  ctx->OMSetBlendState(blend_opaque.get(), blend_factor, 0xFFFFFFFFu);
+  ctx->IASetInputLayout(nullptr);
+  ctx->VSSetShader(sky_vs.get(), nullptr, 0);
+  ctx->PSSetShader(sky_ps.get(), nullptr, 0);
+  ctx->Draw(3, 0);
+
+  if (draw_meshes)
+  {
+    ctx->OMSetDepthStencilState(depth_on.get(), 0);
+    ctx->IASetInputLayout(mesh_layout.get());
+    ctx->VSSetShader(mesh_vs.get(), nullptr, 0);
+    ctx->PSSetShader(mesh_ps.get(), nullptr, 0);
+
+    const XMFLOAT4 none = { 0, 0, 0, 0 };
+
+    DrawMesh(terrain_mesh, XMMatrixIdentity(), { 1, 1, 1, 1 }, none, { 0, 1, 0, 0 });
+
+    DrawMesh(sphere_mesh,
+      XMMatrixScaling(PlanetRadius, PlanetRadius, PlanetRadius) * XMMatrixRotationZ(0.3f) * XMMatrixTranslation(PlanetCenter.x, PlanetCenter.y, PlanetCenter.z),
+      { 0.92f, 0.72f, 0.48f, 1.0f }, { 0.55f, 0.30f, 0.30f, 1.0f }, { 2, 40, 0.25f, 0 });
+
+    for (const auto& m : Moons)
+    {
+      const MoonFrame basis = MoonBasis(m);
+      const float a = t * m.speed + m.phase;
+      const XMFLOAT3 p = PlanetCenter + basis.u * (m.radius * cosf(a)) + basis.v * (m.radius * sinf(a));
+      DrawMesh(sphere_mesh, XMMatrixScaling(m.size, m.size, m.size) * XMMatrixTranslation(p.x, p.y, p.z),
+        Scale3(m.color, 0.6f), none, { 4, 60, 0.5f, 0 });
+    }
+
+    for (const auto& s : Spheres)
+    {
+      const float y = GroundHeight(s.x, s.z) + s.r * 0.85f;
+      DrawMesh(sphere_mesh, XMMatrixScaling(s.r, s.r, s.r) * XMMatrixTranslation(s.x, y, s.z), s.color, none, { 1, s.gloss, s.spec, 0 });
+    }
+
+    {
+      const float cy = GroundHeight(TorusCenter.x, TorusCenter.z) + 3.6f;
+      const XMMATRIX world = XMMatrixRotationRollPitchYaw(0.9f + 0.25f * sinf(t * 0.3f), t * 0.35f, 0.35f) * XMMatrixTranslation(TorusCenter.x, cy, TorusCenter.z);
+      DrawMesh(torus_mesh, world, { 0.12f, 0.12f, 0.16f, 1.0f }, none, { 1, 120, 1.0f, 0 });
+    }
+
+    for (int i = 0; i < ObeliskCount; ++i)
+    {
+      const XMFLOAT3 b = ObeliskBase(i);
+      DrawMesh(box_mesh, XMMatrixScaling(0.7f, ObeliskHeight, 0.7f) * XMMatrixRotationY(float(i) * 0.7f) * XMMatrixTranslation(b.x, b.y + ObeliskHeight * 0.5f, b.z),
+        { 0.06f, 0.06f, 0.08f, 1.0f }, none, { 1, 80, 0.8f, 0 });
+      const XMFLOAT3 top = ObeliskTop(i);
+      DrawMesh(sphere_mesh, XMMatrixScaling(0.32f, 0.32f, 0.32f) * XMMatrixTranslation(top.x, top.y, top.z),
+        Scale3(HueColor(float(i) / ObeliskCount), 0.8f), none, { 4, 60, 0.3f, 0 });
+    }
+
+    for (int k = 0; k < CartCount; ++k)
+    {
+      const float a = t * 0.35f + float(k) * 0.075f;
+      const XMFLOAT3 p = CoasterPoint(a) + XMFLOAT3{ 0.0f, 0.28f, 0.0f };
+      DrawMesh(sphere_mesh, XMMatrixScaling(0.26f, 0.26f, 0.26f) * XMMatrixTranslation(p.x, p.y, p.z),
+        Scale3(HueColor(0.05f + 0.08f * float(k)), 0.7f), none, { 4, 60, 0.5f, 0 });
+    }
+
+    ctx->OMSetBlendState(blend_alpha.get(), blend_factor, 0xFFFFFFFFu);
+    DrawMesh(water_mesh, XMMatrixIdentity(), { 0.01f, 0.05f, 0.08f, 1.0f }, none, { 3, 300, 1.0f, 0 });
+  }
+
+  ctx->OMSetBlendState(nullptr, blend_factor, 0xFFFFFFFFu);
+  ctx->IASetInputLayout(nullptr);
+}
+
+// --- curves ------------------------------------------------------------------------------------
+
+BezierCurve App::AddCurve(const BezierStyle& style, bool merge)
+{
+  BezierData data;
+  data.style = style;
+  data.merge_with_previous = merge;
+  return curves->Add(data);
+}
+
+void App::BuildScene()
+{
+  orbits.reserve(MoonCount);
+  wind.reserve(WindCount);
+  aurora.reserve(AuroraCount);
+
+  // Planet rings: thin translucent solid circles, a gap for the division.
+  ring_links.reserve(RingCount * RingLinks);
+  for (int r = 0; r < RingCount; ++r)
+  {
+    const float width = 2.0f + 3.0f * Hash1(r * 7 + 1);
+    const BezierStyle style = MakeStyle(width, { 1, 1, 1, 1 }, { 1, 1, 1, 1 });
+    for (int k = 0; k < RingLinks; ++k)
+    {
+      ring_links.push_back(AddCurve(style, k > 0));
+    }
+  }
+
+  // Moon orbits as dotted closed Hermite loops, plus a solid fading trail behind each moon.
+  for (int m = 0; m < MoonCount; ++m)
+  {
+    BezierStyle style = MakeStyle(4.0f, WithAlpha(Moons[m].color, 0.55f), WithAlpha(Moons[m].color, 0.55f), 0.22f, 0.0f);
+    orbits.emplace_back(*curves, style, OrbitLinks + 1);
+  }
+  for (int m = 0; m < MoonCount; ++m)
+  {
+    const BezierStyle style = MakeStyle(7.0f, { 1, 1, 1, 0 }, { 1, 1, 1, 1 }, 0.0f, 0.0f, CurveCap::Butt, CurveCap::Round);
+    for (int k = 0; k < TrailLinks; ++k)
+    {
+      trail_links.push_back(AddCurve(style, k > 0));
+    }
+  }
+
+  // DNA double helix: two Catmull-Rom strands and linear rungs.
+  {
+    const BezierStyle strand = MakeStyle(13.0f, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, 0.0f, 0.0f, CurveCap::Round, CurveCap::Round, 24u);
+    dna_a = CatmullRomSpline(*curves, strand, DnaPoints);
+    dna_b = CatmullRomSpline(*curves, strand, DnaPoints);
+    const BezierStyle rung = MakeStyle(5.0f, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, 0.0f, 0.0f, CurveCap::Round, CurveCap::Round, 2u);
+    for (int i = 0; i < DnaRungs; ++i)
+    {
+      BezierData data = Linear({ 0, 0, 0 }, { 0, 0, 0 });
+      data.style = rung;
+      dna_rungs.push_back(curves->Add(data));
+    }
+  }
+
+  // Dashed (2, 7) torus knot around the torus.
+  {
+    const BezierStyle style = MakeStyle(7.0f, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, 0.20f, 14.0f, CurveCap::Round, CurveCap::Round, 12u);
+    knot = CatmullRomSpline(*curves, style, KnotPoints, 0.5f);
+  }
+
+  // Chevron-dashed cubic routes between the obelisk tips: notch at the front, point at the back.
+  for (int i = 0; i < ObeliskCount; ++i)
+  {
+    for (int j = i + 1; j < ObeliskCount; ++j)
+    {
+      const BezierStyle style = MakeStyle(10.0f, HueColor(float(i) / ObeliskCount), HueColor(float(j) / ObeliskCount),
+        0.75f, 18.0f, CurveCap::TriangleIn, CurveCap::TriangleOut, 64u);
+      routes.push_back(AddCurve(style, false));
+    }
+  }
+
+  // Wind streamlines.
+  for (int w = 0; w < WindCount; ++w)
+  {
+    const BezierStyle style = MakeStyle(3.5f, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, 0.5f, 26.0f, CurveCap::Round, CurveCap::Round, 20u);
+    wind.emplace_back(*curves, style, WindPoints, 0.5f);
+  }
+
+  // Roller coaster: height-coloured rails and dashed sleepers.
+  {
+    BezierStyle rail = MakeStyle(5.0f, { 0.10f, 0.75f, 1.0f, 1.0f }, { 1.0f, 0.20f, 0.45f, 1.0f }, 0.0f, 0.0f,
+      CurveCap::Round, CurveCap::Round, 24u, CurveJoin::Round);
+    rail.min_height = -2.2f;
+    rail.max_height = 2.4f;
+    rail_left = CatmullRomSpline(*curves, rail, CoasterPoints);
+    rail_right = CatmullRomSpline(*curves, rail, CoasterPoints);
+
+    const BezierStyle ties = MakeStyle(20.0f, { 0.30f, 0.20f, 0.14f, 1.0f }, { 0.30f, 0.20f, 0.14f, 1.0f }, 0.28f, 3.0f,
+      CurveCap::Butt, CurveCap::Butt, 24u);
+    sleepers = CatmullRomSpline(*curves, ties, CoasterPoints);
+  }
+
+  // Aurora: wide, translucent, overlapping ribbons.
+  for (int k = 0; k < AuroraCount; ++k)
+  {
+    const BezierStyle style = MakeStyle(127.5f, { 1, 1, 1, 0 }, { 1, 1, 1, 0 }, 0.0f, 0.0f, CurveCap::Butt, CurveCap::Butt, 24u);
+    aurora.emplace_back(*curves, style, AuroraPoints, 0.5f);
+  }
+
+  // Fireworks: one burst per backend.
+  for (int b = 0; b < BurstCount; ++b)
+  {
+    BezierStyle style;
+    switch (b)
+    {
+    case 0: style = MakeStyle(4.0f, { 1, 1, 1, 0 }, { 1, 1, 1, 1 }, 0.0f, 0.0f, CurveCap::Butt, CurveCap::Round, 16u); break;
+    case 1: style = MakeStyle(5.0f, { 1, 1, 1, 0 }, { 1, 1, 1, 1 }, 0.14f, 0.0f, CurveCap::Round, CurveCap::Round, 16u); break;
+    default: style = MakeStyle(4.0f, { 1, 1, 1, 0 }, { 1, 1, 1, 1 }, 0.28f, 9.0f, CurveCap::Round, CurveCap::TriangleOut, 16u); break;
+    }
+    for (int s = 0; s < SparkCount; ++s)
+    {
+      BezierData data = Quadratic({ 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 });
+      data.style = style;
+      sparks.push_back(curves->Add(data));
+    }
+  }
+
+  // Ripples on the lake under the planet, alternating solid and dotted.
+  for (int r = 0; r < RippleCount; ++r)
+  {
+    const BezierStyle style = (r & 1)
+      ? MakeStyle(4.0f, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, 0.16f, 0.0f)
+      : MakeStyle(3.0f, { 1, 1, 1, 1 }, { 1, 1, 1, 1 });
+    for (int k = 0; k < RippleLinks; ++k)
+    {
+      ripple_links.push_back(AddCurve(style, k > 0));
+    }
+  }
+}
+
+void App::PoseScene()
+{
+  const float t = animation_time;
+  const XMFLOAT3 sun = Normalize(SunDirection);
+
+  // --- planet rings --------------------------------------------------------------------------
+  {
+    const XMMATRIX rot = XMMatrixRotationRollPitchYaw(0.42f, 0.0f, 0.30f);
+    const XMFLOAT3 u = TransformDir({ 1, 0, 0 }, rot);
+    const XMFLOAT3 v = TransformDir({ 0, 0, 1 }, rot);
+    for (int r = 0; r < RingCount; ++r)
+    {
+      float s = float(r) / float(RingCount - 1);
+      float radius = 2.7f + 2.3f * s + (r >= 11 ? 0.35f : 0.0f);
+      BezierCurve* links = &ring_links[size_t(r * RingLinks)];
+      const float spin = t * (0.08f / (0.5f + s));
+      PoseArc(links, RingLinks, PlanetCenter, u, v, radius, spin, spin + Tau, true);
+
+      const XMFLOAT4 inner = { 0.95f, 0.82f, 0.62f, 1.0f };
+      const XMFLOAT4 outer = { 0.62f, 0.55f, 0.85f, 1.0f };
+      const float alpha = 0.25f + 0.45f * Hash1(r * 13 + 5);
+      auto ring_color = [&](float a)
+      {
+        const XMFLOAT3 p = u * (radius * cosf(a)) + v * (radius * sinf(a));
+        const float along = Dot(p, sun);
+        const float perp = Length(p - sun * along);
+        const float shadow = along < 0.0f ? Smoothstep(PlanetRadius * 0.85f, PlanetRadius * 1.1f, perp) : 1.0f;
+        const float lit = (0.55f + 0.45f * std::max(0.0f, along / radius)) * (0.25f + 0.75f * shadow);
+        XMFLOAT4 c = {
+          (inner.x + (outer.x - inner.x) * s) * lit,
+          (inner.y + (outer.y - inner.y) * s) * lit,
+          (inner.z + (outer.z - inner.z) * s) * lit,
+          alpha
+        };
+        return c;
+      };
+      for (int k = 0; k < RingLinks; ++k)
+      {
+        const float a0 = spin + Tau * float(k) / RingLinks;
+        const float a1 = spin + Tau * float(k + 1) / RingLinks;
+        links[k].colors(ring_color(a0), ring_color(a1));
+      }
+    }
+  }
+
+  // --- moon orbits and trails ----------------------------------------------------------------
+  for (int m = 0; m < MoonCount; ++m)
+  {
+    const MoonInfo& info = Moons[m];
+    const MoonFrame basis = MoonBasis(info);
+
+    auto& orbit = orbits[size_t(m)];
+    const float delta = Tau / OrbitLinks;
+    const float tangent = 4.0f * tanf(delta * 0.25f) * info.radius;
+    for (int k = 0; k < OrbitLinks; ++k)
+    {
+      const float a = delta * float(k);
+      orbit[size_t(k)].position = PlanetCenter + basis.u * (info.radius * cosf(a)) + basis.v * (info.radius * sinf(a));
+      orbit[size_t(k)].tangent = (basis.u * -sinf(a) + basis.v * cosf(a)) * tangent;
+    }
+    orbit[OrbitLinks] = orbit[0];
+    orbit.Update();
+
+    const float head = t * info.speed + info.phase;
+    const float tail = head - 2.4f;
+    BezierCurve* links = &trail_links[size_t(m * TrailLinks)];
+    PoseArc(links, TrailLinks, PlanetCenter, basis.u, basis.v, info.radius, tail, head, false);
+    for (int k = 0; k < TrailLinks; ++k)
+    {
+      const float f0 = float(k) / TrailLinks;
+      const float f1 = float(k + 1) / TrailLinks;
+      links[k].colors(WithAlpha(info.color, f0 * f0 * 0.95f), WithAlpha(info.color, f1 * f1 * 0.95f));
+    }
+  }
+
+  // --- DNA -----------------------------------------------------------------------------------
+  {
+    const float base_y = GroundHeight(DnaBase.x, DnaBase.z) - 0.2f;
+    const float spin = t * 0.6f;
+    auto helix = [&](float s, float offset)
+    {
+      const float a = s * DnaTurns * Tau + spin + offset;
+      return XMFLOAT3{ DnaBase.x + DnaRadius * cosf(a), base_y + s * DnaHeight, DnaBase.z + DnaRadius * sinf(a) };
+    };
+
+    XMFLOAT4 colors_a[DnaPoints];
+    XMFLOAT4 colors_b[DnaPoints];
+    for (int k = 0; k < DnaPoints; ++k)
+    {
+      const float s = float(k) / float(DnaPoints - 1);
+      dna_a[size_t(k)] = helix(s, 0.0f);
+      dna_b[size_t(k)] = helix(s, Pi);
+      colors_a[k] = HueColor(0.95f + 0.25f * s + t * 0.05f);
+      colors_b[k] = HueColor(0.45f + 0.25f * s + t * 0.05f);
+    }
+    dna_a.MirrorEnds();
+    dna_b.MirrorEnds();
+    dna_a.Update();
+    dna_b.Update();
+    dna_a.PointColors(colors_a);
+    dna_b.PointColors(colors_b);
+
+    for (int i = 0; i < DnaRungs; ++i)
+    {
+      const float s = (float(i) + 0.5f) / float(DnaRungs);
+      const XMFLOAT3 a = helix(s, 0.0f);
+      const XMFLOAT3 b = helix(s, Pi);
+      const XMFLOAT3 inset = (b - a) * 0.08f;
+      dna_rungs[size_t(i)].control_points(a + inset, b - inset);
+      dna_rungs[size_t(i)].colors(HueColor(0.95f + 0.25f * s + t * 0.05f, 0.9f), HueColor(0.45f + 0.25f * s + t * 0.05f, 0.9f));
+    }
+  }
+
+  // --- torus knot ----------------------------------------------------------------------------
+  {
+    const float cy = GroundHeight(TorusCenter.x, TorusCenter.z) + 3.6f;
+    const XMMATRIX world = XMMatrixRotationRollPitchYaw(0.9f + 0.25f * sinf(t * 0.3f), t * 0.35f, 0.35f) * XMMatrixTranslation(TorusCenter.x, cy, TorusCenter.z);
+    const float tube = TorusMinor * 1.45f;
+    auto knot_point = [&](float s)
+    {
+      const float phi = s * Tau;
+      const float u = 2.0f * phi;
+      const float v = 7.0f * phi;
+      const XMFLOAT3 local = { (TorusMajor + tube * cosf(v)) * cosf(u), tube * sinf(v), (TorusMajor + tube * cosf(v)) * sinf(u) };
+      return Transform(local, world);
+    };
+
+    const float step = 1.0f / float(KnotPoints - 1);
+    std::vector<XMFLOAT4> colors(KnotPoints);
+    for (int k = 0; k < KnotPoints; ++k)
+    {
+      knot[size_t(k)] = knot_point(float(k) * step);
+      colors[size_t(k)] = HueColor(2.0f * float(k) * step - t * 0.15f);
+    }
+    knot[KnotPoints - 1] = knot[0];
+    colors[KnotPoints - 1] = colors[0];
+    knot.FrontEnd() = knot[KnotPoints - 2];
+    knot.BackEnd() = knot[1];
+    knot.Update();
+    knot.PointColors(colors);
+  }
+
+  // --- obelisk routes ------------------------------------------------------------------------
+  {
+    size_t index = 0;
+    for (int i = 0; i < ObeliskCount; ++i)
+    {
+      for (int j = i + 1; j < ObeliskCount; ++j)
+      {
+        const XMFLOAT3 a = ObeliskTop(i);
+        const XMFLOAT3 d = ObeliskTop(j);
+        const XMFLOAT3 span = d - a;
+        const float lift = 0.35f * Length(span) + 2.0f + 0.5f * sinf(t * 0.8f + float(index));
+        const XMFLOAT3 up = { 0.0f, lift, 0.0f };
+        routes[index].control_points(a, a + up + span * 0.15f, d + up - span * 0.15f, d);
+        ++index;
+      }
+    }
+  }
+
+  // --- wind ----------------------------------------------------------------------------------
+  for (int w = 0; w < WindCount; ++w)
+  {
+    const float lane = -13.0f + 26.0f * (float(w) + 0.5f) / WindCount + (Hash1(w * 3) - 0.5f) * 0.6f;
+    const float length = 6.0f + 4.0f * Hash1(w * 5 + 1);
+    const float speed = 0.06f + 0.05f * Hash1(w * 11 + 2);
+    const float phase = Fract(t * speed + Hash1(w * 17 + 3));
+    const float span = 34.0f + length;
+    const float x0 = -17.0f - length + phase * span;
+    const float envelope = sinf(Pi * phase);
+
+    auto& line = wind[size_t(w)];
+    XMFLOAT4 colors[WindPoints];
+    for (int k = 0; k < WindPoints; ++k)
+    {
+      const float s = float(k) / float(WindPoints - 1);
+      const float x = x0 + length * s;
+      const float z = lane + 0.8f * sinf(0.35f * x + float(w));
+      const float y = GroundHeight(x, z) + 0.55f + 0.15f * sinf(x * 0.8f + t * 2.0f + float(w));
+      line[size_t(k)] = { x, y, z };
+      colors[k] = { 0.85f, 0.95f, 1.0f, envelope * sinf(Pi * s) * 0.85f };
+    }
+    line.MirrorEnds();
+    line.Update();
+    line.PointColors(colors);
+  }
+
+  // --- roller coaster ------------------------------------------------------------------------
+  {
+    const float step = Tau / float(CoasterPoints - 1);
+    auto pose = [&](CatmullRomSpline& spline, float side, float lift)
+    {
+      auto at = [&](float a) { return CoasterPoint(a) + CoasterSide(a) * side + XMFLOAT3{ 0.0f, lift, 0.0f }; };
+      for (int k = 0; k < CoasterPoints; ++k)
+      {
+        spline[size_t(k)] = at(float(k) * step);
+      }
+      spline[CoasterPoints - 1] = spline[0];
+      spline.FrontEnd() = at(-step);
+      spline.BackEnd() = at(step);
+      spline.Update();
+    };
+    pose(rail_left, 0.2f, 0.0f);
+    pose(rail_right, -0.2f, 0.0f);
+    pose(sleepers, 0.0f, -0.04f);
+  }
+
+  // --- aurora --------------------------------------------------------------------------------
+  {
+    const XMFLOAT4 palette[AuroraCount] = {
+      { 0.25f, 1.00f, 0.55f, 1.0f },
+      { 0.15f, 0.85f, 0.95f, 1.0f },
+      { 0.60f, 0.35f, 1.00f, 1.0f },
+      { 0.30f, 1.00f, 0.40f, 1.0f },
+      { 0.95f, 0.30f, 0.75f, 1.0f },
+    };
+    for (int k = 0; k < AuroraCount; ++k)
+    {
+      auto& ribbon = aurora[size_t(k)];
+      XMFLOAT4 colors[AuroraPoints];
+      for (int i = 0; i < AuroraPoints; ++i)
+      {
+        const float s = float(i) / float(AuroraPoints - 1);
+        const float x = -60.0f + 120.0f * s;
+        const float y = 12.5f + 0.7f * float(k) + 1.6f * sinf(x * 0.07f + t * 0.25f + float(k) * 1.3f);
+        const float z = -44.0f - 4.0f * float(k) + 3.0f * sinf(x * 0.05f + t * 0.2f + float(k));
+        ribbon[size_t(i)] = { x, y, z };
+        const float pulse = 0.55f + 0.45f * sinf(x * 0.15f + t * 0.7f + float(k) * 2.0f);
+        colors[i] = WithAlpha(palette[k], 0.20f * sinf(Pi * s) * pulse);
+      }
+      ribbon.MirrorEnds();
+      ribbon.Update();
+      ribbon.PointColors(colors);
+    }
+  }
+
+  // --- fireworks -----------------------------------------------------------------------------
+  {
+    const XMFLOAT3 centers[BurstCount] = { { -15.0f, 9.5f, -22.0f }, { 1.0f, 10.5f, -27.0f }, { 14.0f, 9.0f, -20.0f } };
+    constexpr float Period = 3.2f;
+    for (int b = 0; b < BurstCount; ++b)
+    {
+      const float clock = t / Period + float(b) * 0.37f;
+      const int cycle = int(floorf(clock));
+      const float p = clock - float(cycle);
+      const float radius = 3.2f * (1.0f - (1.0f - p) * (1.0f - p));
+      const float fade = 1.0f - p * p;
+      const XMFLOAT4 hue = HueColor(Hash(cycle, b));
+      const XMFLOAT3 c = centers[b];
+
+      for (int s = 0; s < SparkCount; ++s)
+      {
+        const float fy = 1.0f - 2.0f * (float(s) + 0.5f) / SparkCount;
+        const float fr = sqrtf(std::max(0.0f, 1.0f - fy * fy));
+        const float fa = float(s) * 2.39996f + float(cycle);
+        const XMFLOAT3 dir = { fr * cosf(fa), fy, fr * sinf(fa) };
+        const float tail_r = radius * std::max(0.0f, (p - 0.3f) / 0.7f);
+        auto droop = [&](float amount) { return XMFLOAT3{ 0.0f, -1.8f * amount * amount, 0.0f }; };
+        const XMFLOAT3 head = c + dir * radius + droop(p);
+        const XMFLOAT3 tailp = c + dir * tail_r + droop(std::max(0.0f, p - 0.25f));
+        const XMFLOAT3 mid = c + dir * (0.5f * (radius + tail_r)) + droop(std::max(0.0f, p - 0.12f)) * 0.8f;
+
+        BezierCurve& spark = sparks[size_t(b * SparkCount + s)];
+        spark.control_points(tailp, mid, head);
+        spark.colors(WithAlpha(hue, 0.0f), { 0.5f + 0.5f * hue.x, 0.5f + 0.5f * hue.y, 0.5f + 0.5f * hue.z, fade });
+      }
+    }
+  }
+
+  // --- ripples -------------------------------------------------------------------------------
+  {
+    const XMFLOAT3 center = { PlanetCenter.x, WaterLevel + 0.04f, PlanetCenter.z };
+    for (int r = 0; r < RippleCount; ++r)
+    {
+      const float phase = Fract(t * 0.1f + float(r) / RippleCount);
+      const float radius = 0.6f + 6.5f * phase;
+      const float alpha = powf(1.0f - phase, 1.5f) * 0.8f;
+      BezierCurve* links = &ripple_links[size_t(r * RippleLinks)];
+      PoseArc(links, RippleLinks, center, { 1, 0, 0 }, { 0, 0, 1 }, radius, 0.0f, Tau, true);
+      const XMFLOAT4 color = (r & 1) ? XMFLOAT4{ 1.0f, 1.0f, 1.0f, alpha } : XMFLOAT4{ 0.4f, 0.9f, 1.0f, alpha };
+      for (int k = 0; k < RippleLinks; ++k)
+      {
+        links[k].colors(color, color);
+      }
+    }
+  }
+}
+
+// --- app ---------------------------------------------------------------------------------------
 
 SDL_AppResult App::Init()
 {
   SDL_Init(SDL_INIT_VIDEO);
-  window = SDL_CreateWindow("Curve Renderer Comparison", int(viewport_width), int(viewport_height), SDL_WINDOW_RESIZABLE);
+  window = SDL_CreateWindow("Curve Showcase", int(viewport_width), int(viewport_height), SDL_WINDOW_RESIZABLE);
   if (window == NULL)
   {
     return SDL_APP_FAILURE;
@@ -478,38 +1278,22 @@ SDL_AppResult App::Init()
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
-  (void)io;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-
   ImGui::StyleColorsDark();
-
   ImGui_ImplSDL3_InitForD3D(window);
   ImGui_ImplDX11_Init(device->get(), device->ImmediateContext()->get());
 
   camera.SetProj(viewport_width / viewport_height, 0.1f);
-  // Far enough back that the copies of the scene fit side by side. The orbital manipulator
-  // picks its orbit distance up from this, so change it here rather than in OrbitalCamera.
-  camera.SetView(XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, -19.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });
+  camera.SetView(XMVECTOR{ 0.0f, 7.0f, -27.0f, 0.0f }, XMVECTOR{ 0.0f, 0.0f, 0.0f, 0.0f }, XMVECTOR{ 0.0f, 1.0f, 0.0f, 0.0f });
   orbital_manipulator.SetCamera(&camera);
   buffer_camera = std::make_unique<Axodox::Graphics::ConstantBuffer>(*device, camera.GetData());
 
-  curve_renderer = std::make_unique<BezierRenderer>(*device);
-  line_renderer = std::make_unique<BezierLineRenderer>(*device);
+  CreateMeshPass();
 
-  curve_renderer->SetViewport(viewport_width, viewport_height);
-  line_renderer->SetViewport(viewport_width, viewport_height);
-
-  // Initial offsets here only need to be valid enough for BuildScene()'s local coordinates to stay
-  // inside their box; Update() recomputes the real layout (which depends on which renderers are
-  // visible) before the first frame is drawn.
-  BuildScene(*curve_renderer, curve_scene, -0.5f * compare_offset);
-  BuildScene(*line_renderer, line_scene, 0.5f * compare_offset);
-
-  PoseScene(curve_scene);
-  PoseScene(line_scene);
-  ApplyStyle(curve_scene);
-  ApplyStyle(line_scene);
+  curves = std::make_unique<BezierRenderer>(*device);
+  curves->SetViewport(viewport_width, viewport_height);
+  BuildScene();
+  PoseScene();
 
   return SDL_APP_CONTINUE;
 }
@@ -517,540 +1301,51 @@ SDL_AppResult App::Init()
 void App::Update(float delta)
 {
   orbital_manipulator.Update(delta);
-
-  bool repose = scene_dirty;
-  scene_dirty = false;
-
   if (!paused)
   {
-    animation_time += delta;
-    repose = true;
-  }
-
-  // Evenly space whichever columns are visible, in the fixed left-to-right order Bezier / Lines,
-  // centred on the origin. A hidden renderer's offset doesn't matter - it is never drawn - but its
-  // scene is still kept current below, same as before.
-  {
-    const bool visible[ColumnCount] = { draw_curves, draw_lines };
-    const int visible_count = int(draw_curves) + int(draw_lines);
-
-    float offsets[ColumnCount] = { 0.0f, 0.0f };
-    int slot = 0;
-    for (int i = 0; i < ColumnCount; ++i)
-    {
-      if (!visible[i]) continue;
-      offsets[i] = visible_count > 1 ? (float(slot) - (visible_count - 1) * 0.5f) * compare_offset : 0.0f;
-      ++slot;
-    }
-
-    // A moved column has to be re-posed even while paused, otherwise the curves stay behind at the
-    // old offset - so ticking a renderer or dragging the comparison gap counts as a scene change.
-    Scene* scenes[ColumnCount] = { &curve_scene, &line_scene };
-    for (int i = 0; i < ColumnCount; ++i)
-    {
-      if (scenes[i]->x_offset == offsets[i]) continue;
-      scenes[i]->x_offset = offsets[i];
-      repose = true;
-    }
-  }
-
-  // Both copies are kept up to date even while hidden: the setters only raise dirty flags, and the
-  // actual upload (and, in the BezierRenderer, any move between backends) happens inside Draw(),
-  // which a hidden renderer never reaches.
-  //
-  // Both passes call touch() on every curve they visit, and need_upload is coarse - one touched
-  // curve re-uploads the entire buffer - so neither runs unless something actually changed. That is
-  // what makes "Pause animation" free, which is what makes the Test screen's numbers mean anything
-  // once the scene is a few thousand curves deep.
-  if (repose)
-  {
-    PoseScene(curve_scene);
-    PoseScene(line_scene);
-  }
-
-  if (style_dirty)
-  {
-    ApplyStyle(curve_scene);
-    ApplyStyle(line_scene);
-    style_dirty = false;
+    animation_time += delta * time_scale;
+    PoseScene();
   }
 }
 
 void App::Gui()
 {
+  if (!show_ui) return;
+
   ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(380, 700), ImGuiCond_FirstUseEver);
-
-  if (ImGui::Begin("Curve Style"))
-  {
-    // --- shared header: true on both screens ------------------------------------------------
-    ImGui::Text("%.1f FPS (%.2f ms/frame)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-    ImGui::Checkbox("Pause animation", &paused);
-    ImGui::SameLine();
-    ImGui::Checkbox("Timings window", &show_timings);
-    ImGui::TextDisabled("Paused now skips the per-frame re-upload entirely.");
-
-    ImGui::SeparatorText("Renderers");
-    ImGui::Checkbox("Bezier", &draw_curves);
-    ImGui::SameLine();
-    ImGui::Checkbox("Lines", &draw_lines);
-
-    // The Test screen adds to one renderer at a time, so the two counts are allowed to differ. The
-    // Bezier renderer's split is where its curves were routed by the last Draw().
-    ImGui::TextDisabled("curves: Bezier %u (solid %u / patterned %u / dots %u), Lines %u",
-      unsigned(curve_renderer->Count()),
-      unsigned(curve_renderer->Count(CurveKind::Solid)),
-      unsigned(curve_renderer->Count(CurveKind::Patterned)),
-      unsigned(curve_renderer->Count(CurveKind::Dotted)),
-      unsigned(line_renderer->Count()));
-
-    const int visible_renderer_count = int(draw_curves) + int(draw_lines);
-    ImGui::BeginDisabled(visible_renderer_count <= 1);
-    ImGui::SliderFloat("Comparison gap", &compare_offset, 0.0f, 14.0f, "%.1f world units");
-    ImGui::EndDisabled();
-
-    // --- the two screens ---------------------------------------------------------------------
-    if (ImGui::BeginTabBar("screens"))
-    {
-      if (ImGui::BeginTabItem("Example"))
-      {
-        ExampleGui();
-        ImGui::EndTabItem();
-      }
-
-      if (ImGui::BeginTabItem("Test"))
-      {
-        TestGui();
-        ImGui::EndTabItem();
-      }
-
-      ImGui::EndTabBar();
-    }
-  }
-
-  ImGui::End();
-
-  if (show_timings)
-  {
-    ProfilerGui();
-  }
-}
-
-void App::ExampleGui()
-{
-  ImGui::TextWrapped(
-    "Left: the Bezier renderer. It sends every curve to one of three backends by its pattern - "
-    "spacing 0 to Solid, dash length 0 to Dots, both set to Patterned - and moves it there again "
-    "whenever the pattern changes, so the Pattern section below moves the whole scene from one "
-    "backend to another; the Timings window shows each backend in a column of its own. Right: "
-    "BezierLineRenderer, the hardware line primitive - colour only, 1 px, no caps, joins or "
-    "pattern - as the cost floor.");
-
-  StyleGui();
-
-  // Colours belong to this screen: they drive the hand-built groups only. Test curves get a
-  // fixed hue at Add time and are never repainted.
-  ImGui::SeparatorText("Colour");
-  bool changed = ImGui::Checkbox("Animate colours", &animate_colors);
-  ImGui::BeginDisabled(animate_colors);
-  changed |= ImGui::ColorEdit4("Wave A", &wave_color0.x);
-  changed |= ImGui::ColorEdit4("Wave B", &wave_color1.x);
-  changed |= ImGui::ColorEdit4("Petals", &petal_color.x);
-  changed |= ImGui::ColorEdit4("Ribbon A", &ribbon_color0.x);
-  changed |= ImGui::ColorEdit4("Ribbon B", &ribbon_color1.x);
-  changed |= ImGui::ColorEdit4("Hermite A", &hermite_color0.x);
-  changed |= ImGui::ColorEdit4("Hermite B", &hermite_color1.x);
-  changed |= ImGui::ColorEdit4("Gallery", &gallery_color.x);
-  ImGui::EndDisabled();
-
-  // Colours are written by PoseScene(), which no longer runs every frame - so a picker moved while
-  // paused has to say so or nothing would happen until the animation is resumed.
-  if (changed)
-  {
-    scene_dirty = true;
-  }
-}
-
-void App::TestGui()
-{
-  ImGui::TextWrapped(
-    "Spawns random curves into ONE renderer at a time - the two scenes are allowed to diverge, "
-    "which is the only way to give one renderer a heavier load than the other and watch the "
-    "Timings table split. Only the geometry is random: every other property comes from the "
-    "controls below, the same ones the example scene is drawn with. In the Bezier renderer the "
-    "pattern decides which backend a batch lands in, and changing it later moves the batch.");
-
-  ImGui::SeparatorText("Batch");
-  ImGui::Combo("Degree", &test_degree_index, DegreeNames, DegreeCount);
-  ImGui::SliderInt("Count", &test_count, 1, 2000);
-  // Deliberately a separate slider from the Stroke section's Resolution, which is also on this tab:
-  // this one is baked into each curve at Add time and never moves again, so batches at different
-  // resolutions can coexist in one scene. Named differently so the two are not confusable on screen.
-  ImGui::SliderInt("New curve resolution", &test_resolution, 2, 400);
-  ImGui::TextDisabled("One press adds `count` curves, all at that resolution.");
-
-  ImGui::SeparatorText("Random placement");
-  ImGui::SliderFloat3("Range", &test_range.x, 0.0f, 8.0f, "%.1f");
-  ImGui::SliderFloat("Spread", &test_spread, 0.05f, 4.0f, "%.2f");
-  ImGui::TextWrapped(
-    "Range is the half-extent of the box a curve's origin falls in, measured in its own column's "
-    "local coordinates; spread is how far that curve's control points scatter around the origin. "
-    "One copy of the example scene occupies about 3 x 4.5, so a range near that keeps a batch "
-    "inside its own column instead of sprawling across the neighbouring one.");
-
-  ImGui::SeparatorText("Add");
-  if (ImGui::Button("Add to Bezier"))
-  {
-    AddTestCurves(*curve_renderer, curve_scene);
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Add to Lines"))
-  {
-    AddTestCurves(*line_renderer, line_scene);
-  }
-
-  // Rewinding the generator between the two calls makes them the SAME curves rather than two
-  // independent batches, which is the only way the two columns stay a like-for-like comparison.
-  if (ImGui::Button("Add to both (identical curves)"))
-  {
-    const std::mt19937 batch_start = test_rng;
-    AddTestCurves(*curve_renderer, curve_scene);
-    test_rng = batch_start;
-    AddTestCurves(*line_renderer, line_scene);
-  }
-
-  // Removal goes through the handles: erasing a TestCurve destroys its BezierCurve, which takes the
-  // curve out of that renderer. The buffers follow on the next Draw - they shrink once what is left
-  // fits in a quarter of them, which the Timings window's pattern bound / allocated columns show.
-  ImGui::SeparatorText("Remove");
-  ImGui::TextDisabled("\"Last batch\" = the last `count` test curves of that renderer.");
-  const size_t batch = size_t(test_count);
-  ImGui::BeginDisabled(curve_scene.test_curves.empty());
-  if (ImGui::Button("Last batch: Bezier"))
-  {
-    RemoveTestCurves(curve_scene, batch);
-  }
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::BeginDisabled(line_scene.test_curves.empty());
-  if (ImGui::Button("Last batch: Lines"))
-  {
-    RemoveTestCurves(line_scene, batch);
-  }
-  ImGui::EndDisabled();
-
-  if (ImGui::Button("Last batch from both"))
-  {
-    RemoveTestCurves(curve_scene, batch);
-    RemoveTestCurves(line_scene, batch);
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Remove all test curves"))
-  {
-    RemoveTestCurves(curve_scene, curve_scene.test_curves.size());
-    RemoveTestCurves(line_scene, line_scene.test_curves.size());
-  }
-
-  ImGui::SeparatorText("In the scene");
-
-  // Sample points, not curves, is what the point pass and the buffers are actually sized by, so it
-  // is the number worth watching next to the Timings window.
-  auto sample_points = [](const Scene& scene)
-  {
-    size_t total = 0;
-    for (const auto& test : scene.test_curves) total += test.resolution;
-    return total;
-  };
-
-  constexpr ImGuiTableFlags table_flags =
-    ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
-
-  if (ImGui::BeginTable("test_counts", ColumnCount + 1, table_flags))
-  {
-    const Scene* scenes[ColumnCount] = { &curve_scene, &line_scene };
-    const char* names[ColumnCount] = { "Bezier", "Lines" };
-
-    ImGui::TableSetupColumn("");
-    for (int i = 0; i < ColumnCount; i++) ImGui::TableSetupColumn(names[i]);
-    ImGui::TableHeadersRow();
-
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted("test curves");
-    for (int i = 0; i < ColumnCount; i++)
-    {
-      ImGui::TableNextColumn();
-      ImGui::Text("%u", unsigned(scenes[i]->test_curves.size()));
-    }
-
-    ImGui::TableNextRow();
-    ImGui::TableNextColumn();
-    ImGui::TextUnformatted("their points");
-    for (int i = 0; i < ColumnCount; i++)
-    {
-      ImGui::TableNextColumn();
-      ImGui::Text("%u", unsigned(sample_points(*scenes[i])));
-    }
-
-    ImGui::EndTable();
-  }
-
-  StyleGui();
-}
-
-void App::StyleGui()
-{
-  bool changed = false;
-
-  ImGui::SeparatorText("Stroke");
-  changed |= ImGui::SliderFloat("Width (px)", &style_width, 0.5f, 127.5f, "%.1f");
-  // Only the example groups follow this; every test curve keeps the resolution it was added with,
-  // which is why the Test tab has a slider of its own for that.
-  changed |= ImGui::SliderInt("Resolution (example scene)", &style_resolution, 2, 400);
-
-  ImGui::SeparatorText("Caps");
-  changed |= ImGui::Checkbox("Same cap at both ends", &link_caps);
-  changed |= ImGui::Combo("Front cap", &style_cap_front, CapNames, CapCount);
-
-  // While linked the back picker mirrors the front one instead of showing a stale value.
-  int shown_back_cap = link_caps ? style_cap_front : style_cap_back;
-  ImGui::BeginDisabled(link_caps);
-  if (ImGui::Combo("Back cap", &shown_back_cap, CapNames, CapCount))
-  {
-    style_cap_back = shown_back_cap;
-    changed = true;
-  }
-  ImGui::EndDisabled();
-  ImGui::TextWrapped(
-    "The row of straight strokes at the top ignores these and keeps one fixed pair each, so "
-    "every cap stays visible. Their white end is the front.");
-
-  ImGui::SeparatorText("Join");
-  changed |= ImGui::RadioButton("Round##join", &style_join, 0);
-  ImGui::SameLine();
-  changed |= ImGui::RadioButton("Square##join", &style_join, 1);
-
-  ImGui::SeparatorText("Pattern");
-  changed |= ImGui::Checkbox("Patterned", &style_patterned);
-  ImGui::SameLine();
-  ImGui::TextDisabled("(off = spacing 0 = solid)");
-
-  // Both only mean something while there is a spacing: with "Patterned" off every curve is solid.
-  ImGui::BeginDisabled(!style_patterned);
-  changed |= ImGui::SliderFloat("Dash length (px)", &style_dash_length, 0.0f, 200.0f, "%.1f");
-  changed |= ImGui::SliderFloat("Spacing", &style_spacing, 0.05f, 2.0f, "%.2f world units");
-  ImGui::EndDisabled();
-
-  // A dot is a zero-length dash: its two caps meet in the middle, so Round leaves a disc of radius
-  // `width`. Dash length 0 is also what sends a curve to the Dots backend; the button sets that, the
-  // round caps, and a spacing (dots need one).
-  if (ImGui::Button("Make dots"))
-  {
-    style_patterned = true;
-    style_dash_length = 0.0f;
-    style_cap_front = int(CurveCap::Round);
-    style_cap_back = int(CurveCap::Round);
-    link_caps = true;
-    changed = true;
-  }
-  ImGui::SameLine();
-  ImGui::TextDisabled("dash length 0 + round caps");
-
-  // The same KindOf() the BezierRenderer applies, on the values ApplyStyle() pushes. The cap gallery
-  // follows the pattern too - only its caps are its own.
-  const CurveKind kind = KindOf(style_patterned ? style_spacing : 0.0f, style_dash_length);
-  ImGui::Text("Bezier renderer backend: %s", CurveKindName(kind));
-  ImGui::TextWrapped(
-    "Spacing 0 -> Solid, dash length 0 -> Dots, both set -> Patterned. Dash length is the pixel "
-    "length of one dash, cap to cap, and both of its ends wear the cap chosen above; a dot is one "
-    "cap shape per spacing interval, so Butt draws nothing there. The cap gallery keeps its own "
-    "caps, which is why its strokes differ from everything else.");
-
-  ImGui::SeparatorText("Colour by height");
-  ImGui::TextWrapped("Min >= max blends by curve t instead of world Y.");
-  changed |= ImGui::SliderFloat("Min height", &style_min_height, -5.0f, 5.0f, "%.2f");
-  changed |= ImGui::SliderFloat("Max height", &style_max_height, -5.0f, 5.0f, "%.2f");
-
-  // ApplyStyle() re-uploads the whole curve buffer, so it runs only when one of the above moved.
-  if (changed)
-  {
-    style_dirty = true;
-  }
-}
-
-void App::ProfilerGui()
-{
-  // One row per profiled stage, in pipeline order. `cpu` picks which channel of the metric the row
-  // shows - "total" appears twice because the whole Draw() call is measured on both.
-  struct TimingRow
-  {
-    const char* label;
-    const char* metric;
-    bool cpu;
-  };
-
-  static constexpr TimingRow rows[] = {
-    { "update", "update", true },
-    { "  points", "upload points", true },
-    { "  colors", "upload colors", true },
-    { "calc", "calc", false },
-    { "scan", "scan", false },
-    { "pattern", "pattern", false },
-    { "draw", "draw", false },
-    { "total cpu", "total", true },
-    { "total gpu", "total", false },
-  };
-
-  // The Bezier renderer's three backends, then the line renderer. A backend with no curves is not
-  // drawn at all (BezierRenderer skips it), so its numbers freeze the same way a hidden renderer's do.
-  const BezierRendererBase* renderers[] = {
-    &curve_renderer->Backend(CurveKind::Solid),
-    &curve_renderer->Backend(CurveKind::Patterned),
-    &curve_renderer->Backend(CurveKind::Dotted),
-    line_renderer.get()
-  };
-  const char* renderer_names[] = { "Solid", "Patterned", "Dots", "Lines" };
-  const bool renderer_visible[] = {
-    draw_curves && renderers[0]->Count() > 0,
-    draw_curves && renderers[1]->Count() > 0,
-    draw_curves && renderers[2]->Count() > 0,
-    draw_lines
-  };
-  constexpr int renderer_count = 4;
-
-  ImGui::SetNextWindowPos(ImVec2(380, 10), ImGuiCond_FirstUseEver);
-  ImGui::SetNextWindowSize(ImVec2(400, 250), ImGuiCond_FirstUseEver);
-
-  if (ImGui::Begin("Timings"))
+  ImGui::SetNextWindowSize(ImVec2(330, 0), ImGuiCond_FirstUseEver);
+  if (ImGui::Begin("Showcase"))
   {
     ImGui::Text("%.1f FPS (%.2f ms/frame)", ImGui::GetIO().Framerate, 1000.0f / ImGui::GetIO().Framerate);
-    ImGui::TextDisabled("milliseconds, exponential moving average");
+    ImGui::Text("curves %u: solid %u / patterned %u / dots %u",
+      unsigned(curves->Count()),
+      unsigned(curves->Count(CurveKind::Solid)),
+      unsigned(curves->Count(CurveKind::Patterned)),
+      unsigned(curves->Count(CurveKind::Dotted)));
 
-    constexpr ImGuiTableFlags table_flags =
-      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
-
-    if (ImGui::BeginTable("timings", renderer_count + 1, table_flags))
-    {
-      ImGui::TableSetupColumn("stage");
-      for (int i = 0; i < renderer_count; i++) ImGui::TableSetupColumn(renderer_names[i]);
-      ImGui::TableHeadersRow();
-
-      for (const auto& row : rows)
-      {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(row.label);
-
-        for (int i = 0; i < renderer_count; i++)
-        {
-          ImGui::TableNextColumn();
-
-          // A metric only exists once something has measured it, so a stage a renderer does
-          // not have (the solid one has no scan and no pattern pass) stays a dash.
-          const auto* metric = renderers[i]->profiler.find(row.metric);
-          if (!metric)
-          {
-            ImGui::TextDisabled("-");
-            continue;
-          }
-
-          const double value = row.cpu ? metric->cpu : metric->gpu;
-
-          // A hidden renderer never reaches Draw(), so its numbers are frozen at whatever they
-          // were when it was last drawn - greyed out to say so.
-          if (renderer_visible[i]) ImGui::Text("%.3f", value);
-          else ImGui::TextDisabled("%.3f", value);
-        }
-      }
-
-      ImGui::EndTable();
-    }
-
-    ImGui::TextWrapped(
-      "Solid, Patterned and Dots are the Bezier renderer's backends: each draws only the curves "
-      "routed to it, and one with none is skipped (greyed). GPU rows are timestamp queries read "
-      "back a few frames late, so they lag the picture slightly. \"pattern\" covers ini + calc "
-      "together, and no longer carries a readback stall on the frames that recount, so it "
-      "should stay flat across a scene change.");
-
-    ImGui::Separator();
-    // Min over every UpdatePatternBound() call (any renderer), per curve.
-    const double bound_min_ns = PatternBoundMinTimeNs();
-    if (std::isfinite(bound_min_ns)) ImGui::Text("pattern bound min: %.2f ns / curve", bound_min_ns);
-    else ImGui::TextDisabled("pattern bound min: not measured yet");
+    ImGui::Checkbox("Pause", &paused);
     ImGui::SameLine();
-    if (ImGui::Button("Reset min")) ResetPatternBoundMinTime();
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("pattern centres");
-    ImGui::TextDisabled("the CPU bound and what was allocated from it");
-
-    // The exact GPU count used to sit between these two, mirrored back a few frames late through
-    // a
-    // that curve_pattern_resolve / dot_resolve wrote. Those passes are gone - the
-    // scan's appended total stays on the GPU, where the shaders that need it read it directly -
-    // so there is no count to show any more, and no dispatch is worth adding to produce one.
-    struct CountRow
+    ImGui::Checkbox("Meshes", &draw_meshes);
+    ImGui::SameLine();
+    ImGui::Checkbox("Curves", &draw_curves);
+    ImGui::SliderFloat("Speed", &time_scale, 0.0f, 3.0f, "%.2fx");
+    if (ImGui::SliderFloat("Time", &animation_time, 0.0f, 120.0f, "%.2f s"))
     {
-      const char* label;
-      uint32_t (*value)(const BezierRendererBase*);
-    };
-
-    static const CountRow count_rows[] = {
-      { "bound", [](const BezierRendererBase* r) { return r->PatternBound(); } },
-      { "allocated", [](const BezierRendererBase* r) { return r->PatternCapacity(); } },
-    };
-
-    if (ImGui::BeginTable("counts", renderer_count + 1, table_flags))
-    {
-      ImGui::TableSetupColumn("");
-      for (int i = 0; i < renderer_count; i++) ImGui::TableSetupColumn(renderer_names[i]);
-      ImGui::TableHeadersRow();
-
-      for (const auto& row : count_rows)
-      {
-        ImGui::TableNextRow();
-        ImGui::TableNextColumn();
-        ImGui::TextUnformatted(row.label);
-
-        for (int i = 0; i < renderer_count; i++)
-        {
-          ImGui::TableNextColumn();
-
-          // The solid renderer has no pattern buffer at all, so it shows as a dash.
-          if (renderers[i]->PatternCapacity() == 0)
-          {
-            ImGui::TextDisabled("-");
-            continue;
-          }
-
-          const uint32_t value = row.value(renderers[i]);
-          if (renderer_visible[i]) ImGui::Text("%u", value);
-          else ImGui::TextDisabled("%u", value);
-        }
-      }
-
-      ImGui::EndTable();
+      PoseScene();
     }
-
-    ImGui::TextWrapped(
-      "\"bound\" is the control-polygon upper bound the CPU computes from the curve data, and "
-      "is what the pattern buffer is sized from - no GPU result is involved, so nothing in a "
-      "frame waits on one. \"count\" is what the ini pass actually counted, mirrored back "
-      "without blocking and so a few frames old; it is a check on the bound, never a size.");
+    ImGui::TextDisabled("F1 hides this window");
   }
-
   ImGui::End();
 }
 
 void App::Render()
 {
+  DrawEnvironment();
+
   buffer_camera->Bind(Axodox::Graphics::ShaderStage::Vertex, 0);
   buffer_camera->Bind(Axodox::Graphics::ShaderStage::Pixel, 0);
 
-  const auto view_proj = camera.GetViewProj();
-  if (draw_curves) curve_renderer->Draw(*device, view_proj);
-  if (draw_lines) line_renderer->Draw(*device, view_proj);
+  if (draw_curves) curves->Draw(*device, camera.GetViewProj());
 }
 
 SDL_AppResult App::Iterate(float delta)
@@ -1065,7 +1360,7 @@ SDL_AppResult App::Iterate(float delta)
   ImGui::Render();
 
   auto* back = swapchain->BackBuffer();
-  back->Clear({ 0.39f, 0.58f, 0.92f, 0.f });
+  back->Clear({ 0.0f, 0.0f, 0.0f, 1.0f });
   depth->Clear(0.0f);
   device->ImmediateContext()->BindRenderTargets(back, depth.get());
   Render();
@@ -1078,10 +1373,15 @@ SDL_AppResult App::Event(const SDL_Event& Event)
 {
   ImGui_ImplSDL3_ProcessEvent(&Event);
   const ImGuiIO& io = ImGui::GetIO();
+  if (Event.type == SDL_EVENT_KEY_DOWN && Event.key.key == SDLK_F1 && Event.key.repeat == 0)
+  {
+    show_ui = !show_ui;
+  }
   if (!io.WantCaptureKeyboard)
   {
     if (Event.type == SDL_EVENT_KEY_DOWN)
     {
+      if (Event.key.key == SDLK_SPACE && Event.key.repeat == 0) paused = !paused;
       orbital_manipulator.KeyboardDown(Event.key);
     }
     if (Event.type == SDL_EVENT_KEY_UP)
@@ -1106,8 +1406,7 @@ SDL_AppResult App::Event(const SDL_Event& Event)
     viewport_height = float(Event.window.data2);
 
     camera.SetAspect(viewport_width / viewport_height);
-    curve_renderer->SetViewport(viewport_width, viewport_height);
-    line_renderer->SetViewport(viewport_width, viewport_height);
+    curves->SetViewport(viewport_width, viewport_height);
     swapchain->Resize();
     depth = std::make_unique<DepthStencil2D>(*device, Texture2DDefinition{
       uint32_t(viewport_width), uint32_t(viewport_height),
